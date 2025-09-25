@@ -1,0 +1,12 @@
+[package]
+name = "frair_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib: shared library for Android (.so). staticlib useful later (iOS, etc.).
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# JNI bindings for Android interop
+jni = { version = "0.21", default-features = false }
