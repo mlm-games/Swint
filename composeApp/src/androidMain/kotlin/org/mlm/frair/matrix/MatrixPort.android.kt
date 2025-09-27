@@ -44,6 +44,28 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override fun startSync() = client.startSlidingSync()
 
     override fun close() = client.shutdown()
+
+
+    override suspend fun paginateBack(roomId: String, count: Int): Boolean =
+        client.paginateBackwards(roomId, count.toUShort())
+
+    override suspend fun paginateForward(roomId: String, count: Int): Boolean =
+        client.paginateForwards(roomId, count.toUShort())
+
+    override suspend fun markRead(roomId: String): Boolean =
+        client.markRead(roomId)
+
+    override suspend fun markReadAt(roomId: String, eventId: String): Boolean =
+        client.markReadAt(roomId, eventId)
+
+    override suspend fun react(roomId: String, eventId: String, emoji: String): Boolean =
+        client.react(roomId, eventId, emoji)
+
+    override suspend fun reply(roomId: String, inReplyToEventId: String, body: String): Boolean =
+        client.reply(roomId, inReplyToEventId, body)
+
+    override suspend fun edit(roomId: String, targetEventId: String, newBody: String): Boolean =
+        client.edit(roomId, targetEventId, newBody)
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

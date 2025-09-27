@@ -31,6 +31,7 @@ sealed class Intent {
     data object SyncNow : Intent()
     data class StartReply(val event: MessageEvent) : Intent()
     data object CancelReply : Intent()
+    data object PaginateBack : Intent()
     data class StartEdit(val event: MessageEvent) : Intent()
     data object CancelEdit : Intent()
     data object ConfirmEdit : Intent() // Send acts as confirm in edit mode
@@ -83,6 +84,8 @@ class AppStore(
 
             is Intent.ChangeInput -> onInputChanged(intent.v)
             Intent.Send -> send()
+
+            is Intent.PaginateBack -> paginateBack()
 
             is Intent.StartReply -> set { copy(replyingTo = intent.event) }
             Intent.CancelReply -> set { copy(replyingTo = null) }
@@ -221,5 +224,14 @@ class AppStore(
 
     private fun fail(msg: String) {
         set { copy(error = msg) }
+    }
+
+    private fun paginateBack() = launchBusy {
+        val room = (state.value.screen as? Screen.Room)?.room ?: return@launchBusy
+        val hitStart = matrix.port.paginateBack(room.id, 40)
+        // Reload a larger slice (e.g., +40) so UI picks up the added items.
+        val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 40)
+        set { copy(events = recent) }
+        // Optionally show a small banner if hitStart is true
     }
 }

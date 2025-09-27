@@ -3,7 +3,7 @@ package org.mlm.frair
 import kotlinx.coroutines.flow.Flow
 import org.mlm.frair.matrix.MatrixPort
 
-class MatrixService(private val port: MatrixPort) {
+class MatrixService(val port: MatrixPort) {
     suspend fun init(hs: String) = run { port.init(hs); true }
     suspend fun login(user: String, password: String): Boolean {
         return runCatching {

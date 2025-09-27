@@ -7,10 +7,10 @@ use std::{
 use tokio::runtime::Runtime;
 
 use futures_util::StreamExt;
-use matrix_sdk::{authentication::matrix::MatrixSession, config::SyncSettings, Client as SdkClient, SessionTokens};
+use matrix_sdk::{authentication::matrix::MatrixSession, config::SyncSettings, ruma::{api::client::receipt::create_receipt::v3::ReceiptType, events::room::message::RoomMessageEventContentWithoutRelation, EventId}, Client as SdkClient, SessionTokens};
 use matrix_sdk::ruma::{OwnedRoomId, UserId, MilliSecondsSinceUnixEpoch};
 use matrix_sdk_ui::{eyeball_im::VectorDiff, timeline::{
-    EventTimelineItem, RoomExt as _, Timeline, TimelineItem, TimelineItemContent,
+    EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem, TimelineItemContent
 }};
 
 uniffi::setup_scaffolding!();
@@ -60,6 +60,13 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         body: msg.body().to_string(),
         timestamp_ms: ts.into(),
     })
+}
+
+async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId)
+    -> Option<matrix_sdk_ui::timeline::Timeline>
+{
+    let room = client.get_room(room_id)?;
+    room.timeline().await.ok()
 }
 
 // ---------- Object exported to Kotlin ----------
@@ -195,6 +202,101 @@ impl Client {
             }
         });
         self.guards.lock().unwrap().push(h);
+    }
+
+    pub fn paginate_backwards(&self, room_id: String, num_events: u16) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = matrix_sdk::ruma::OwnedRoomId::try_from(room_id) else { return false; };
+            let Some(room) = self.inner.get_room(&room_id) else { return false; };
+            let Ok(timeline) = room.timeline().await else { return false; };
+
+            timeline.paginate_backwards(num_events).await.unwrap_or(false)
+        })
+    }
+
+    pub fn mark_read(&self, room_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else { return false; };
+            timeline.mark_as_read(ReceiptType::Read).await.unwrap_or(false)
+        })
+    }
+
+    // Send a read receipt for a specific event id in the timeline. Returns whether a receipt was sent.
+    pub fn mark_read_at(&self, room_id: String, event_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Ok(eid) = EventId::parse(event_id) else { return false; };
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else { return false; };
+            timeline
+                .send_single_receipt(ReceiptType::Read, eid.to_owned())
+                .await
+                .unwrap_or(false)
+        })
+    }
+
+    // REACTIONS
+
+    // Toggle reaction (adds/removes) on the given event id with the provided emoji.
+    pub fn react(&self, room_id: String, event_id: String, emoji: String) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Ok(eid) = EventId::parse(event_id) else { return false; };
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else { return false; };
+            let Some(item) = timeline.item_by_event_id(&eid).await else { return false; };
+            let item_id: TimelineEventItemId = item.identifier();
+            timeline.toggle_reaction(&item_id, &emoji).await.is_ok()
+        })
+    }
+
+    // REPLIES
+
+    // Send a plain-text reply to an event id.
+    pub fn reply(&self, room_id: String, in_reply_to: String, body: String) -> bool {
+        RT.block_on(async {
+            use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation as MsgNoRel;
+
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Ok(reply_to) = EventId::parse(in_reply_to) else { return false; };
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else { return false; };
+
+            let content = MsgNoRel::text_plain(body);
+            timeline.send_reply(content, reply_to.to_owned()).await.is_ok()
+        })
+    }
+
+    // EDITS
+
+    // Edit a message by event id, replacing its body with the given text.
+    pub fn edit(&self, room_id: String, target_event_id: String, new_body: String) -> bool {
+        RT.block_on(async {
+            use matrix_sdk::room::edit::EditedContent;
+
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Ok(eid) = EventId::parse(target_event_id) else { return false; };
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else { return false; };
+
+            // Locate the timeline item and build an edit payload.
+            let Some(item) = timeline.item_by_event_id(&eid).await else { return false; };
+            let item_id = item.identifier();
+
+            // EditedContent supports constructing from a text body.
+            // (This type lives at matrix_sdk::room::edit::EditedContent.)
+            let edited = EditedContent::RoomMessage(RoomMessageEventContentWithoutRelation::text_plain(new_body));
+
+            timeline.edit(&item_id, edited).await.is_ok()
+        })
+    }
+
+    // FORWARD PAGINATION
+
+    // Load more events at the end of the timeline. Returns whether we hit the end.
+    pub fn paginate_forwards(&self, room_id: String, count: u16) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else { return false; };
+            timeline.paginate_forwards(count).await.unwrap_or(false)
+        })
     }
 
     pub fn shutdown(&self) {
