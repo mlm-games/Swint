@@ -1,0 +1,5 @@
+
+[bindings.kotlin]
+package_name = "frair"
+cdylib_name = "frair_ffi"
+jni = true

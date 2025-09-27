@@ -19,3 +19,10 @@ captures
 node_modules/
 
 rust/target
+rust/uniffi-bindgen/target
+rust/uniffi-bindgen/Cargo.lock
+
+composeApp/src/androidMain/kotlin/frair/frair.kt
+composeApp/src/jvmMain/kotlin/frair/frair.kt
+composeApp/src/androidMain/jniLibs
+composeApp/src/jvmdMain/jniLibs

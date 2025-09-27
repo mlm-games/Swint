@@ -1,0 +1,20 @@
+namespace frair {};
+
+dictionary RoomSummary { string id; string name; };
+dictionary MessageEvent { string event_id; string room_id; string sender; string body; u64 timestamp_ms; };
+
+callback interface TimelineObserver {
+void on_event(MessageEvent event);
+};
+
+interface Client {
+constructor(string homeserver_url);
+
+void login(string username, string password);
+sequence<RoomSummary> rooms();
+void start_sliding_sync();
+sequence<MessageEvent> recent_events(string room_id, u32 limit);
+void observe_room_timeline(string room_id, TimelineObserver observer);
+void send_message(string room_id, string body);
+void shutdown();
+};
