@@ -44,6 +44,24 @@ static RT: Lazy<Runtime> = Lazy::new(|| {
         .expect("tokio runtime")
 });
 
+fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
+    // Only message events
+    let msg = ev.content().as_message()?; 
+    let ts = ev.timestamp().0;
+
+    let event_id = ev
+        .event_id()
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| format!("local-{}", ts));
+    Some(MessageEvent {
+        event_id,
+        room_id: room_id.to_string(),
+        sender: ev.sender().to_string(),
+        body: msg.body().to_string(),
+        timestamp_ms: ts.into(),
+    })
+}
+
 // ---------- Object exported to Kotlin ----------
 #[derive(uniffi::Object)]
 pub struct Client {
@@ -106,12 +124,6 @@ impl Client {
         self.guards.lock().unwrap().push(h);
     }
 
-    // Stubs (compile-safe). Wire with matrix-sdk-ui later.
-    pub fn recent_events(&self, _room_id: String, _limit: u32) -> Vec<MessageEvent> {
-        Vec::new()
-    }
-    pub fn observe_room_timeline(&self, _room_id: String, _observer: Box<dyn TimelineObserver>) {}
-
     pub fn send_message(&self, room_id: String, body: String) {
         RT.block_on(async {
             // Simple best-effort sender
@@ -122,6 +134,67 @@ impl Client {
                 }
             }
         });
+    }
+
+    pub fn recent_events(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {
+        RT.block_on(async {
+            let Ok(room_id) = matrix_sdk::ruma::OwnedRoomId::try_from(room_id) else { return vec![]; };
+            let Some(room) = self.inner.get_room(&room_id) else { return vec![]; };
+            let Ok(timeline) = room.timeline().await else { return vec![]; };
+
+            // Current snapshot + ignore the stream here
+            let (items, _stream) = timeline.subscribe().await;
+
+            // items are in timeline order; we want newest-first, take, then restore ascending
+            let mut out: Vec<MessageEvent> = items
+                .iter()
+                .rev()
+                .filter_map(|it: &std::sync::Arc<TimelineItem>| {
+                    it.as_event().and_then(|ev| map_event(ev, room_id.as_str()))
+                })
+                .take(limit as usize)
+                .collect();
+
+            out.reverse();
+            out
+        })
+    }
+
+    pub fn observe_room_timeline(&self, room_id: String, observer: Box<dyn TimelineObserver>) {
+        let client = self.inner.clone();
+        let Ok(room_id) = matrix_sdk::ruma::OwnedRoomId::try_from(room_id) else { return; };
+        let obs = std::sync::Arc::new(observer);
+
+        let h = RT.spawn(async move {
+            let Some(room) = client.get_room(&room_id) else { return; };
+            let Ok(timeline) = room.timeline().await else { return; };
+
+            // Initial snapshot
+            let (items, mut stream) = timeline.subscribe().await;
+            for it in items.iter() {
+                if let Some(ev) = it.as_event().and_then(|ev| map_event(ev, room_id.as_str())) {
+                    obs.on_event(ev);
+                }
+            }
+
+            // Live diffs
+            while let Some(diffs) = stream.next().await {
+                for diff in diffs {
+                    match diff {
+                        VectorDiff::PushBack { value }
+                        | VectorDiff::PushFront { value }
+                        | VectorDiff::Insert { value, .. }
+                        | VectorDiff::Set { value, .. } => {
+                            if let Some(ev) = value.as_event().and_then(|ev| map_event(ev, room_id.as_str())) {
+                                obs.on_event(ev);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        self.guards.lock().unwrap().push(h);
     }
 
     pub fn shutdown(&self) {

@@ -39,7 +39,7 @@ kotlin {
         }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
-            implementation("net.java.dev.jna:jna:5.17.0")
+            implementation(libs.net.jna)
 
         }
         commonTest.dependencies {
@@ -225,7 +225,6 @@ abstract class GenerateUniFFITask @Inject constructor(
 
         outDir.get().asFile.mkdirs()
         execOps.exec {
-            // IMPORTANT: run from a Cargo project dir so any internal `cargo metadata` works
             workingDir = workDir
             commandLine(cmd)
         }
