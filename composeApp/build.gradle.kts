@@ -131,11 +131,16 @@ abstract class CargoNdkTask @Inject constructor(
 
 val cargoAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 
-tasks.register<CargoNdkTask>("cargoBuildAndroid") {
+val cargoBuildAndroid = tasks.register<CargoNdkTask>("cargoBuildAndroid") {
     abis.set(cargoAbis)
     cargoBin.set(if (OperatingSystem.current().isWindows) "cargo.exe" else "cargo")
     rustDir.set(rootProject.layout.projectDirectory.dir("rust"))
     jniOut.set(layout.projectDirectory.dir("src/androidMain/jniLibs"))
+}
+
+val cargoBuildDesktop = tasks.register<CargoHostTask>("cargoBuildDesktop") {
+    cargoBin.set(if (OperatingSystem.current().isWindows) "cargo.exe" else "cargo")
+    rustDir.set(rootProject.layout.projectDirectory.dir("rust"))
 }
 
 @DisableCachingByDefault(because = "Runs external tool; outputs are tracked")
@@ -144,7 +149,7 @@ abstract class GenerateUniFFITask @Inject constructor(
 ) : DefaultTask() {
 
     @get:InputFile
-    abstract val udlFile: RegularFileProperty
+    abstract val libraryFile: RegularFileProperty
 
     @get:Optional
     @get:InputFile
@@ -153,39 +158,66 @@ abstract class GenerateUniFFITask @Inject constructor(
     @get:Input
     abstract val language: Property<String>
 
-    // If empty or missing, we fall back to `cargo run --bin uniffi-bindgen --`
     @get:Input
     abstract val uniffiPath: Property<String>
+
+    // Fallback via cargo run (resolved at configuration time)
+    @get:Input
+    abstract val useFallbackCargo: Property<Boolean>
+
+    @get:Input
+    abstract val cargoBin: Property<String>
+
+    @get:Optional
+    @get:InputFile
+    abstract val vendoredManifest: RegularFileProperty
 
     @get:OutputDirectory
     abstract val outDir: DirectoryProperty
 
     @TaskAction
     fun run() {
-        val workDir = udlFile.get().asFile.parentFile
+        val lib = libraryFile.get().asFile
         val cfg = configFile.orNull?.asFile
-        val candidate = uniffiPath.orNull?.takeIf { it.isNotBlank() }
-        val exe = candidate?.let { File(it) }?.takeIf { it.exists() && it.canExecute() }
+
+        val exePath = uniffiPath.orNull?.takeIf { it.isNotBlank() }
+        val exe = exePath?.let { File(it) }?.takeIf { it.exists() && it.canExecute() }
 
         val cmd = mutableListOf<String>()
-        val workspaceBin = File(project.rootDir, "rust/uniffi-bindgen/Cargo.toml")
+        val workDir: File
+
         if (exe != null) {
+            // Use the standalone binary, but run it from a Cargo dir so any internal
+            // `cargo metadata` calls succeed.
             cmd += exe.absolutePath
-        } else if (workspaceBin.exists()) {
-            val cargo = if (System.getProperty("os.name").lowercase().contains("win")) "cargo.exe" else "cargo"
-            cmd += listOf(cargo, "run", "--release",
-                "--manifest-path", workspaceBin.absolutePath,
-                "--bin", "uniffi-bindgen", "--")
+            workDir = libraryFile.get().asFile.parentFile // rust/target/release
+                ?.parentFile        // rust/target
+                ?.parentFile        // rust
+                ?: project.layout.projectDirectory.asFile
         } else {
-            throw GradleException(
-                "uniffi-bindgen not found. Either:\n" +
-                        "  1) Install it: cargo install uniffi_bindgen --version 0.29.0, then set UNIFFI_BINDGEN=\$HOME/.cargo/bin/uniffi-bindgen\n" +
-                        "  2) Or vendor rust/uniffi-bindgen as described, so the task can run it via cargo."
+            if (!useFallbackCargo.get()) {
+                throw GradleException(
+                    "uniffi-bindgen not found. Set UNIFFI_BINDGEN or enable cargo fallback."
+                )
+            }
+            val manifest = vendoredManifest.orNull?.asFile
+            if (manifest == null || !manifest.exists()) {
+                throw GradleException(
+                    "Vendored uniffi-bindgen not found at rust/uniffi-bindgen/Cargo.toml."
+                )
+            }
+            cmd += listOf(
+                cargoBin.get(), "run", "--release",
+                "--manifest-path", manifest.absolutePath,
+                "--bin", "uniffi-bindgen", "--"
             )
+            // Run cargo from the vendored crate directory
+            workDir = manifest.parentFile
         }
+
         cmd += listOf(
             "generate",
-            udlFile.get().asFile.absolutePath,
+            "--library", lib.absolutePath,
             "--language", language.get(),
             "--out-dir", outDir.get().asFile.absolutePath
         )
@@ -193,6 +225,7 @@ abstract class GenerateUniFFITask @Inject constructor(
 
         outDir.get().asFile.mkdirs()
         execOps.exec {
+            // IMPORTANT: run from a Cargo project dir so any internal `cargo metadata` works
             workingDir = workDir
             commandLine(cmd)
         }
@@ -200,24 +233,47 @@ abstract class GenerateUniFFITask @Inject constructor(
 }
 
 val rustDir = rootProject.layout.projectDirectory.dir("rust")
-val defaultBindgen = providers
-    .environmentVariable("UNIFFI_BINDGEN")
-    .orElse(providers.provider { "${System.getProperty("user.home")}/.cargo/bin/uniffi-bindgen" })
+val os = OperatingSystem.current()
+val hostLibName = when {
+    os.isMacOsX -> "libfrair_ffi.dylib"
+    os.isWindows -> "frair_ffi.dll"
+    else -> "libfrair_ffi.so"
+}
+val hostLibFile = rustDir.file("target/release/$hostLibName")
+
+val useCargoFallback = providers.provider { true }
+val cargoBinDefault = providers.provider { if (os.isWindows) "cargo.exe" else "cargo" }
+val vendoredManifestVar = rustDir.file("uniffi-bindgen/Cargo.toml")
 
 val genUniFFIAndroid = tasks.register<GenerateUniFFITask>("genUniFFIAndroid") {
-    udlFile.set(rustDir.file("src/frair.udl"))
+    libraryFile.set(hostLibFile)
     configFile.set(rustDir.file("uniffi.android.toml"))
     language.set("kotlin")
-    uniffiPath.set(defaultBindgen)
+    uniffiPath.set("")                      // force cargo fallback
+    useFallbackCargo.set(useCargoFallback)  // true
+    cargoBin.set(cargoBinDefault)
+    vendoredManifest.set(vendoredManifestVar)
     outDir.set(layout.projectDirectory.dir("src/androidMain/kotlin"))
+    dependsOn(cargoBuildDesktop)
 }
 
 val genUniFFIJvm = tasks.register<GenerateUniFFITask>("genUniFFIJvm") {
-    udlFile.set(rustDir.file("src/frair.udl"))
+    libraryFile.set(hostLibFile)
     configFile.set(rustDir.file("uniffi.jvm.toml"))
     language.set("kotlin")
-    uniffiPath.set(defaultBindgen)
+    uniffiPath.set("")                      // force cargo fallback
+    useFallbackCargo.set(useCargoFallback)  // true
+    cargoBin.set(cargoBinDefault)
+    vendoredManifest.set(vendoredManifestVar)
     outDir.set(layout.projectDirectory.dir("src/jvmMain/kotlin"))
+    dependsOn(cargoBuildDesktop)
+}
+
+// Ensure bindings + Android .so exist before compiling Kotlin/packaging
+tasks.named("preBuild").configure {
+    dependsOn(genUniFFIAndroid)
+    dependsOn(genUniFFIJvm)
+    dependsOn(cargoBuildAndroid)
 }
 
 /**
@@ -248,13 +304,3 @@ abstract class CargoHostTask @Inject constructor(
     }
 }
 
-tasks.register<CargoHostTask>("cargoBuildDesktop") {
-    cargoBin.set(if (OperatingSystem.current().isWindows) "cargo.exe" else "cargo")
-    rustDir.set(rootProject.layout.projectDirectory.dir("rust"))
-}
-
-tasks.named("preBuild").configure {
-    dependsOn("cargoBuildAndroid")
-    dependsOn(genUniFFIAndroid)
-    dependsOn(genUniFFIJvm)
-}

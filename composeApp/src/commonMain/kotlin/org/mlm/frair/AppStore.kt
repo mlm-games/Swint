@@ -39,9 +39,9 @@ sealed class Intent {
 
 data class AppState(
     val screen: Screen = Screen.Login,
-    val homeserver: String = "https://matrix-client.matrix.org",
-    val user: String = "@alice:example.org",
-    val pass: String = "password",
+    val homeserver: String = "https://matrix.org",
+    val user: String = "@example:matrix.org",
+    val pass: String = "",
     val isBusy: Boolean = false,
     val error: String? = null,
 
@@ -96,20 +96,30 @@ class AppStore(
         }
     }
 
+    init {
+        // Try to show rooms if a session was restored by Rust Client::new()
+        scope.launch {
+            val hs = _state.value.homeserver
+            matrix.init(hs)
+            val rooms = runCatching { matrix.listRooms() }.getOrDefault(emptyList())
+            if (rooms.isNotEmpty()) {
+                matrix.startSync()
+                set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
+            } else {
+                set { copy(screen = Screen.Login) }
+            }
+        }
+    }
+
     private fun login() = launchBusy {
         val s = _state.value
-        try {
-            val ok = matrix.init(s.homeserver) && matrix.login(s.user, s.pass)
-            if (!ok) {
-                return@launchBusy fail("Login failed - check credentials and homeserver")
-            }
-            set { copy(error = null) }
-            val rooms = matrix.listRooms()
-            set { copy(screen = Screen.Rooms, rooms = rooms) }
-        } catch (e: Exception) {
-            fail("Login error: ${e.message}")
-            e.printStackTrace()
-        }
+        val ok = matrix.init(s.homeserver).let { matrix.login(s.user, s.pass) }
+        if (!ok) return@launchBusy fail("Login failed")
+
+        // After login, Rust did one sync_once; fetch rooms and start continuous sync
+        val rooms = matrix.listRooms()
+        matrix.startSync()
+        set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
     }
 
     private fun refreshRooms() = launchBusy {
