@@ -28,14 +28,18 @@ use matrix_sdk_ui::timeline::{
     EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem,
 };
 
+use std::panic::AssertUnwindSafe;
+
+
 // UniFFI macro-first setup
 uniffi::setup_scaffolding!();
 
 const BACKOFF_BASE_MS: u64 = 1_000;
 const BACKOFF_MAX_MS: u64 = 60_000;
+const SEND_MAX_ATTEMPTS: i64 = 10;
 
 
-// ---------- Types exposed to Kotlin ----------
+// Types exposed to Kotlin
 #[derive(Clone, uniffi::Record)]
 pub struct RoomSummary {
     pub id: String,
@@ -156,7 +160,7 @@ fn cache_size_bytes(dir: &PathBuf) -> u64 {
         .sum()
 }
 
-// ---------- Runtime ----------
+//  Runtime
 static RT: Lazy<Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -171,7 +175,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-// ---------- Session persistence ----------
+// Session persistence 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct SessionInfo {
     user_id: String,
@@ -225,7 +229,6 @@ impl From<std::io::Error> for FfiError {
 }
 
 
-// ---------- Verification flows store ----------
 struct VerifFlow {
     sas: SasVerification,
     other_user: OwnedUserId,
@@ -233,13 +236,38 @@ struct VerifFlow {
 }
 type VerifMap = Arc<Mutex<HashMap<String, VerifFlow>>>;
 
-// ---------- Object exported to Kotlin ----------
 #[derive(uniffi::Object)]
 pub struct Client {
     inner: SdkClient,
     store_dir: PathBuf,
     guards: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     verifs: VerifMap,
+    send_observers: Arc<Mutex<Vec<Arc<dyn SendObserver>>>>,
+    send_tx: tokio::sync::mpsc::UnboundedSender<SendUpdate>,
+}
+
+#[derive(Clone, uniffi::Enum)]
+pub enum SendState {
+    Enqueued,
+    Sending,
+    Sent,
+    Retrying,
+    Failed,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct SendUpdate {
+    pub room_id: String,
+    pub txn_id: String,
+    pub attempts: u32,
+    pub state: SendState,
+    pub event_id: Option<String>, // set on Sent if available
+    pub error: Option<String>,    // set on Retrying/Failed
+}
+
+#[uniffi::export(callback_interface)]
+pub trait SendObserver: Send + Sync {
+    fn on_update(&self, update: SendUpdate);
 }
 
 struct QueuedItem {
@@ -269,12 +297,40 @@ impl Client {
                 .expect("client")
         });
 
+        // NEW: channel for send updates
+        let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<SendUpdate>();
+        
         let this = Self {
             inner,
             store_dir,
             guards: Mutex::new(vec![]),
             verifs: Arc::new(Mutex::new(HashMap::new())),
+            send_observers: Arc::new(Mutex::new(Vec::new())),
+            send_tx,
         };
+
+        {
+        let observers = this.send_observers.clone(); // Arc<Mutex<...>>
+        let h = RT.spawn(async move {
+            while let Some(upd) = send_rx.recv().await {
+                // Snapshot the current observers under lock, then release the lock quickly.
+                let list: Vec<Arc<dyn SendObserver>> = {
+                    let guard = observers.lock().expect("send_observers");
+                    guard.iter().cloned().collect()
+                };
+
+                for obs in list {
+                    // Catch panics from user observers so one bad observer can't kill the task.
+                    let upd_clone = upd.clone();
+                    let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                        obs.on_update(upd_clone)
+                    }));
+                }
+            }
+        });
+        this.guards.lock().unwrap().push(h);
+        }
+
 
         {
             let path = default_store_dir().join("send_queue.sqlite3");
@@ -359,6 +415,11 @@ impl Client {
         }
 
         this
+    }
+
+    pub fn observe_sends(&self, observer: Box<dyn SendObserver>) {
+        let obs: Arc<dyn SendObserver> = Arc::from(observer);
+        self.send_observers.lock().unwrap().push(obs);
     }
 
     pub fn login(&self, username: String, password: String) {
@@ -987,20 +1048,35 @@ impl Client {
         let path = queue_db_path(&self.store_dir);
         let conn = rusqlite::Connection::open(path).expect("queue DB");
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO queued_sends(room_id, body, txn_id, attempts, next_try_ms) VALUES (?1, ?2, ?3, 0, 0)",
+            "INSERT OR IGNORE INTO queued_sends(room_id, body, txn_id, attempts, next_try_ms)
+            VALUES (?1, ?2, ?3, 0, 0)",
             (&room_id, &body, &txn),
         );
+
+        // Notify observers
+        let _ = self.send_tx.send(SendUpdate {
+            room_id: room_id.clone(),
+            txn_id: txn.clone(),
+            attempts: 0,
+            state: SendState::Enqueued,
+            event_id: None,
+            error: None,
+        });
+
         txn
-    }
+    }   
+
 
     pub fn start_send_worker(&self) {
         let client = self.inner.clone();
         let dir = self.store_dir.clone();
+        let tx = self.send_tx.clone();
 
         let h = RT.spawn(async move {
             loop {
-                // One item at a time; small sleep between passes
-                if let Err(e) = drain_once(&client, &dir).await {
+                if let Err(e) = drain_once(&client, &dir, &tx).await {
+                    // Notify a generic failure? We'll log and sleep briefly; specific per-item
+                    // failures are emitted inside drain_once
                     eprintln!("send worker error: {e}");
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                 }
@@ -1008,6 +1084,37 @@ impl Client {
         });
         self.guards.lock().unwrap().push(h);
     }
+
+    /// Cancel a queued send by txn_id; returns true if an item was deleted.
+pub fn cancel_txn(&self, txn_id: String) -> bool {
+    let path = queue_db_path(&self.store_dir);
+    let Ok(conn) = rusqlite::Connection::open(path) else { return false; };
+    conn.execute("DELETE FROM queued_sends WHERE txn_id = ?1", [txn_id]).ok().map(|n| n > 0).unwrap_or(false)
+}
+
+/// Force a retry "now" by setting next_try_ms = 0; returns true if updated.
+pub fn retry_txn_now(&self, txn_id: String) -> bool {
+    let path = queue_db_path(&self.store_dir);
+    let Ok(conn) = rusqlite::Connection::open(path) else { return false; };
+    conn.execute(
+        "UPDATE queued_sends SET next_try_ms = 0 WHERE txn_id = ?1",
+        [txn_id],
+    ).ok().map(|n| n > 0).unwrap_or(false)
+}
+
+/// Inspect the queue size (pending items count).
+pub fn pending_sends(&self) -> u32 {
+    let path = queue_db_path(&self.store_dir);
+    let Ok(conn) = rusqlite::Connection::open(path) else { return 0 };
+
+    // Use query_row directly; default to 0 on any error.
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM queued_sends", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0);
+
+    count.try_into().unwrap_or(0)
+}
+
 }
 
 // Helper: attach SAS stream
@@ -1142,8 +1249,13 @@ fn backoff_item(store_dir: &PathBuf, id: i64, attempts: i64, now: i64) -> Result
     Ok(())
 }
 
-async fn drain_once(client: &SdkClient, store_dir: &PathBuf) -> Result<(), String> {
+async fn drain_once(
+    client: &SdkClient,
+    store_dir: &PathBuf,
+    tx: &tokio::sync::mpsc::UnboundedSender<SendUpdate>,
+) -> Result<(), String> {
     use std::time::Duration;
+    use matrix_sdk::ruma::OwnedTransactionId;
 
     // 1) Read a due item (sync DB), drop connection before await
     let now = now_unix_ms();
@@ -1153,29 +1265,85 @@ async fn drain_once(client: &SdkClient, store_dir: &PathBuf) -> Result<(), Strin
         return Ok(());
     };
 
-    // 2) Send (async network)
     let rid = OwnedRoomId::try_from(item.room_id.clone()).map_err(|_| "bad room id".to_string())?;
     let Some(room) = client.get_room(&rid) else {
         // Room disappeared: drop the item
         let _ = delete_item(store_dir, item.id);
+        // Notify as Failed because it can no longer be sent
+        let _ = tx.send(SendUpdate {
+            room_id: rid.to_string(),
+            txn_id: item.txn_id.clone(),
+            attempts: item.attempts as u32,
+            state: SendState::Failed,
+            event_id: None,
+            error: Some("room not found".to_string()),
+        });
         return Ok(());
     };
 
-    let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(item.body.clone());
-    match room.send(content).await {
-        Ok(_) => {
-            // 3) Success: delete (sync DB)
+    // Notify Sending
+    let _ = tx.send(SendUpdate {
+        room_id: rid.to_string(),
+        txn_id: item.txn_id.clone(),
+        attempts: item.attempts as u32,
+        state: SendState::Sending,
+        event_id: None,
+        error: None,
+    });
+
+    // Stable transaction ID for server-side idempotency/dedup
+    let txn_id: OwnedTransactionId = item.txn_id.clone().into();
+
+    let content =
+        matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(item.body.clone());
+
+    match room.send(content).with_transaction_id(txn_id).await {
+        Ok(resp) => {
+            // Success: delete (sync DB)
             let _ = delete_item(store_dir, item.id);
+
+            // Emit Sent with server event_id
+            let _ = tx.send(SendUpdate {
+                room_id: rid.to_string(),
+                txn_id: item.txn_id.clone(),
+                attempts: item.attempts as u32,
+                state: SendState::Sent,
+                event_id: Some(resp.event_id.to_string()),
+                error: None,
+            });
         }
-        Err(_) => {
-            // 3) Failure: backoff (sync DB)
-            let _ = backoff_item(store_dir, item.id, item.attempts, now);
-            tokio::time::sleep(Duration::from_millis(400)).await;
+        Err(err) => {
+            // Decide whether to retry or fail permanently
+            if item.attempts + 1 >= SEND_MAX_ATTEMPTS {
+                // Give up: drop the item
+                let _ = delete_item(store_dir, item.id);
+                let _ = tx.send(SendUpdate {
+                    room_id: rid.to_string(),
+                    txn_id: item.txn_id.clone(),
+                    attempts: (item.attempts + 1) as u32,
+                    state: SendState::Failed,
+                    event_id: None,
+                    error: Some(err.to_string()),
+                });
+            } else {
+                // Backoff and keep
+                let _ = backoff_item(store_dir, item.id, item.attempts + 1, now);
+                let _ = tx.send(SendUpdate {
+                    room_id: rid.to_string(),
+                    txn_id: item.txn_id.clone(),
+                    attempts: (item.attempts + 1) as u32,
+                    state: SendState::Retrying,
+                    event_id: None,
+                    error: Some(err.to_string()),
+                });
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
         }
     }
 
     Ok(())
 }
+
 
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
     let room = client.get_room(room_id)?;
