@@ -124,6 +124,52 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.cancelVerification(flowId)
 
     override suspend fun logout(): Boolean = client.logout()
+
+    override suspend fun sendAttachmentFromPath(
+        roomId: String,
+        path: String,
+        mime: String,
+        filename: String?,
+        onProgress: ((Long, Long?) -> Unit)?
+    ): Boolean {
+        val cb = if (onProgress != null) object : frair.ProgressObserver {
+            override fun onProgress(sent: ULong, total: ULong?) {
+                onProgress(sent.toLong(), total?.toLong())
+            }
+        } else null
+        return client.sendAttachmentFromPath(roomId, path, mime, filename, cb)
+    }
+
+    override suspend fun sendAttachmentBytes(
+        roomId: String,
+        data: ByteArray,
+        mime: String,
+        filename: String,
+        onProgress: ((Long, Long?) -> Unit)?
+    ): Boolean {
+        val cb = if (onProgress != null) object : frair.ProgressObserver {
+            override fun onProgress(sent: ULong, total: ULong?) {
+                onProgress(sent.toLong(), total?.toLong())
+            }
+        } else null
+        return client.sendAttachmentBytes(roomId, filename, mime, data.toList().toByteArray(), cb)
+    }
+
+    override suspend fun downloadToPath(
+        mxcUri: String,
+        savePath: String,
+        onProgress: ((Long, Long?) -> Unit)?
+    ): Result<String> {
+        val cb = if (onProgress != null) object : frair.ProgressObserver {
+            override fun onProgress(sent: ULong, total: ULong?) {
+                onProgress(sent.toLong(), total?.toLong())
+            }
+        } else null
+        return runCatching { client.downloadToPath(mxcUri, savePath, cb).path }
+    }
+
+    override suspend fun recoverWithKey(recoveryKey: String): Boolean =
+        client.recoverWithKey(recoveryKey)
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

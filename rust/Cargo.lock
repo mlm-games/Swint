@@ -929,6 +929,7 @@ dependencies = [
  "futures-util",
  "matrix-sdk",
  "matrix-sdk-ui",
+ "mime",
  "once_cell",
  "rusqlite",
  "serde",

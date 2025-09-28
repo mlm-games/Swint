@@ -49,8 +49,32 @@ interface MatrixPort {
     suspend fun acceptVerification(flowId: String): Boolean
     suspend fun confirmVerification(flowId: String): Boolean
     suspend fun cancelVerification(flowId: String): Boolean
-
     suspend fun logout(): Boolean
+
+    suspend fun sendAttachmentFromPath(
+        roomId: String,
+        path: String,
+        mime: String,
+        filename: String? = null,
+        onProgress: ((Long, Long?) -> Unit)? = null,
+    ): Boolean
+
+    suspend fun sendAttachmentBytes(
+        roomId: String,
+        data: ByteArray,
+        mime: String,
+        filename: String,
+        onProgress: ((Long, Long?) -> Unit)? = null,
+    ): Boolean
+
+    suspend fun downloadToPath(
+        mxcUri: String,
+        savePath: String,
+        onProgress: ((Long, Long?) -> Unit)? = null,
+    ): Result<String>
+
+    // Recovery
+    suspend fun recoverWithKey(recoveryKey: String): Boolean
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

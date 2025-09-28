@@ -47,6 +47,32 @@ class MatrixService(val port: MatrixPort) {
 
     suspend fun logout(): Boolean = port.logout()
 
+    suspend fun sendAttachmentFromPath(
+        roomId: String,
+        path: String,
+        mime: String,
+        filename: String? = null,
+        onProgress: ((Long, Long?) -> Unit)? = null
+    ) = runCatching { port.sendAttachmentFromPath(roomId, path, mime, filename, onProgress) }.getOrElse { false }
+
+    suspend fun sendAttachmentBytes(
+        roomId: String,
+        data: ByteArray,
+        mime: String,
+        filename: String,
+        onProgress: ((Long, Long?) -> Unit)? = null
+    ) = runCatching { port.sendAttachmentBytes(roomId, data, mime, filename, onProgress) }.getOrElse { false }
+
+    suspend fun downloadToPath(
+        mxc: String,
+        savePath: String,
+        onProgress: ((Long, Long?) -> Unit)? = null
+    ): Result<String> = port.downloadToPath(mxc, savePath, onProgress)
+
+    // Recovery
+    suspend fun recoverWithKey(recoveryKey: String) =
+        runCatching { port.recoverWithKey(recoveryKey) }.getOrElse { false }
+
     @OptIn(ExperimentalTime::class)
     fun nowMs(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()
 }

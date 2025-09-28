@@ -54,6 +54,12 @@ sealed class Intent {
 
     // logout
     data object Logout : Intent()
+
+    // security - recovery
+    data object OpenRecoveryDialog : Intent()
+    data object CloseRecoveryDialog : Intent()
+    data class SetRecoveryKey(val v: String) : Intent()
+    data object SubmitRecoveryKey : Intent()
 }
 
 data class AppState(
@@ -93,7 +99,10 @@ data class AppState(
     val sasEmojis: List<String> = emptyList(),
     val sasOtherUser: String? = null,
     val sasOtherDevice: String? = null,
-    val sasError: String? = null
+    val sasError: String? = null,
+
+    val showRecoveryDialog: Boolean = false,
+    val recoveryKeyInput: String = "",
 )
 
 class AppStore(
@@ -160,6 +169,11 @@ class AppStore(
             is Intent.DeleteMessage -> deleteMessage(intent.event, intent.reason)
 
             Intent.Logout -> logout()
+
+            Intent.OpenRecoveryDialog -> set { copy(showRecoveryDialog = true, recoveryKeyInput = "") }
+            Intent.CloseRecoveryDialog -> set { copy(showRecoveryDialog = false, recoveryKeyInput = "") }
+            is Intent.SetRecoveryKey -> set { copy(recoveryKeyInput = intent.v) }
+            Intent.SubmitRecoveryKey -> recoverNow()
         }
     }
 
@@ -412,6 +426,14 @@ class AppStore(
         val rid = (state.value.screen as? Screen.Room)?.room?.id
         val _ok = matrix.logout()
         set { AppState() }
+    }
+
+    private fun recoverNow() = launchBusy {
+        val key = state.value.recoveryKeyInput.trim()
+        if (key.isEmpty()) return@launchBusy fail("Enter a recovery key")
+        val ok = matrix.recoverWithKey(key)
+        if (!ok) return@launchBusy fail("Recovery failed")
+        set { copy(showRecoveryDialog = false, recoveryKeyInput = "", error = "Recovery successful") }
     }
 
     private fun set(mutator: AppState.() -> AppState) {

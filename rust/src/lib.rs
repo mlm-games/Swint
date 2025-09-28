@@ -1,3 +1,4 @@
+use mime::Mime;
 use once_cell::sync::Lazy;
 use std::{
     collections::HashMap,
@@ -12,11 +13,7 @@ use thiserror::Error;
 
 // Matrix SDK core and UI
 use matrix_sdk::{
-    authentication::matrix::MatrixSession,
-    config::SyncSettings,
-    Client as SdkClient,
-    SessionTokens,
-    Room,
+    attachment::AttachmentConfig, authentication::matrix::MatrixSession, config::SyncSettings, media::{MediaFormat, MediaRequestParameters}, ruma::{events::room::MediaSource, OwnedMxcUri}, Client as SdkClient, Room, SessionTokens
 };
 use matrix_sdk::ruma::{
     api::client::receipt::create_receipt::v3::ReceiptType,
@@ -62,6 +59,17 @@ pub struct DeviceSummary {
 #[uniffi::export(callback_interface)]
 pub trait TypingObserver: Send + Sync {
     fn on_update(&self, names: Vec<String>);
+}
+
+#[uniffi::export(callback_interface)]
+pub trait ProgressObserver: Send + Sync {
+    fn on_progress(&self, sent: u64, total: Option<u64>);
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct DownloadResult {
+    pub path: String,
+    pub bytes: u64,
 }
 
 // SAS verification FFI types
@@ -144,6 +152,10 @@ fn write_trusted(dir: &PathBuf, ids: &[String]) -> bool {
         return std::fs::write(path, txt).is_ok();
     }
     false
+}
+
+fn read_all(path: &str) -> std::io::Result<Vec<u8>> {
+    std::fs::read(path)
 }
 
 #[derive(Debug, Error, uniffi::Error)]
@@ -502,6 +514,94 @@ impl Client {
         self.guards.lock().unwrap().push(h);
     }
 
+    pub fn send_attachment_bytes(
+        &self,
+        room_id: String,
+        filename: String,
+        mime: String,
+        bytes: Vec<u8>,
+        progress: Option<Box<dyn ProgressObserver>>,
+    ) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Some(room) = self.inner.get_room(&room_id) else { return false; };
+
+            let parsed: Mime = mime.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
+            let res = room
+                .send_attachment(&filename, &parsed, bytes.clone(), AttachmentConfig::new())
+                .await;
+
+            if let Some(p) = progress {
+                let sz = bytes.len() as u64;
+                p.on_progress(sz, Some(sz));
+            }
+
+            res.is_ok()
+        })
+    }
+
+    pub fn send_attachment_from_path(
+        &self,
+        room_id: String,
+        path: String,
+        mime: String,
+        filename: Option<String>,
+        progress: Option<Box<dyn ProgressObserver>>,
+    ) -> bool {
+        match read_all(&path) {
+            Ok(bytes) => {
+                let name = filename
+                    .or_else(|| std::path::Path::new(&path).file_name().and_then(|s| s.to_str()).map(|s| s.to_owned()))
+                    .unwrap_or_else(|| "file".to_string());
+                self.send_attachment_bytes(room_id, name, mime, bytes, progress)
+            }
+            Err(e) => { eprintln!("read file error {path}: {e}"); false }
+        }
+    }
+
+    // Download an mxc://… to a file path
+    pub fn download_to_path(
+        &self,
+        mxc_uri: String,
+        save_path: String,
+        progress: Option<Box<dyn ProgressObserver>>,
+    ) -> Result<DownloadResult, FfiError> {
+        RT.block_on(async {
+            use std::io::Write;
+            let mxc: OwnedMxcUri = mxc_uri.into();
+
+            let req = MediaRequestParameters {
+                source: MediaSource::Plain(mxc),
+                format: MediaFormat::File,
+            };
+
+            // Fetch bytes, handles decryption too
+            let bytes = self
+                .inner
+                .media()
+                .get_media_content(&req, /*use_cache=*/ false)
+                .await
+                .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
+
+            if let Some(p) = progress.as_ref() {
+                let sz = bytes.len() as u64;
+                p.on_progress(sz, Some(sz));
+            }
+
+            let mut f = std::fs::File::create(&save_path)?;
+            f.write_all(&bytes)?;
+            Ok(DownloadResult { path: save_path, bytes: bytes.len() as u64 })
+        })
+    }
+
+    // Recover end-to-end secrets with a human-readable recovery key
+    pub fn recover_with_key(&self, recovery_key: String) -> bool {
+        RT.block_on(async {
+            let rec = self.inner.encryption().recovery();
+            rec.recover(&recovery_key).await.is_ok()
+        })
+    }
+
     // Devices (fingerprints + local trust persisted locally)
     pub fn list_my_devices(&self) -> Vec<DeviceSummary> {
         RT.block_on(async {
@@ -682,7 +782,7 @@ impl Client {
         flow_id
     }
 
-  fn wait_and_start_sas(
+    fn wait_and_start_sas(
         &self,
         flow_id: String,
         req: VerificationRequest,
@@ -721,15 +821,6 @@ impl Client {
         self.guards.lock().unwrap().push(h);
     }
 }
-
-// Tiny adapter if you need to pass Arc<dyn VerificationObserver> back into a Box
-struct ForwardingObserver(Arc<dyn VerificationObserver>);
-impl VerificationObserver for ForwardingObserver {
-    fn on_phase(&self, f: String, p: SasPhase) { self.0.on_phase(f, p) }
-    fn on_emojis(&self, payload: SasEmojis) { self.0.on_emojis(payload) }
-    fn on_error(&self, f: String, m: String) { self.0.on_error(f, m) }
-}
-
 
 // ---------- Helpers ----------
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -16,6 +17,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -72,6 +74,10 @@ fun SecurityScreen(
             enabled = !state.isLoadingDevices
         ) { Text(if (state.isLoadingDevices) "Refreshing…" else "Refresh devices") }
 
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = { onIntent(Intent.OpenRecoveryDialog) }) { Text("Recover with key") }
+        }
+
         Spacer(Modifier.height(8.dp))
 
         if (state.devices.isEmpty() && !state.isLoadingDevices) {
@@ -100,6 +106,15 @@ fun SecurityScreen(
                 onCancel = { onIntent(Intent.CancelSas) }
             )
         }
+    }
+
+    if (state.showRecoveryDialog) {
+        RecoveryDialog(
+            keyValue = state.recoveryKeyInput,
+            onChange = { onIntent(Intent.SetRecoveryKey(it)) },
+            onCancel = { onIntent(Intent.CloseRecoveryDialog) },
+            onConfirm = { onIntent(Intent.SubmitRecoveryKey) },
+        )
     }
 }
 
@@ -241,4 +256,32 @@ private fun FlowRowMain(items: List<String>) {
             Spacer(Modifier.height(6.dp))
         }
     }
+}
+
+@Composable
+private fun RecoveryDialog(
+    keyValue: String,
+    onChange: (String) -> Unit,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Recover with key") },
+        text = {
+            Column {
+                Text("Paste your human-readable recovery key.")
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = keyValue,
+                    onValueChange = onChange,
+                    singleLine = true,
+                    placeholder = { Text("e.g. 4x4 grouped recovery phrase") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Recover") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } }
+    )
 }
