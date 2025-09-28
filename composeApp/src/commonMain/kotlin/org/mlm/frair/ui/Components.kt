@@ -222,6 +222,7 @@ fun MessageActionSheet(
                 onCopy(); onDismiss()
             }) { Text("Copy") }
             TextButton(onClick = { onReply(); }) { Text("Reply") }
+            TextButton(onClick = { onDismiss(); /* hook in screen */ }) { Text("Mark read to here") }
             if (isMine) {
                 TextButton(onClick = { onEdit() }) { Text("Edit") }
                 TextButton(onClick = { onDelete() }) { Text("Delete") }

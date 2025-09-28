@@ -242,6 +242,20 @@ fun RoomScreen(
     Box(Modifier.fillMaxSize().padding(padding)) {
         Column(Modifier.fillMaxSize()) {
 
+            if (state.hitStart) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    AssistChip(onClick = {}, enabled = false, label = { Text("Start of history") })
+                }
+
+                OutlinedButton(
+                    onClick = { onIntent(Intent.PaginateBack) },
+                    enabled = !state.isPaginatingBack
+                ) { Text(if (state.isPaginatingBack) "Loading…" else "Load older") }
+            }
+
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -309,6 +323,16 @@ fun RoomScreen(
                     .padding(12.dp)
             )
         }
+
+        ExtendedFloatingActionButton(
+            text = { Text(if (state.isPaginatingForward) "Loading…" else "Load newer") },
+            onClick = { onIntent(Intent.PaginateForward) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+            expanded = true,
+            icon = {},
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+        )
     }
 
     // Actions sheet
@@ -317,10 +341,10 @@ fun RoomScreen(
             event = actionTarget!!,
             isMine = actionTarget!!.sender == state.user,
             onDismiss = { actionTarget = null },
-            onCopy = { /* handled inside sheet via clipboard */ },
+            onCopy = { /* copy already handled inside sheet */ },
             onReply = { onIntent(Intent.StartReply(actionTarget!!)); actionTarget = null },
-            onEdit = { onIntent(Intent.StartEdit(actionTarget!!)); actionTarget = null },
-            onDelete = { /* wire when you add redactions */ },
+            onEdit  = { onIntent(Intent.StartEdit(actionTarget!!)); actionTarget = null },
+            onDelete = { onIntent(Intent.DeleteMessage(actionTarget!!)); actionTarget = null },
             onReact = { emoji -> onIntent(Intent.React(actionTarget!!, emoji)) }
         )
     }

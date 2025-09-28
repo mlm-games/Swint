@@ -32,10 +32,14 @@ sealed class Intent {
     data class StartReply(val event: MessageEvent) : Intent()
     data object CancelReply : Intent()
     data object PaginateBack : Intent()
+    data object PaginateForward : Intent()
     data class StartEdit(val event: MessageEvent) : Intent()
     data object CancelEdit : Intent()
     data object ConfirmEdit : Intent() // Send acts as confirm in edit mode
     data class React(val event: MessageEvent, val emoji: String) : Intent()
+
+    data class MarkReadHere(val event: MessageEvent) : Intent() // Mark read to here
+    data class DeleteMessage(val event: MessageEvent, val reason: String? = null) : Intent()
 }
 
 data class AppState(
@@ -58,7 +62,13 @@ data class AppState(
     val drafts: Map<String, String> = emptyMap(), // roomId -> draft
     val replyingTo: MessageEvent? = null,
     val editing: MessageEvent? = null,
-    val typing: Map<String, Set<String>> = emptyMap() // roomId -> who
+    val typing: Map<String, Set<String>> = emptyMap(), // roomId -> who
+
+    val isPaginatingBack: Boolean = false,
+    val isPaginatingForward: Boolean = false,
+    val hitStart: Boolean = false,
+
+
 )
 
 class AppStore(
@@ -69,6 +79,8 @@ class AppStore(
     val state: StateFlow<AppState> = _state.asStateFlow()
 
     private var timelineJob: Job? = null
+    private var typingJob: Job? = null
+    private var lastTypingRoom: String? = null
 
     fun dispatch(intent: Intent) {
         when (intent) {
@@ -86,6 +98,7 @@ class AppStore(
             Intent.Send -> send()
 
             is Intent.PaginateBack -> paginateBack()
+            Intent.PaginateForward -> paginateForward()
 
             is Intent.StartReply -> set { copy(replyingTo = intent.event) }
             Intent.CancelReply -> set { copy(replyingTo = null) }
@@ -96,6 +109,10 @@ class AppStore(
 
             is Intent.React -> react(intent.event, intent.emoji)
             Intent.SyncNow -> reloadCurrentRoom()
+
+            is Intent.MarkReadHere -> markReadHere(intent.event)
+            is Intent.DeleteMessage -> deleteMessage(intent.event, intent.reason)
+
         }
     }
 
@@ -132,7 +149,15 @@ class AppStore(
 
     private fun openRoom(room: RoomSummary) = launchBusy {
         val draft = _state.value.drafts[room.id].orEmpty()
-        set { copy(screen = Screen.Room(room), events = emptyList(), input = draft, replyingTo = null, editing = null) }
+        set {
+            copy(
+                screen = Screen.Room(room),
+                events = emptyList(),
+                input = draft,
+                replyingTo = null,
+                editing = null
+            )
+        }
 
         // Start background client sync (noop if already running)
         // For MVP we just rely on observe + recent
@@ -156,12 +181,32 @@ class AppStore(
             is Screen.Rooms -> set { copy(screen = Screen.Login) }
             is Screen.Login -> Unit
         }
+        val rid = (state.value.screen as? Screen.Room)?.room?.id
+        if (rid != null) scope.launch { matrix.stopTyping(rid) }
     }
+
 
     private fun onInputChanged(v: String) {
         val scr = _state.value.screen
-        if (scr is Screen.Room) set { copy(input = v, drafts = drafts + (scr.room.id to v)) }
-        else set { copy(input = v) }
+        if (scr is Screen.Room) {
+            set { copy(input = v, drafts = drafts + (scr.room.id to v)) }
+            handleTyping(scr.room.id, v)
+        } else set { copy(input = v) }
+    }
+
+    private fun handleTyping(roomId: String, text: String) {
+        typingJob?.cancel()
+        if (text.isBlank()) {
+            if (lastTypingRoom == roomId) scope.launch { matrix.stopTyping(roomId) }
+            lastTypingRoom = null
+            return
+        }
+        lastTypingRoom = roomId
+        typingJob = scope.launch {
+            // A tiny debounce to avoid hammering
+            delay(800)
+            matrix.startTyping(roomId, 30000)
+        }
     }
 
     private fun send() = launchBusy {
@@ -170,30 +215,38 @@ class AppStore(
         val text = st.input.trim()
         if (text.isEmpty()) return@launchBusy
 
-        val editing = st.editing
-        val ok = if (editing != null) {
-            matrix.sendMessage(room.id, "Edited: $text")
-        } else {
-            val prefix = st.replyingTo?.let { "> ${it.sender}: ${it.body.take(120)}\n\n" }.orEmpty()
-            matrix.sendMessage(room.id, prefix + text)
+        val ok = when {
+            st.editing != null -> matrix.edit(room.id, st.editing.eventId, text)
+            st.replyingTo != null -> matrix.reply(room.id, st.replyingTo.eventId, text)
+            else -> matrix.sendMessage(room.id, text)
         }
         if (!ok) return@launchBusy fail("Send failed")
 
-        set { copy(input = "", drafts = drafts + (room.id to ""), replyingTo = null, editing = null) }
-        // No manual refresh needed; observer will deliver echo; we also reload for safety
+        set {
+            copy(
+                input = "",
+                drafts = drafts + (room.id to ""),
+                replyingTo = null,
+                editing = null
+            )
+        }
+
         val recent = matrix.loadRecent(room.id, limit = 60)
         set { copy(events = recent) }
     }
 
-    private fun react(event: MessageEvent, emoji: String) {
-        // Wire when reactions are added in FFI
+    private fun react(event: MessageEvent, emoji: String) = scope.launch {
+        val room = (state.value.screen as? Screen.Room)?.room ?: return@launch
+        matrix.react(room.id, event.eventId, emoji)
     }
 
     private fun startTimeline(roomId: String) {
         stopTimeline()
         timelineJob = scope.launch {
             matrix.timeline(roomId).collect { ev ->
-                set { copy(events = (events + ev).distinctBy { it.eventId }.sortedBy { it.timestamp }) }
+                set {
+                    copy(events = (events + ev).distinctBy { it.eventId }.sortedBy { it.timestamp })
+                }
             }
         }
     }
@@ -203,7 +256,8 @@ class AppStore(
         timelineJob = null
     }
 
-    private fun markRead(roomId: String) {
+    private fun markRead(roomId: String) = scope.launch {
+        matrix.markRead(roomId)
         set { copy(unread = unread - roomId) }
     }
 
@@ -226,12 +280,42 @@ class AppStore(
         set { copy(error = msg) }
     }
 
-    private fun paginateBack() = launchBusy {
-        val room = (state.value.screen as? Screen.Room)?.room ?: return@launchBusy
-        val hitStart = matrix.port.paginateBack(room.id, 40)
-        // Reload a larger slice (e.g., +40) so UI picks up the added items.
-        val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 40)
+    private fun paginateBack() = scope.launch {
+        val room = (state.value.screen as? Screen.Room)?.room ?: return@launch
+        if (state.value.isPaginatingBack) return@launch
+        set { copy(isPaginatingBack = true) }
+        try {
+            val hitStart = matrix.paginateBack(room.id, 40)
+            // Optional refresh; your observer should deliver diffs anyway
+            val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 40)
+            set { copy(events = recent, hitStart = hitStart) }
+        } finally {
+            set { copy(isPaginatingBack = false) }
+        }
+    }
+
+    private fun paginateForward() = scope.launch {
+        val room = (state.value.screen as? Screen.Room)?.room ?: return@launch
+        if (state.value.isPaginatingForward) return@launch
+        set { copy(isPaginatingForward = true) }
+        try {
+            val _hitEnd = matrix.paginateForward(room.id, 40)
+            val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 40)
+            set { copy(events = recent) }
+        } finally {
+            set { copy(isPaginatingForward = false) }
+        }
+    }
+
+    private fun markReadHere(event: MessageEvent) = scope.launch {
+        matrix.markReadAt(event.roomId, event.eventId)
+        set { copy(unread = unread - event.roomId) }
+    }
+
+    private fun deleteMessage(event: MessageEvent, reason: String?) = scope.launch {
+        matrix.redact(event.roomId, event.eventId, reason)
+        // Pull fresh snapshot
+        val recent = matrix.loadRecent(event.roomId, limit = state.value.events.size)
         set { copy(events = recent) }
-        // Optionally show a small banner if hitStart is true
     }
 }

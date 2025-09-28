@@ -299,6 +299,37 @@ impl Client {
         })
     }
 
+    // Redact an event (delete). Optional `reason` (pass empty string from Kotlin if none).
+    pub fn redact(&self, room_id: String, event_id: String, reason: Option<String>) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            let Ok(eid) = EventId::parse(event_id) else { return false; };
+            if let Some(room) = self.inner.get_room(&room_id) {
+                room.redact(&eid, reason.as_deref(), None).await.is_ok()
+            } else { false }
+        })
+    }
+
+    // Start/stop typing notifications.
+    // Some versions take just a bool; others accept a timeout. We try the simplest call.
+    pub fn start_typing(&self, room_id: String, _timeout_ms: u64) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            if let Some(room) = self.inner.get_room(&room_id) {
+                room.typing_notice(true).await.is_ok()
+            } else { false }
+        })
+    }
+
+    pub fn stop_typing(&self, room_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
+            if let Some(room) = self.inner.get_room(&room_id) {
+                room.typing_notice(false).await.is_ok()
+            } else { false }
+        })
+    }
+
     pub fn shutdown(&self) {
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();

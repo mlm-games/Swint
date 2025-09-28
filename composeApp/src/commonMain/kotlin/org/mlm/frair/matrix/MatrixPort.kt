@@ -21,6 +21,10 @@ interface MatrixPort {
     suspend fun react(roomId: String, eventId: String, emoji: String): Boolean
     suspend fun reply(roomId: String, inReplyToEventId: String, body: String): Boolean
     suspend fun edit(roomId: String, targetEventId: String, newBody: String): Boolean
+
+    suspend fun redact(roomId: String, eventId: String, reason: String? = null): Boolean
+    suspend fun startTyping(roomId: String, timeoutMs: Long = 30000): Boolean
+    suspend fun stopTyping(roomId: String): Boolean
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

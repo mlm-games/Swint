@@ -57,6 +57,16 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override suspend fun edit(roomId: String, targetEventId: String, newBody: String): Boolean =
         client.edit(roomId, targetEventId, newBody)
+
+    override suspend fun redact(roomId: String, eventId: String, reason: String?) =
+        client.redact(roomId, eventId, reason)
+
+    override suspend fun startTyping(roomId: String, timeoutMs: Long) =
+        client.startTyping(roomId, timeoutMs)
+
+    override suspend fun stopTyping(roomId: String) =
+        client.stopTyping(roomId)
+
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
