@@ -13,10 +13,11 @@ use thiserror::Error;
 
 // Matrix SDK core and UI
 use matrix_sdk::{
-    attachment::AttachmentConfig, authentication::matrix::MatrixSession, config::SyncSettings, media::{MediaFormat, MediaRequestParameters}, ruma::{events::room::MediaSource, OwnedMxcUri}, Client as SdkClient, Room, SessionTokens
+    attachment::AttachmentConfig, authentication::matrix::MatrixSession, config::SyncSettings, media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings}, ruma::{events::room::MediaSource, OwnedMxcUri}, Client as SdkClient, Room, SessionTokens
 };
 use matrix_sdk::ruma::{
     api::client::receipt::create_receipt::v3::ReceiptType,
+    api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod,
     events::typing::SyncTypingEvent,
     DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
 };
@@ -29,6 +30,10 @@ use matrix_sdk_ui::timeline::{
 
 // UniFFI macro-first setup
 uniffi::setup_scaffolding!();
+
+const BACKOFF_BASE_MS: u64 = 1_000;
+const BACKOFF_MAX_MS: u64 = 60_000;
+
 
 // ---------- Types exposed to Kotlin ----------
 #[derive(Clone, uniffi::Record)]
@@ -118,6 +123,39 @@ pub trait VerificationObserver: Send + Sync {
     fn on_error(&self, flow_id: String, message: String);
 }
 
+#[uniffi::export(callback_interface)]
+pub trait VerificationInboxObserver: Send + Sync {
+    fn on_request(&self, flow_id: String, from_user: String, from_device: String);
+    fn on_error(&self, message: String);
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct MediaCacheStats {
+    pub bytes: u64,
+    pub files: u64,
+}
+
+
+fn cache_dir(dir: &PathBuf) -> PathBuf { dir.join("media_cache") }
+
+fn ensure_dir(d: &PathBuf) {
+    let _ = std::fs::create_dir_all(d);
+}
+
+fn file_len(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+fn cache_size_bytes(dir: &PathBuf) -> u64 {
+    if !dir.exists() { return 0; }
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| file_len(e.path()))
+        .sum()
+}
+
 // ---------- Runtime ----------
 static RT: Lazy<Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -204,6 +242,19 @@ pub struct Client {
     verifs: VerifMap,
 }
 
+struct QueuedItem {
+    id: i64,
+    room_id: String,
+    body: String,
+    txn_id: String,
+    attempts: i64,
+}
+
+struct NoopSyncObserver;
+impl SyncObserver for NoopSyncObserver {
+    fn on_state(&self, _status: SyncStatus) {}
+}
+
 #[uniffi::export]
 impl Client {
     #[uniffi::constructor]
@@ -224,6 +275,21 @@ impl Client {
             guards: Mutex::new(vec![]),
             verifs: Arc::new(Mutex::new(HashMap::new())),
         };
+
+        {
+            let path = default_store_dir().join("send_queue.sqlite3");
+            let conn = rusqlite::Connection::open(path).expect("queue DB");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS queued_sends(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_id TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    txn_id TEXT NOT NULL UNIQUE,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_try_ms INTEGER NOT NULL DEFAULT 0
+                );",
+            ).ok();
+        }
 
         // Try session restore; seed store
         RT.block_on(async {
@@ -333,21 +399,6 @@ impl Client {
         })
     }
 
-    pub fn start_sliding_sync(&self) {
-        // Fallback to classic sync loop. Gate sliding-sync with a feature if needed.
-        let client = self.inner.clone();
-        let h = RT.spawn(async move {
-            let settings = SyncSettings::default();
-            loop {
-                if let Err(e) = client.sync_once(settings.clone()).await {
-                    eprintln!("sync error: {e}");
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                }
-            }
-        });
-        self.guards.lock().unwrap().push(h);
-    }
-
     // Recent events (newest N returned ascending)
     pub fn recent_events(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {
         RT.block_on(async {
@@ -403,6 +454,11 @@ impl Client {
         self.guards.lock().unwrap().push(h);
     }
 
+    pub fn start_verification_inbox(&self, observer: Box<dyn VerificationInboxObserver>) {
+ 
+}
+
+
     pub fn send_message(&self, room_id: String, body: String) {
         RT.block_on(async {
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return; };
@@ -433,7 +489,7 @@ impl Client {
         true
     }
 
-    // Read receipts
+        // Read receipts
     pub fn mark_read(&self, room_id: String) -> bool {
         RT.block_on(async {
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
@@ -453,6 +509,105 @@ impl Client {
                 .unwrap_or(false)
         })
     }
+
+
+    pub fn media_cache_stats(&self) -> MediaCacheStats {
+        let dir = cache_dir(&self.store_dir);
+        if !dir.exists() {
+            return MediaCacheStats { bytes: 0, files: 0 };
+        }
+        let mut files = 0u64;
+        let mut bytes = 0u64;
+        for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file() {
+                files += 1;
+                bytes += file_len(entry.path());
+            }
+        }
+        MediaCacheStats { bytes, files }
+    }
+
+    // Evict oldest files until under max_bytes
+    pub fn media_cache_evict(&self, max_bytes: u64) -> u64 {
+        use std::time::UNIX_EPOCH;
+        let dir = cache_dir(&self.store_dir);
+        if !dir.exists() { return 0; }
+
+        // Build (path, mtime, size)
+        let mut entries: Vec<(std::path::PathBuf, u64, u64)> = walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter_map(|e| {
+                let p = e.into_path();
+                let md = std::fs::metadata(&p).ok()?;
+                let mtime = md.modified().ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let size = md.len();
+                Some((p, mtime, size))
+            })
+            .collect();
+
+        entries.sort_by_key(|t| t.1); // oldest first
+
+        let mut total = entries.iter().map(|e| e.2).sum::<u64>();
+        let mut removed = 0u64;
+        for (p, _, sz) in entries {
+            if total <= max_bytes { break; }
+            let _ = std::fs::remove_file(p);
+            total = total.saturating_sub(sz);
+            removed = removed.saturating_add(1);
+        }
+        removed
+    }
+
+    // Get thumbnail -> writes to cache and returns path
+    pub fn thumbnail_to_cache(
+    &self,
+    mxc_uri: String,
+    width: u32,
+    height: u32,
+    method_crop: bool,
+) -> Result<String, FfiError> {
+    let dir = cache_dir(&self.store_dir);
+    ensure_dir(&dir);
+
+    let mxc: OwnedMxcUri = mxc_uri.into();
+
+    // Build settings (Scale by default; Crop if requested). Use UInt via .into().
+    let settings = if method_crop {
+        MediaThumbnailSettings::with_method(ThumbnailMethod::Crop, width.into(), height.into())
+    } else {
+        MediaThumbnailSettings::new(width.into(), height.into())
+    };
+
+    // Build the request to fetch a thumbnail variant.
+    let req = MediaRequestParameters {
+        source: MediaSource::Plain(mxc.clone()),
+        format: MediaFormat::Thumbnail(settings),
+    };
+
+    // Cache path
+    let safe_name = format!(
+        "thumb_{}_{}x{}{}.bin",
+        mxc,
+        width,
+        height,
+        if method_crop { "_crop" } else { "_scale" }
+    );
+    let out = dir.join(safe_name);
+
+    // Fetch the bytes (handles decryption if needed).
+    let bytes = RT
+        .block_on(async { self.inner.media().get_media_content(&req, /*use_cache=*/ false).await })
+        .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+    std::fs::write(&out, &bytes)?;
+    Ok(out.to_string_lossy().to_string())
+}
+
 
     // Reactions
     pub fn react(&self, room_id: String, event_id: String, emoji: String) -> bool {
@@ -825,6 +980,34 @@ impl Client {
     pub fn is_logged_in(&self) -> bool {
         self.inner.user_id().is_some()
     }
+
+    // Enqueue a plain-text message; returns txn_id (use for UI tracking)
+    pub fn enqueue_text(&self, room_id: String, body: String, txn_id: Option<String>) -> String {
+        let txn = txn_id.unwrap_or_else(|| format!("frair-{}", now_ms()));
+        let path = queue_db_path(&self.store_dir);
+        let conn = rusqlite::Connection::open(path).expect("queue DB");
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO queued_sends(room_id, body, txn_id, attempts, next_try_ms) VALUES (?1, ?2, ?3, 0, 0)",
+            (&room_id, &body, &txn),
+        );
+        txn
+    }
+
+    pub fn start_send_worker(&self) {
+        let client = self.inner.clone();
+        let dir = self.store_dir.clone();
+
+        let h = RT.spawn(async move {
+            loop {
+                // One item at a time; small sleep between passes
+                if let Err(e) = drain_once(&client, &dir).await {
+                    eprintln!("send worker error: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
+            }
+        });
+        self.guards.lock().unwrap().push(h);
+    }
 }
 
 // Helper: attach SAS stream
@@ -912,6 +1095,88 @@ impl Client {
 }
 
 // ---------- Helpers ----------
+fn fetch_due_item(store_dir: &PathBuf, now: i64) -> Result<Option<QueuedItem>, String> {
+    use rusqlite::OptionalExtension;
+    let path = queue_db_path(store_dir);
+    let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, room_id, body, txn_id, attempts FROM queued_sends WHERE next_try_ms <= ?1 ORDER BY id LIMIT 1")
+        .map_err(|e| e.to_string())?;
+
+    let row = stmt
+        .query_row([now], |r| {
+            Ok(QueuedItem {
+                id: r.get::<_, i64>(0)?,
+                room_id: r.get::<_, String>(1)?,
+                body: r.get::<_, String>(2)?,
+                txn_id: r.get::<_, String>(3)?,
+                attempts: r.get::<_, i64>(4)?,
+            })
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    Ok(row)
+}
+
+fn delete_item(store_dir: &PathBuf, id: i64) -> Result<(), String> {
+    let path = queue_db_path(store_dir);
+    let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM queued_sends WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn backoff_item(store_dir: &PathBuf, id: i64, attempts: i64, now: i64) -> Result<(), String> {
+    let backoff = (BACKOFF_BASE_MS.saturating_mul(1u64.saturating_mul(attempts.min(10).try_into().unwrap())))
+        .min(BACKOFF_MAX_MS) as i64;
+    let next = now.saturating_add(backoff);
+
+    let path = queue_db_path(store_dir);
+    let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE queued_sends SET attempts = attempts + 1, next_try_ms = ?1 WHERE id = ?2",
+        (next, id),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn drain_once(client: &SdkClient, store_dir: &PathBuf) -> Result<(), String> {
+    use std::time::Duration;
+
+    // 1) Read a due item (sync DB), drop connection before await
+    let now = now_unix_ms();
+    let due = fetch_due_item(store_dir, now)?;
+    let Some(item) = due else {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        return Ok(());
+    };
+
+    // 2) Send (async network)
+    let rid = OwnedRoomId::try_from(item.room_id.clone()).map_err(|_| "bad room id".to_string())?;
+    let Some(room) = client.get_room(&rid) else {
+        // Room disappeared: drop the item
+        let _ = delete_item(store_dir, item.id);
+        return Ok(());
+    };
+
+    let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(item.body.clone());
+    match room.send(content).await {
+        Ok(_) => {
+            // 3) Success: delete (sync DB)
+            let _ = delete_item(store_dir, item.id);
+        }
+        Err(_) => {
+            // 3) Failure: backoff (sync DB)
+            let _ = backoff_item(store_dir, item.id, item.attempts, now);
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+    }
+
+    Ok(())
+}
+
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
     let room = client.get_room(room_id)?;
     room.timeline().await.ok()
@@ -971,4 +1236,12 @@ async fn attach_sas_stream(
             _ => {}
         }
     }
+}
+
+fn queue_db_path(dir: &PathBuf) -> PathBuf { dir.join("send_queue.sqlite3") }
+
+fn now_unix_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    dur.as_millis() as i64
 }

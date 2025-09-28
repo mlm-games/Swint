@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.mlm.frair.matrix.MatrixPort
+import org.mlm.frair.matrix.SasPhase
 import org.mlm.frair.matrix.VerificationObserver
 
 sealed class Screen {
@@ -97,7 +98,7 @@ data class AppState(
 
     // SAS modal
     val sasFlowId: String? = null,
-    val sasPhase: org.mlm.frair.matrix.SasPhase? = null,
+    val sasPhase: SasPhase? = null,
     val sasEmojis: List<String> = emptyList(),
     val sasOtherUser: String? = null,
     val sasOtherDevice: String? = null,
@@ -124,10 +125,27 @@ class AppStore(
     private fun bootstrap() = scope.launch {
         if (matrix.isLoggedIn()) {
             matrixPortStartSupervised()
-            matrix.startSync()
+            matrix.startSendWorker()
             val rooms = runCatching { matrix.listRooms() }.getOrDefault(emptyList())
             set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
         }
+
+        matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
+            override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
+                // Surface into existing SAS modal as “Requested”
+                set { copy(
+                    screen = if (screen is Screen.Security) screen else Screen.Rooms,
+                    sasFlowId = flowId,
+                    sasPhase = SasPhase.Requested,
+                    sasOtherUser = fromUser,
+                    sasOtherDevice = fromDevice,
+                    sasError = null
+                ) }
+            }
+            override fun onError(message: String) {
+                set { copy(error = "Verification inbox: $message") }
+            }
+        })
     }
 
 
@@ -191,8 +209,6 @@ class AppStore(
                 ?: "Could not sign in. Check your homeserver, username and password."
             return@launchBusy fail(msg)
         }
-
-        matrix.startSync()
 
         set { copy(error = null) }
         val rooms = matrix.listRooms()
@@ -285,7 +301,11 @@ class AppStore(
         val ok = when {
             st.editing != null -> matrix.edit(room.id, st.editing.eventId, text)
             st.replyingTo != null -> matrix.reply(room.id, st.replyingTo.eventId, text)
-            else -> matrix.sendMessage(room.id, text)
+            else -> {
+                val txnId = "frair-${matrix.nowMs()}"
+                val _queued = matrix.enqueueText(room.id, text, txnId)
+                true
+            }
         }
 
         if (!ok) return@launchBusy fail("Send failed")
@@ -406,7 +426,7 @@ class AppStore(
 
     private fun startSelfVerify(deviceId: String) = scope.launch {
         val obs = object : VerificationObserver {
-            override fun onPhase(flowId: String, phase: org.mlm.frair.matrix.SasPhase) {
+            override fun onPhase(flowId: String, phase: SasPhase) {
                 set { copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
             }
             override fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>) {

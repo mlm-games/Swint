@@ -15,7 +15,13 @@ class MatrixService(val port: MatrixPort) {
         return port.isLoggedIn()
     }
 
-    fun startSync() = port.startSync()
+    suspend fun mediaCacheStats() = port.mediaCacheStats()
+    suspend fun mediaCacheEvict(maxBytes: Long) = port.mediaCacheEvict(maxBytes)
+    suspend fun thumbnailToCache(mxc: String, w: Int, h: Int, crop: Boolean) = port.thumbnailToCache(mxc, w, h, crop)
+
+    fun startVerificationInbox(cb: MatrixPort.VerificationInboxObserver) =
+        port.startVerificationInbox(cb)
+
     suspend fun listRooms(): List<RoomSummary> = port.listRooms()
     suspend fun loadRecent(roomId: String, limit: Int = 50): List<MessageEvent> = port.recent(roomId, limit)
     fun timeline(roomId: String): Flow<MessageEvent> = port.timeline(roomId)
@@ -36,6 +42,12 @@ class MatrixService(val port: MatrixPort) {
 
     fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit) =
         port.observeTyping(roomId, onUpdate)
+
+    suspend fun enqueueText(roomId: String, body: String, txnId: String? = null) =
+        port.enqueueText(roomId, body, txnId)
+
+    fun startSendWorker() = port.startSendWorker()
+
 
     suspend fun listMyDevices(): List<DeviceSummary> = runCatching { port.listMyDevices() }.getOrElse { emptyList() }
     suspend fun setLocalTrust(deviceId: String, verified: Boolean) = runCatching { port.setLocalTrust(deviceId, verified) }.getOrElse { false }

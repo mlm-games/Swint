@@ -41,8 +41,31 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.sendMessage(roomId, body)
     }
 
-    override fun startSync() = client.startSlidingSync()
+    override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
+        client.enqueueText(roomId, body, txnId)
+
+    override fun startSendWorker() = client.startSendWorker()
+
     override fun close() = client.shutdown()
+
+    override suspend fun mediaCacheStats(): Pair<Long, Long> {
+        val s = client.mediaCacheStats()
+        return s.bytes.toLong() to s.files.toLong()
+    }
+    override suspend fun mediaCacheEvict(maxBytes: Long): Long =
+        client.mediaCacheEvict(maxBytes.toULong()).toLong()
+    override suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String> =
+        runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
+
+    override fun startVerificationInbox(observer: MatrixPort.VerificationInboxObserver) {
+        val cb = object : frair.VerificationInboxObserver {
+            override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
+                observer.onRequest(flowId, fromUser, fromDevice)
+            }
+            override fun onError(message: String) { observer.onError(message) }
+        }
+        client.startVerificationInbox(cb)
+    }
 
     override suspend fun paginateBack(roomId: String, count: Int) =
         client.paginateBackwards(roomId, count.toUShort())
@@ -77,11 +100,11 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override fun startSupervisedSync(observer: MatrixPort.SyncObserver) {
         val cb = object : frair.SyncObserver {
-            override fun on_state(status: frair.SyncStatus) {
+            override fun onState(status: frair.SyncStatus) {
                 val phase = when (status.phase) {
                     frair.SyncPhase.IDLE -> MatrixPort.SyncPhase.Idle
                     frair.SyncPhase.RUNNING -> MatrixPort.SyncPhase.Running
-                    frair.SyncPhase.BACKINGOFF -> MatrixPort.SyncPhase.BackingOff
+                    frair.SyncPhase.BACKING_OFF -> MatrixPort.SyncPhase.BackingOff
                     frair.SyncPhase.ERROR -> MatrixPort.SyncPhase.Error
                 }
                 observer.onState(MatrixPort.SyncStatus(phase, status.message))

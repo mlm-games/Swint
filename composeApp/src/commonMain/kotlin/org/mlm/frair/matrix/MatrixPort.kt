@@ -32,9 +32,23 @@ interface MatrixPort {
     suspend fun recent(roomId: String, limit: Int = 50): List<MessageEvent>
     fun timeline(roomId: String): Flow<MessageEvent>
     suspend fun send(roomId: String, body: String)
-    fun startSync()
     fun isLoggedIn(): Boolean
     fun close()
+
+    suspend fun enqueueText(roomId: String, body: String, txnId: String? = null): String
+    fun startSendWorker()
+
+    suspend fun mediaCacheStats(): Pair<Long, Long>  // bytes, files
+    suspend fun mediaCacheEvict(maxBytes: Long): Long
+    suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String>
+
+    interface VerificationInboxObserver {
+        fun onRequest(flowId: String, fromUser: String, fromDevice: String)
+        fun onError(message: String)
+    }
+
+    fun startVerificationInbox(observer: VerificationInboxObserver)
+
 
     suspend fun paginateBack(roomId: String, count: Int): Boolean
     suspend fun paginateForward(roomId: String, count: Int): Boolean
