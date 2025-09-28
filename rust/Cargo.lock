@@ -830,20 +830,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43e8e9d31591be508826b875d8fe6056aebcaec3281ac0e45434ff303686c566"
 dependencies = [
  "futures-core",
- "imbl 5.0.0",
+ "imbl",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "eyeball-im"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4790c03df183c2b46665c1a58118c04fd3e3976ec2fe16a0aa00e00c9eea7754"
-dependencies = [
- "futures-core",
- "imbl 6.1.0",
- "tokio",
 ]
 
 [[package]]
@@ -853,9 +842,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bda2d08a8fa99050bdb84d077193a371e9abd29696921971aa26ae076adb6023"
 dependencies = [
  "arrayvec",
- "eyeball-im 0.7.0",
+ "eyeball-im",
  "futures-core",
- "imbl 5.0.0",
+ "imbl",
  "pin-project-lite",
  "smallvec",
 ]
@@ -937,7 +926,6 @@ dependencies = [
 name = "frair_ffi"
 version = "0.1.0"
 dependencies = [
- "eyeball-im 0.8.0",
  "futures-util",
  "matrix-sdk",
  "matrix-sdk-ui",
@@ -1538,20 +1526,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "imbl"
-version = "6.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fade8ae6828627ad1fa094a891eccfb25150b383047190a3648d66d06186501"
-dependencies = [
- "archery",
- "bitmaps",
- "imbl-sized-chunks",
- "rand_core 0.9.3",
- "rand_xoshiro",
- "version_check",
-]
-
-[[package]]
 name = "imbl-sized-chunks"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1927,12 +1901,12 @@ dependencies = [
  "cfg-if",
  "event-listener",
  "eyeball",
- "eyeball-im 0.7.0",
+ "eyeball-im",
  "futures-core",
  "futures-util",
  "gloo-timers",
  "http",
- "imbl 5.0.0",
+ "imbl",
  "indexmap",
  "itertools 0.14.0",
  "js_int",
@@ -1976,7 +1950,7 @@ dependencies = [
  "bitflags",
  "decancer",
  "eyeball",
- "eyeball-im 0.7.0",
+ "eyeball-im",
  "futures-util",
  "growable-bloom-filter",
  "matrix-sdk-common",
@@ -1999,12 +1973,12 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb33a986495135e217f28cfe0918bf7d01a9800e42f4ef88afbd48e23b8cc53"
 dependencies = [
- "eyeball-im 0.7.0",
+ "eyeball-im",
  "futures-core",
  "futures-executor",
  "futures-util",
  "gloo-timers",
- "imbl 5.0.0",
+ "imbl",
  "ruma",
  "serde",
  "serde_json",
@@ -2148,13 +2122,13 @@ dependencies = [
  "chrono",
  "emojis",
  "eyeball",
- "eyeball-im 0.7.0",
+ "eyeball-im",
  "eyeball-im-util",
  "futures-core",
  "futures-util",
  "fuzzy-matcher",
  "growable-bloom-filter",
- "imbl 5.0.0",
+ "imbl",
  "indexmap",
  "itertools 0.14.0",
  "matrix-sdk",

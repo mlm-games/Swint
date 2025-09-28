@@ -1,30 +1,44 @@
 package org.mlm.frair.ui
 
-import androidx.annotation.RequiresApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Button
+import androidx.compose.material3.Divider
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlinx.datetime.*
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import org.mlm.frair.MessageEvent
-import java.util.*
 import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
 
 @Composable
 fun Avatar(
@@ -52,11 +66,9 @@ fun MessageBubble(
     grouped: Boolean,
     onLongPress: (() -> Unit)? = null,
 ) {
-    val bg = if (isMine) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
+    val bg = if (isMine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
     val align = if (isMine) Arrangement.End else Arrangement.Start
-    val textColor = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer
-    else MaterialTheme.colorScheme.onSurfaceVariant
+    val textColor = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
 
     Row(Modifier.fillMaxWidth(), horizontalArrangement = align) {
         Surface(
@@ -150,29 +162,6 @@ fun ActionBanner(
 }
 
 @Composable
-fun DaySeparator(date: LocalDate) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.Center
-    ) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            shape = MaterialTheme.shapes.small
-        ) {
-            Text(
-                text = formatDate(date),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@Composable
 fun TypingIndicator(names: List<String>) {
     if (names.isEmpty()) return
     val text = when (names.size) {
@@ -201,7 +190,7 @@ fun MessageActionSheet(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onReact: (String) -> Unit,
-    onMarkReadHere: () -> Unit,
+    onMarkReadHere: () -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
     val quick = listOf("👍", "❤️", "😂", "🙏", "🔥", "👀")
@@ -244,8 +233,8 @@ fun MarkdownText(
     Text(styled, color = color, style = MaterialTheme.typography.bodyMedium)
 }
 
+
 private fun parseMarkdown(input: String): AnnotatedString {
-    // Extremely small subset: **bold**, *italic*, `code`, and links http(s)://
     val bold = Regex("\\*\\*(.+?)\\*\\*")
     val italic = Regex("\\*(.+?)\\*")
     val code = Regex("`([^`]+)`")
@@ -270,7 +259,7 @@ private fun parseMarkdown(input: String): AnnotatedString {
     apply(bold, { SpanStyle(fontWeight = FontWeight.Bold) })
     apply(italic, { SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic) })
     apply(code, { SpanStyle(background = Color(0x33FFFFFF)) })
-    apply(link, { SpanStyle(color = Color.Blue, textDecoration = TextDecoration.Underline) })
+    apply(link, { SpanStyle(color = Color.Magenta, textDecoration = TextDecoration.Underline) })
 
     return buildAnnotatedString {
         append(text)
@@ -284,15 +273,9 @@ private fun parseMarkdown(input: String): AnnotatedString {
 
 @OptIn(ExperimentalTime::class)
 private fun formatTime(epochMs: Long): String {
-    val instant = Instant.fromEpochMilliseconds(epochMs)
+    val instant = kotlin.time.Instant.fromEpochMilliseconds(epochMs)
     val local = instant.toLocalDateTime(TimeZone.currentSystemDefault())
     val hh = local.hour.toString().padStart(2, '0')
     val mm = local.minute.toString().padStart(2, '0')
     return "$hh:$mm"
-}
-
-private fun formatDate(date: LocalDate): String {
-//    val m = date.month.name.lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }.take(3)
-//    return "$m ${date.dayOfMonth}, ${date.year}"
-    return date.toString()
 }

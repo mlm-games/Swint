@@ -1,7 +1,6 @@
 package org.mlm.frair.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -9,17 +8,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import kotlinx.datetime.*
 import org.mlm.frair.*
-import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
-import androidx.compose.ui.draw.alpha
-
+import org.mlm.frair.ui.screens.SecurityScreen
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -41,32 +37,35 @@ fun RootScaffold(
                             is Screen.Login -> "Frair"
                             is Screen.Rooms -> "Rooms"
                             is Screen.Room -> s.room.name
+                            is Screen.Security -> "Security"
                         },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 },
                 navigationIcon = {
-                    if (state.screen is Screen.Room) {
+                    if (state.screen is Screen.Room || state.screen is Screen.Security) {
                         TextButton(onClick = { onIntent(Intent.Back) }) { Text("Back") }
                     }
                 },
                 actions = {
                     when (state.screen) {
                         is Screen.Rooms -> Row {
-                            TextButton(enabled = !state.isBusy, onClick = { onIntent(Intent.RefreshRooms) }) {
-                                Text(if (state.isBusy) "…" else "Refresh")
-                            }
+                            TextButton(
+                                enabled = !state.isBusy,
+                                onClick = { onIntent(Intent.RefreshRooms) }
+                            ) { Text(if (state.isBusy) "…" else "Refresh") }
+                            Spacer(Modifier.width(8.dp))
+                            TextButton(onClick = { onIntent(Intent.OpenSecurity) }) { Text("Security") }
                             Spacer(Modifier.width(8.dp))
                             TextButton(onClick = { onIntent(Intent.Logout) }) { Text("Log out") }
                         }
-
                         is Screen.Room -> TextButton(
                             enabled = !state.isBusy,
                             onClick = { onIntent(Intent.SyncNow) }
                         ) { Text(if (state.isBusy) "…" else "Sync") }
-
-                        else -> {}
+                        is Screen.Security -> {}
+                        is Screen.Login -> {}
                     }
                 }
             )
@@ -77,6 +76,7 @@ fun RootScaffold(
             is Screen.Login -> LoginScreen(state, padding, onIntent)
             is Screen.Rooms -> RoomsScreen(state, padding, onIntent)
             is Screen.Room -> RoomScreen(state, padding, onIntent)
+            is Screen.Security -> SecurityScreen(state, padding, onIntent)
         }
     }
 }
@@ -88,7 +88,7 @@ private fun LabeledField(
     label: String,
     value: String,
     onChange: (String) -> Unit,
-    isPassword: Boolean = false,
+    isPassword: Boolean = false
 ) {
     OutlinedTextField(
         value = value,
@@ -132,7 +132,7 @@ fun LoginScreen(
     }
 }
 
-/* ---------------- Rooms (with unread badges) ---------------- */
+/* ---------------- Rooms ---------------- */
 
 @Composable
 fun RoomsScreen(
@@ -170,13 +170,12 @@ fun RoomsScreen(
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
                 items(filtered, key = { it.id }) { r ->
-                    val unread = state.unread[r.id] ?: 0
                     RoomRow(
                         name = r.name,
                         id = r.id,
-                        unread = unread,
+                        unread = state.unread[r.id] ?: 0,
                         onClick = { onIntent(Intent.OpenRoom(r)) },
-                        onLong = { /* future room actions */ },
+                        onLong = { /* future room actions */ }
                     )
                     Divider()
                 }
@@ -199,16 +198,11 @@ private fun RoomRow(
                 Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.width(6.dp))
                 if (unread > 0) {
-                    AssistChip(
-                        onClick = onClick,
-                        label = { Text(unread.coerceAtMost(999).toString()) }
-                    )
+                    AssistChip(onClick = onClick, label = { Text(unread.coerceAtMost(999).toString()) })
                 }
             }
         },
-        supportingContent = {
-            Text(id, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.alpha(0.75f))
-        },
+        supportingContent = { Text(id, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.alpha(0.75f)) },
         leadingContent = { Avatar(initials = name.take(2).uppercase()) },
         modifier = Modifier
             .fillMaxWidth()
@@ -216,9 +210,8 @@ private fun RoomRow(
     )
 }
 
-/* ---------------- Room (actions, reply/edit, jump-to-bottom) ---------------- */
+/* ---------------- Room ---------------- */
 
-@OptIn(ExperimentalTime::class)
 @Composable
 fun RoomScreen(
     state: AppState,
@@ -229,10 +222,8 @@ fun RoomScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    // Sorted ascending by timestamp
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
 
-    // Show “jump to bottom” when scrolled away
     val showJump by remember {
         derivedStateOf {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -241,13 +232,13 @@ fun RoomScreen(
     }
 
     var actionTarget by remember { mutableStateOf<MessageEvent?>(null) }
-
     var showRedact by remember { mutableStateOf(false) }
     var redactReason by remember { mutableStateOf("") }
 
     Box(Modifier.fillMaxSize().padding(padding)) {
         Column(Modifier.fillMaxSize()) {
 
+            // Start of history banner
             if (state.hitStart) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
@@ -255,7 +246,13 @@ fun RoomScreen(
                 ) {
                     AssistChip(onClick = {}, enabled = false, label = { Text("Start of history") })
                 }
+            }
 
+            // Load older
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.Center
+            ) {
                 OutlinedButton(
                     onClick = { onIntent(Intent.PaginateBack) },
                     enabled = !state.isPaginatingBack
@@ -269,15 +266,8 @@ fun RoomScreen(
                 state = listState,
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
             ) {
-                var lastDay: LocalDate? = null
                 var lastSender: String? = null
                 itemsIndexed(events, key = { _, e -> e.eventId }) { _, ev ->
-                    val day = Instant.fromEpochMilliseconds(ev.timestamp)
-                        .toLocalDateTime(TimeZone.currentSystemDefault()).date
-                    if (day != lastDay) {
-                        lastDay = day
-                        DaySeparator(day)
-                    }
                     val grouped = lastSender == ev.sender
                     lastSender = ev.sender
 
@@ -293,7 +283,6 @@ fun RoomScreen(
                 }
             }
 
-            // Reply preview / edit banner
             if (state.replyingTo != null || state.editing != null) {
                 ActionBanner(
                     replyingTo = state.replyingTo,
@@ -306,14 +295,17 @@ fun RoomScreen(
             MessageComposer(
                 value = state.input,
                 enabled = !state.isBusy,
-                hint = if (state.replyingTo != null) "Reply…" else if (state.editing != null) "Edit message…" else "Message",
+                hint = when {
+                    state.replyingTo != null -> "Reply…"
+                    state.editing != null -> "Edit message…"
+                    else -> "Message"
+                },
                 onValueChange = { onIntent(Intent.ChangeInput(it)) },
                 onSend = {
                     if (state.editing != null) onIntent(Intent.ConfirmEdit) else onIntent(Intent.Send)
                 }
             )
 
-            // Typing indicator hook
             TypingIndicator(names = state.typing[room.id].orEmpty().toList())
         }
 
@@ -329,33 +321,9 @@ fun RoomScreen(
                     .padding(12.dp)
             )
         }
-
-        ExtendedFloatingActionButton(
-            text = { Text(if (state.isPaginatingForward) "Loading…" else "Load newer") },
-            onClick = { onIntent(Intent.PaginateForward) },
-            modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
-            expanded = true,
-            icon = {},
-            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-        )
     }
 
-    // Actions sheet
-    if (actionTarget != null) {
-        MessageActionSheet(
-            event = actionTarget!!,
-            isMine = actionTarget!!.sender == state.user,
-            onDismiss = { actionTarget = null },
-            onCopy = { /* copy already handled inside sheet */ },
-            onReply = { onIntent(Intent.StartReply(actionTarget!!)); actionTarget = null },
-            onEdit  = { onIntent(Intent.StartEdit(actionTarget!!)); actionTarget = null },
-            onDelete = { showRedact = true },
-            onReact = { emoji -> onIntent(Intent.React(actionTarget!!, emoji)) },
-            onMarkReadHere = { onIntent(Intent.MarkReadHere(actionTarget!!)); actionTarget = null }
-        )
-    }
-
+    // Redact with reason dialog
     if (showRedact && actionTarget != null) {
         AlertDialog(
             onDismissRequest = { showRedact = false },
@@ -387,6 +355,20 @@ fun RoomScreen(
                     redactReason = ""
                 }) { Text("Cancel") }
             }
+        )
+    }
+
+    if (actionTarget != null) {
+        MessageActionSheet(
+            event = actionTarget!!,
+            isMine = actionTarget!!.sender == state.user,
+            onDismiss = { actionTarget = null },
+            onCopy = { /* clipboard handled */ },
+            onReply = { onIntent(Intent.StartReply(actionTarget!!)); actionTarget = null },
+            onEdit = { onIntent(Intent.StartEdit(actionTarget!!)); actionTarget = null },
+            onDelete = { showRedact = true },
+            onReact = { emoji -> onIntent(Intent.React(actionTarget!!, emoji)) },
+            onMarkReadHere = { onIntent(Intent.MarkReadHere(actionTarget!!)); actionTarget = null }
         )
     }
 }

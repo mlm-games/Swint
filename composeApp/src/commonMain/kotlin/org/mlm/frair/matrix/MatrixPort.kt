@@ -4,6 +4,22 @@ import kotlinx.coroutines.flow.Flow
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
 
+data class DeviceSummary(
+    val deviceId: String,
+    val displayName: String,
+    val ed25519: String,
+    val isOwn: Boolean,
+    val locallyTrusted: Boolean
+)
+
+enum class SasPhase { Requested, Ready, Emojis, Confirmed, Cancelled, Failed, Done }
+
+interface VerificationObserver {
+    fun onPhase(flowId: String, phase: SasPhase)
+    fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>)
+    fun onError(flowId: String, message: String)
+}
+
 interface MatrixPort {
     suspend fun init(hs: String)
     suspend fun login(user: String, pass: String)
@@ -12,6 +28,7 @@ interface MatrixPort {
     fun timeline(roomId: String): Flow<MessageEvent>
     suspend fun send(roomId: String, body: String)
     fun startSync()
+    fun isLoggedIn(): Boolean
     fun close()
 
     suspend fun paginateBack(roomId: String, count: Int): Boolean
@@ -23,11 +40,17 @@ interface MatrixPort {
     suspend fun edit(roomId: String, targetEventId: String, newBody: String): Boolean
 
     suspend fun redact(roomId: String, eventId: String, reason: String? = null): Boolean
-    suspend fun startTyping(roomId: String, timeoutMs: Long = 30000): Boolean
-    suspend fun stopTyping(roomId: String): Boolean
-    suspend fun logout(): Boolean
-
     fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit)
+
+    suspend fun listMyDevices(): List<DeviceSummary>
+    suspend fun setLocalTrust(deviceId: String, verified: Boolean): Boolean
+
+    suspend fun startSelfSas(targetDeviceId: String, observer: VerificationObserver): String
+    suspend fun acceptVerification(flowId: String): Boolean
+    suspend fun confirmVerification(flowId: String): Boolean
+    suspend fun cancelVerification(flowId: String): Boolean
+
+    suspend fun logout(): Boolean
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort
