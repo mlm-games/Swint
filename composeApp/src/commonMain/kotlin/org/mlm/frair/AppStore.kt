@@ -4,6 +4,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.mlm.frair.matrix.MatrixPort
+import org.mlm.frair.matrix.VerificationObserver
 
 sealed class Screen {
     data object Login : Screen()
@@ -121,6 +123,7 @@ class AppStore(
 
     private fun bootstrap() = scope.launch {
         if (matrix.isLoggedIn()) {
+            matrixPortStartSupervised()
             matrix.startSync()
             val rooms = runCatching { matrix.listRooms() }.getOrDefault(emptyList())
             set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
@@ -333,6 +336,16 @@ class AppStore(
         }
     }
 
+    private fun matrixPortStartSupervised() {
+        matrix.port.startSupervisedSync(object : MatrixPort.SyncObserver {
+            override fun onState(status: MatrixPort.SyncStatus) {
+                if (status.phase == MatrixPort.SyncPhase.Error) {
+                    set { copy(error = status.message ?: "Sync error") }
+                }
+            }
+        })
+    }
+
     private fun markRead(roomId: String) {
         scope.launch { matrix.markRead(roomId) }
         set { copy(unread = unread - roomId) }
@@ -392,7 +405,7 @@ class AppStore(
     }
 
     private fun startSelfVerify(deviceId: String) = scope.launch {
-        val obs = object : org.mlm.frair.matrix.VerificationObserver {
+        val obs = object : VerificationObserver {
             override fun onPhase(flowId: String, phase: org.mlm.frair.matrix.SasPhase) {
                 set { copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
             }

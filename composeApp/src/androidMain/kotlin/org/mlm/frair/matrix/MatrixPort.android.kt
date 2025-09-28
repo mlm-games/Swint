@@ -9,6 +9,7 @@ import frair.MessageEvent as FfiEvent
 import frair.TimelineObserver
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
+import org.mlm.frair.matrix.MatrixPort.SyncObserver
 
 class RustMatrixPort(hs: String) : MatrixPort {
     private val client = FfiClient(hs)
@@ -73,6 +74,21 @@ class RustMatrixPort(hs: String) : MatrixPort {
             override fun onUpdate(names: List<String>) { onUpdate(names) }
         }
         client.observeTyping(roomId, obs)
+    }
+
+    override fun startSupervisedSync(observer: SyncObserver) {
+        val cb = object : frair.SyncObserver {
+            override fun on_state(status: frair.SyncStatus) {
+                val phase = when (status.phase) {
+                    frair.SyncPhase.IDLE -> MatrixPort.SyncPhase.Idle
+                    frair.SyncPhase.RUNNING -> MatrixPort.SyncPhase.Running
+                    frair.SyncPhase.BACKINGOFF -> MatrixPort.SyncPhase.BackingOff
+                    frair.SyncPhase.ERROR -> MatrixPort.SyncPhase.Error
+                }
+                observer.onState(MatrixPort.SyncStatus(phase, status.message))
+            }
+        }
+        client.startSupervisedSync(cb)
     }
 
     override suspend fun listMyDevices(): List<DeviceSummary> =

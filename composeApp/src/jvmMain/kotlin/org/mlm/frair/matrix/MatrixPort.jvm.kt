@@ -75,6 +75,21 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.observeTyping(roomId, obs)
     }
 
+    override fun startSupervisedSync(observer: MatrixPort.SyncObserver) {
+        val cb = object : frair.SyncObserver {
+            override fun on_state(status: frair.SyncStatus) {
+                val phase = when (status.phase) {
+                    frair.SyncPhase.IDLE -> MatrixPort.SyncPhase.Idle
+                    frair.SyncPhase.RUNNING -> MatrixPort.SyncPhase.Running
+                    frair.SyncPhase.BACKINGOFF -> MatrixPort.SyncPhase.BackingOff
+                    frair.SyncPhase.ERROR -> MatrixPort.SyncPhase.Error
+                }
+                observer.onState(MatrixPort.SyncStatus(phase, status.message))
+            }
+        }
+        client.startSupervisedSync(cb)
+    }
+
     override suspend fun listMyDevices(): List<DeviceSummary> =
         client.listMyDevices().map {
             DeviceSummary(

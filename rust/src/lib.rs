@@ -55,6 +55,20 @@ pub struct DeviceSummary {
     pub locally_trusted: bool,
 }
 
+#[derive(Clone, uniffi::Enum)]
+pub enum SyncPhase { Idle, Running, BackingOff, Error }
+
+#[derive(Clone, uniffi::Record)]
+pub struct SyncStatus {
+    pub phase: SyncPhase,
+    pub message: Option<String>,
+}
+
+#[uniffi::export(callback_interface)]
+pub trait SyncObserver: Send + Sync {
+    fn on_state(&self, status: SyncStatus);
+}
+
 // Typing observer callback
 #[uniffi::export(callback_interface)]
 pub trait TypingObserver: Send + Sync {
@@ -125,6 +139,7 @@ struct SessionInfo {
     user_id: String,
     device_id: String,
     access_token: String,
+    refresh_token: Option<String>,
     homeserver: String,
 }
 
@@ -233,7 +248,7 @@ impl Client {
                             },
                             tokens: SessionTokens {
                                 access_token: info.access_token.clone(),
-                                refresh_token: None, // or Some if you also persist it
+                                refresh_token: info.refresh_token.clone(),
                             },
                         };
                         if this.inner.restore_session(session).await.is_ok() {
@@ -247,6 +262,35 @@ impl Client {
             }
         });
 
+        // Persist tokens when they refresh; react to unknown token
+        {
+            let inner = this.inner.clone();
+            let store = this.store_dir.clone();
+            let h = RT.spawn(async move {
+                while let Ok(update) = inner.subscribe_to_session_changes().recv().await {
+                    match update {
+                        matrix_sdk::SessionChange::TokensRefreshed => {
+                            if let Some(sess) = inner.matrix_auth().session() {
+                                // Persist the updated tokens
+                                let path = session_file(&store);
+                                let info = SessionInfo {
+                                    user_id: sess.meta.user_id.to_string(),
+                                    device_id: sess.meta.device_id.to_string(),
+                                    access_token: sess.tokens.access_token.clone(),
+                                    refresh_token: sess.tokens.refresh_token.clone(),
+                                    homeserver: inner.homeserver().to_string(),
+                                };
+                                let _ = tokio::fs::write(path, serde_json::to_string(&info).unwrap()).await;
+                            }
+                        }
+                        matrix_sdk::SessionChange::UnknownToken { soft_logout: _ } => {
+                            let _ = inner.matrix_auth().refresh_access_token().await;
+                        }
+                    }
+                }
+            });
+            this.guards.lock().unwrap().push(h);
+        }
 
         this
     }
@@ -264,6 +308,7 @@ impl Client {
                 user_id: res.user_id.to_string(),
                 device_id: res.device_id.to_string(),
                 access_token: res.access_token.clone(),
+                refresh_token: res.refresh_token.clone(),
                 homeserver: self.inner.homeserver().to_string(), // <- sync
             };
             let _ = tokio::fs::create_dir_all(&self.store_dir).await;
@@ -592,6 +637,50 @@ impl Client {
             f.write_all(&bytes)?;
             Ok(DownloadResult { path: save_path, bytes: bytes.len() as u64 })
         })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub fn start_supervised_sync(&self, observer: Box<dyn SyncObserver>) {
+        let client = self.inner.clone();
+        let obs: Arc<dyn SyncObserver> = Arc::from(observer);
+
+        let h = RT.spawn(async move {
+            use rand::{rng, Rng};
+            use std::time::Duration;
+
+            let mut backoff_secs: u64 = 1;
+            let max_backoff: u64 = 60;
+
+            obs.on_state(SyncStatus { phase: SyncPhase::Idle, message: None });
+
+            loop {
+                obs.on_state(SyncStatus { phase: SyncPhase::Running, message: None });
+
+                match client.sync_once(SyncSettings::default()).await {
+                    Ok(_) => {
+                        // Success: reset backoff and loop again immediately for “long poll” behavior
+                        backoff_secs = 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        obs.on_state(SyncStatus { phase: SyncPhase::Error, message: Some(msg.clone()) });
+
+                        let jitter = rng().random_range(0.8f64..1.2f64);
+                        let wait = (backoff_secs as f64 * jitter).round() as u64;
+                        obs.on_state(SyncStatus {
+                            phase: SyncPhase::BackingOff,
+                            message: Some(format!("retrying in {}s", wait)),
+                        });
+
+                        tokio::time::sleep(Duration::from_secs(wait)).await;
+                        backoff_secs = (backoff_secs * 2).min(max_backoff);
+                    }
+                }
+            }
+        });
+
+        self.guards.lock().unwrap().push(h);
     }
 
     // Recover end-to-end secrets with a human-readable recovery key

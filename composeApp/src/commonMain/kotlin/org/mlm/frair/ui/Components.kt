@@ -193,7 +193,7 @@ fun MessageActionSheet(
     onMarkReadHere: () -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
-    val quick = listOf("👍", "❤️", "😂", "🙏", "🔥", "👀")
+    val quick = listOf("👍", "💀", "😂", "🫩", "🔥", "👀")
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {

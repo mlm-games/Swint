@@ -21,6 +21,11 @@ interface VerificationObserver {
 }
 
 interface MatrixPort {
+
+    data class SyncStatus(val phase: SyncPhase, val message: String?)
+    enum class SyncPhase { Idle, Running, BackingOff, Error }
+    interface SyncObserver { fun onState(status: SyncStatus) }
+
     suspend fun init(hs: String)
     suspend fun login(user: String, pass: String)
     suspend fun listRooms(): List<RoomSummary>
@@ -41,6 +46,9 @@ interface MatrixPort {
 
     suspend fun redact(roomId: String, eventId: String, reason: String? = null): Boolean
     fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit)
+
+    fun startSupervisedSync(observer: SyncObserver)
+
 
     suspend fun listMyDevices(): List<DeviceSummary>
     suspend fun setLocalTrust(deviceId: String, verified: Boolean): Boolean
