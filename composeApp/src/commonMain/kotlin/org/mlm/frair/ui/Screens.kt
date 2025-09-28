@@ -53,10 +53,13 @@ fun RootScaffold(
                 },
                 actions = {
                     when (state.screen) {
-                        is Screen.Rooms -> TextButton(
-                            enabled = !state.isBusy,
-                            onClick = { onIntent(Intent.RefreshRooms) }
-                        ) { Text(if (state.isBusy) "…" else "Refresh") }
+                        is Screen.Rooms -> Row {
+                            TextButton(enabled = !state.isBusy, onClick = { onIntent(Intent.RefreshRooms) }) {
+                                Text(if (state.isBusy) "…" else "Refresh")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            TextButton(onClick = { onIntent(Intent.Logout) }) { Text("Log out") }
+                        }
 
                         is Screen.Room -> TextButton(
                             enabled = !state.isBusy,
@@ -173,7 +176,7 @@ fun RoomsScreen(
                         id = r.id,
                         unread = unread,
                         onClick = { onIntent(Intent.OpenRoom(r)) },
-                        onLong = { /* future room actions */ }
+                        onLong = { /* future room actions */ },
                     )
                     Divider()
                 }
@@ -238,6 +241,9 @@ fun RoomScreen(
     }
 
     var actionTarget by remember { mutableStateOf<MessageEvent?>(null) }
+
+    var showRedact by remember { mutableStateOf(false) }
+    var redactReason by remember { mutableStateOf("") }
 
     Box(Modifier.fillMaxSize().padding(padding)) {
         Column(Modifier.fillMaxSize()) {
@@ -344,8 +350,43 @@ fun RoomScreen(
             onCopy = { /* copy already handled inside sheet */ },
             onReply = { onIntent(Intent.StartReply(actionTarget!!)); actionTarget = null },
             onEdit  = { onIntent(Intent.StartEdit(actionTarget!!)); actionTarget = null },
-            onDelete = { onIntent(Intent.DeleteMessage(actionTarget!!)); actionTarget = null },
-            onReact = { emoji -> onIntent(Intent.React(actionTarget!!, emoji)) }
+            onDelete = { showRedact = true },
+            onReact = { emoji -> onIntent(Intent.React(actionTarget!!, emoji)) },
+            onMarkReadHere = { onIntent(Intent.MarkReadHere(actionTarget!!)); actionTarget = null }
+        )
+    }
+
+    if (showRedact && actionTarget != null) {
+        AlertDialog(
+            onDismissRequest = { showRedact = false },
+            title = { Text("Delete message") },
+            text = {
+                Column {
+                    Text("Optional reason:")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = redactReason,
+                        onValueChange = { redactReason = it },
+                        singleLine = true,
+                        placeholder = { Text("Reason (optional)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onIntent(Intent.DeleteMessage(actionTarget!!, reason = redactReason.ifBlank { null }))
+                    showRedact = false
+                    redactReason = ""
+                    actionTarget = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showRedact = false
+                    redactReason = ""
+                }) { Text("Cancel") }
+            }
         )
     }
 }

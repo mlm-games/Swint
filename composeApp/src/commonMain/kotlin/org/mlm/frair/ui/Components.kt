@@ -200,7 +200,8 @@ fun MessageActionSheet(
     onReply: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
-    onReact: (String) -> Unit
+    onReact: (String) -> Unit,
+    onMarkReadHere: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     val quick = listOf("👍", "❤️", "😂", "🙏", "🔥", "👀")
@@ -222,7 +223,7 @@ fun MessageActionSheet(
                 onCopy(); onDismiss()
             }) { Text("Copy") }
             TextButton(onClick = { onReply(); }) { Text("Reply") }
-            TextButton(onClick = { onDismiss(); /* hook in screen */ }) { Text("Mark read to here") }
+            TextButton(onClick = { onMarkReadHere() }) { Text("Mark read to here") }
             if (isMine) {
                 TextButton(onClick = { onEdit() }) { Text("Edit") }
                 TextButton(onClick = { onDelete() }) { Text("Delete") }

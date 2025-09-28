@@ -1,5 +1,12 @@
 package org.mlm.frair
 
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +44,7 @@ sealed class Intent {
     data object CancelEdit : Intent()
     data object ConfirmEdit : Intent() // Send acts as confirm in edit mode
     data class React(val event: MessageEvent, val emoji: String) : Intent()
-
+    data object Logout : Intent()
     data class MarkReadHere(val event: MessageEvent) : Intent() // Mark read to here
     data class DeleteMessage(val event: MessageEvent, val reason: String? = null) : Intent()
 }
@@ -68,7 +75,6 @@ data class AppState(
     val isPaginatingForward: Boolean = false,
     val hitStart: Boolean = false,
 
-
 )
 
 class AppStore(
@@ -81,6 +87,7 @@ class AppStore(
     private var timelineJob: Job? = null
     private var typingJob: Job? = null
     private var lastTypingRoom: String? = null
+
 
     fun dispatch(intent: Intent) {
         when (intent) {
@@ -99,6 +106,9 @@ class AppStore(
 
             is Intent.PaginateBack -> paginateBack()
             Intent.PaginateForward -> paginateForward()
+
+            Intent.Logout -> logout()
+
 
             is Intent.StartReply -> set { copy(replyingTo = intent.event) }
             Intent.CancelReply -> set { copy(replyingTo = null) }
@@ -190,23 +200,7 @@ class AppStore(
         val scr = _state.value.screen
         if (scr is Screen.Room) {
             set { copy(input = v, drafts = drafts + (scr.room.id to v)) }
-            handleTyping(scr.room.id, v)
         } else set { copy(input = v) }
-    }
-
-    private fun handleTyping(roomId: String, text: String) {
-        typingJob?.cancel()
-        if (text.isBlank()) {
-            if (lastTypingRoom == roomId) scope.launch { matrix.stopTyping(roomId) }
-            lastTypingRoom = null
-            return
-        }
-        lastTypingRoom = roomId
-        typingJob = scope.launch {
-            // A tiny debounce to avoid hammering
-            delay(800)
-            matrix.startTyping(roomId, 30000)
-        }
     }
 
     private fun send() = launchBusy {
@@ -249,6 +243,17 @@ class AppStore(
                 }
             }
         }
+    }
+
+
+    private fun logout() = launchBusy {
+        // stop typing in current room (if any)
+        val rid = (state.value.screen as? Screen.Room)?.room?.id
+        if (rid != null) matrix.stopTyping(rid)
+        // server logout + clear session file
+        val ok = matrix.port.logout()
+        // reset to login screen regardless of ok (we dropped local session)
+        set { AppState() }
     }
 
     private fun stopTimeline() {
@@ -312,9 +317,9 @@ class AppStore(
         set { copy(unread = unread - event.roomId) }
     }
 
+
     private fun deleteMessage(event: MessageEvent, reason: String?) = scope.launch {
         matrix.redact(event.roomId, event.eventId, reason)
-        // Pull fresh snapshot
         val recent = matrix.loadRecent(event.roomId, limit = state.value.events.size)
         set { copy(events = recent) }
     }

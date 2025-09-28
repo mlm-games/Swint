@@ -7,7 +7,7 @@ use std::{
 use tokio::runtime::Runtime;
 
 use futures_util::StreamExt;
-use matrix_sdk::{authentication::matrix::MatrixSession, config::SyncSettings, ruma::{api::client::receipt::create_receipt::v3::ReceiptType, events::room::message::RoomMessageEventContentWithoutRelation, EventId}, Client as SdkClient, SessionTokens};
+use matrix_sdk::{authentication::matrix::MatrixSession, config::SyncSettings, ruma::{api::client::receipt::create_receipt::v3::ReceiptType, events::{room::message::RoomMessageEventContentWithoutRelation, typing::SyncTypingEvent}, EventId, OwnedUserId}, Client as SdkClient, Room, SessionTokens};
 use matrix_sdk::ruma::{OwnedRoomId, UserId, MilliSecondsSinceUnixEpoch};
 use matrix_sdk_ui::{eyeball_im::VectorDiff, timeline::{
     EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem, TimelineItemContent
@@ -69,10 +69,32 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId)
     room.timeline().await.ok()
 }
 
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct SessionInfo {
+    user_id: String,
+    device_id: String,
+    access_token: String,
+    homeserver: String,
+}
+
+fn default_store_dir() -> PathBuf {
+    std::env::temp_dir().join("frair_store")
+}
+fn session_file(dir: &PathBuf) -> PathBuf {
+    dir.join("session.json")
+}
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH).unwrap()
+        .as_millis() as u64
+}
+
 // ---------- Object exported to Kotlin ----------
 #[derive(uniffi::Object)]
 pub struct Client {
     inner: SdkClient,
+    store_dir: PathBuf,
     guards: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -80,27 +102,70 @@ pub struct Client {
 impl Client {
     #[uniffi::constructor]
     pub fn new(homeserver_url: String) -> Self {
+        let store_dir = default_store_dir();
         let inner = RT.block_on(async {
             SdkClient::builder()
                 .homeserver_url(&homeserver_url)
+                .sqlite_store(&store_dir, None)
                 .build()
                 .await
                 .expect("client")
         });
-        Self { inner, guards: Mutex::new(vec![]) }
+
+        let this = Self { inner, store_dir, guards: Mutex::new(vec![]) };
+
+        // Try to restore session (if file exists), then seed local store
+        RT.block_on(async {
+            let path = session_file(&this.store_dir);
+            if let Ok(txt) = tokio::fs::read_to_string(&path).await {
+                if let Ok(info) = serde_json::from_str::<SessionInfo>(&txt) {
+                    if let Ok(user_id) = info.user_id.parse::<OwnedUserId>() {
+                        let session = MatrixSession {
+                            meta: matrix_sdk::SessionMeta {
+                                user_id,
+                                device_id: info.device_id.into(),
+                            },
+                            tokens: SessionTokens {
+                                access_token: info.access_token.clone(),
+                                refresh_token: None,
+                            },
+                        };
+                        if this.inner.restore_session(session).await.is_ok() {
+                            let _ = this.inner.sync_once(SyncSettings::default()).await;
+                        } else {
+                            let _ = tokio::fs::remove_file(&path).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        this
     }
 
     pub fn login(&self, username: String, password: String) {
         RT.block_on(async {
-            // Accept @user:server or localpart; matrix_auth handles both strings.
             let id_str = username.as_str();
-            self.inner
+            let res = self.inner
                 .matrix_auth()
                 .login_username(id_str, &password)
                 .send()
                 .await
                 .expect("login");
-            // Seed store so rooms() has data
+
+            // Save session
+            let info = SessionInfo {
+                user_id: res.user_id.to_string(),
+                device_id: res.device_id.to_string(),
+                access_token: res.access_token.clone(),
+                homeserver: self.inner.homeserver().to_string(),
+            };
+            let _ = tokio::fs::create_dir_all(&self.store_dir).await;
+            let _ = tokio::fs::write(
+                session_file(&self.store_dir),
+                serde_json::to_string(&info).unwrap(),
+            ).await;
+
             let _ = self.inner.sync_once(SyncSettings::default()).await;
         });
     }
@@ -321,6 +386,37 @@ impl Client {
         })
     }
 
+
+    pub fn observe_typing(&self, room_id: String, observer: Box<dyn TypingObserver>) {
+    let client = self.inner.clone();
+    let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return; };
+    let obs = std::sync::Arc::new(observer);
+
+    let h = RT.spawn(async move {
+        // Create an observable handler for typing in this room
+        let observer = client.observe_room_events::<SyncTypingEvent, Room>(&room_id);
+        let mut sub = observer.subscribe();
+
+        // Track last value we sent to avoid noisy duplicates
+        let mut last: Vec<String> = Vec::new();
+
+        while let Some((ev, _room)) = sub.next().await {
+            // m.typing carries a list of user IDs currently typing
+            let mut names: Vec<String> = ev.content.user_ids.iter().map(|u| u.to_string()).collect();
+
+            // Optional: keep deterministic order for stable diffs
+            names.sort();
+            names.dedup();
+
+            if names != last {
+                last = names.clone();
+                obs.on_update(names);
+            }
+        }
+    });
+    self.guards.lock().unwrap().push(h);
+}
+
     pub fn stop_typing(&self, room_id: String) -> bool {
         RT.block_on(async {
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false; };
@@ -330,9 +426,37 @@ impl Client {
         })
     }
 
+    // no network call
+    pub fn clear_session(&self) -> bool {
+        for h in self.guards.lock().unwrap().drain(..) {
+            h.abort();
+        }
+        let path = session_file(&self.store_dir);
+        std::fs::remove_file(&path).is_ok()
+    }
+
+    pub fn logout(&self) -> bool {
+        for h in self.guards.lock().unwrap().drain(..) {
+            h.abort();
+        }
+        let ok = RT.block_on(async {
+            // matrix_auth().logout() is the 0.14 API
+            self.inner.matrix_auth().logout().await.is_ok()
+        });
+        let path = session_file(&self.store_dir);
+        let _ = std::fs::remove_file(&path);
+
+        ok
+    }
+
     pub fn shutdown(&self) {
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();
         }
     }
+}
+
+#[uniffi::export(callback_interface)]
+pub trait TypingObserver: Send + Sync {
+    fn on_update(&self, names: Vec<String>);
 }

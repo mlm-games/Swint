@@ -22,7 +22,12 @@ matrix-sdk-ui = { version = "0.14.0", default-features = false }
 futures-util = "0.3"
 
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "fs",
+] }
 tracing = "0.1"
 thiserror = "2.0.16"
 eyeball-im = "0.8.0"

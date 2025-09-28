@@ -71,10 +71,19 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.redact(roomId, eventId, reason)
 
     override suspend fun startTyping(roomId: String, timeoutMs: Long) =
-        client.startTyping(roomId, timeoutMs)
+        client.startTyping(roomId, timeoutMs.toULong())
 
     override suspend fun stopTyping(roomId: String) =
         client.stopTyping(roomId)
+
+    override fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit) {
+        val obs = object : frair.TypingObserver {
+            override fun onUpdate(names: List<String>) { onUpdate(names) }
+        }
+        client.observeTyping(roomId, obs)
+    }
+    override suspend fun logout(): Boolean = client.logout()
+
 
 }
 

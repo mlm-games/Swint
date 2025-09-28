@@ -33,4 +33,7 @@ class MatrixService(val port: MatrixPort) {
         runCatching { port.startTyping(roomId, timeoutMs) }.getOrElse { false }
     suspend fun stopTyping(roomId: String) =
         runCatching { port.stopTyping(roomId) }.getOrElse { false }
+
+    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit) =
+        port.observeTyping(roomId, onUpdate)
 }

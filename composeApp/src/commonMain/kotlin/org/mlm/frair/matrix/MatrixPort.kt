@@ -25,6 +25,9 @@ interface MatrixPort {
     suspend fun redact(roomId: String, eventId: String, reason: String? = null): Boolean
     suspend fun startTyping(roomId: String, timeoutMs: Long = 30000): Boolean
     suspend fun stopTyping(roomId: String): Boolean
+    suspend fun logout(): Boolean
+
+    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit)
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort
