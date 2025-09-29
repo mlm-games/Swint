@@ -14,10 +14,12 @@ jnaVersion = "5.17.0"
 junit = "4.13.2"
 kotlin = "2.2.20"
 kotlinxDatetime = "0.7.1"
+materialIconsExtended = "1.7.3"
 serialization = "1.7.3"
 coroutines = "1.10.2"
 
 [libraries]
+androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 junit = { module = "junit:junit", version.ref = "junit" }
@@ -31,6 +33,7 @@ androidx-lifecycle-runtimeCompose = { module = "org.jetbrains.androidx.lifecycle
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinxDatetime" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
 net-jna = { module = "net.java.dev.jna:jna", version.ref = "jnaVersion" }
 
 [plugins]

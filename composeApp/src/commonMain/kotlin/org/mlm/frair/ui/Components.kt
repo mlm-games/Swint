@@ -277,6 +277,31 @@ private fun parseMarkdown(input: String): AnnotatedString {
     }
 }
 
+@Composable
+fun ListSkeleton(lines: Int = 6) {
+    Column(Modifier.fillMaxWidth()) {
+        repeat(lines) {
+            Surface(
+                tonalElevation = 2.dp,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(18.dp)
+                    .padding(vertical = 6.dp)
+            ) {}
+        }
+    }
+}
+
+@Composable
+fun DayDivider(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Divider(Modifier.weight(1f))
+        Text(text, modifier = Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.labelSmall)
+        Divider(Modifier.weight(1f))
+    }
+}
+
 /* ------------ Utilities ------------ */
 
 @OptIn(ExperimentalTime::class)

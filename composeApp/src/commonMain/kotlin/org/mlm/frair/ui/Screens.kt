@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -24,11 +25,12 @@ fun RootScaffold(
     onIntent: (Intent) -> Unit
 ) {
     val snackbar = remember { SnackbarHostState() }
-    LaunchedEffect(state.error) {
-        state.error?.takeIf { it.isNotBlank() }?.let { snackbar.showSnackbar(it) }
-    }
+    LaunchedEffect(state.error) { state.error?.takeIf { it.isNotBlank() }?.let { snackbar.showSnackbar(it) } }
+
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
                 title = {
@@ -79,13 +81,14 @@ fun RootScaffold(
                 }
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) }
+        snackbarHost = { SnackbarHost(snackbar) },
+        contentWindowInsets = WindowInsets.systemBars // edge-to-edge safely
     ) { padding ->
         when (val s = state.screen) {
-            is Screen.Login -> LoginScreen(state, padding, onIntent)
-            is Screen.Rooms -> RoomsScreen(state, padding, onIntent)
+            Screen.Login -> LoginScreen(state, padding, onIntent)
+            Screen.Rooms -> RoomsScreen(state, padding, onIntent)
             is Screen.Room -> RoomScreen(state, padding, onIntent)
-            is Screen.Security -> SecurityScreen(state, padding, onIntent)
+            Screen.Security -> SecurityScreen(state, padding, onIntent)
         }
     }
 }
@@ -169,10 +172,10 @@ fun RoomsScreen(
             singleLine = true
         )
         Spacer(Modifier.height(8.dp))
-        if (filtered.isEmpty() && !state.isBusy) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No rooms")
-            }
+        if (state.isBusy && state.rooms.isEmpty()) {
+            ListSkeleton()
+        } else if (filtered.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No rooms") }
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
