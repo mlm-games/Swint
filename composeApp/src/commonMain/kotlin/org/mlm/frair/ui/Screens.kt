@@ -32,16 +32,25 @@ fun RootScaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        when (val s = state.screen) {
-                            is Screen.Login -> "Frair"
-                            is Screen.Rooms -> "Rooms"
-                            is Screen.Room -> s.room.name
-                            is Screen.Security -> "Security"
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column {
+                        Text(
+                            when (val s = state.screen) {
+                                is Screen.Login -> "Frair"
+                                is Screen.Rooms -> "Rooms"
+                                is Screen.Room -> s.room.name
+                                is Screen.Security -> "Security"
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (state.syncBanner != null) {
+                            Text(
+                                state.syncBanner,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 },
                 navigationIcon = {
                     if (state.screen is Screen.Room || state.screen is Screen.Security) {
@@ -121,7 +130,7 @@ fun LoginScreen(
             Spacer(Modifier.height(8.dp))
             LabeledField("User", state.user, { onIntent(Intent.ChangeUser(it)) })
             Spacer(Modifier.height(8.dp))
-            LabeledField("Password", state.pass, {onIntent(Intent.ChangePass(it)) }, isPassword = true)
+            LabeledField("Password", state.pass, { onIntent(Intent.ChangePass(it)) }, isPassword = true)
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = { onIntent(Intent.SubmitLogin) },
@@ -175,7 +184,7 @@ fun RoomsScreen(
                         id = r.id,
                         unread = state.unread[r.id] ?: 0,
                         onClick = { onIntent(Intent.OpenRoom(r)) },
-                        onLong = { /* future room actions */ }
+                        onLong = { /* future */ }
                     )
                     Divider()
                 }
@@ -223,6 +232,7 @@ fun RoomScreen(
     val scope = rememberCoroutineScope()
 
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
+    val outbox = state.pendingByRoom[room.id].orEmpty()
 
     val showJump by remember {
         derivedStateOf {
@@ -282,6 +292,9 @@ fun RoomScreen(
                     Spacer(Modifier.height(6.dp))
                 }
             }
+
+            // Outbox indicator (sending/retrying/failed)
+            OutboxChips(outbox)
 
             if (state.replyingTo != null || state.editing != null) {
                 ActionBanner(

@@ -9,20 +9,17 @@ import frair.MessageEvent as FfiEvent
 import frair.TimelineObserver
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
-import org.mlm.frair.matrix.MatrixPort.SyncObserver
 
 class RustMatrixPort(hs: String) : MatrixPort {
     private val client = FfiClient(hs)
 
-    override suspend fun init(hs: String) { /* already constructed */ }
+    override suspend fun init(hs: String) { /* constructed with hs */ }
 
     override suspend fun login(user: String, pass: String) {
         client.login(user, pass)
     }
 
-    override fun isLoggedIn(): Boolean {
-        return client.isLoggedIn()
-    }
+    override fun isLoggedIn(): Boolean = client.isLoggedIn()
 
     override suspend fun listRooms(): List<RoomSummary> =
         client.rooms().map { it.toModel() }
@@ -35,7 +32,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
             override fun onEvent(event: FfiEvent) { trySend(event.toModel()) }
         }
         client.observeRoomTimeline(roomId, obs)
-        awaitClose { /* no-op */ }
+        awaitClose { /* no-op, Rust side stops when client is dropped */ }
     }
 
     override suspend fun send(roomId: String, body: String) {
@@ -47,12 +44,39 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override fun startSendWorker() = client.startSendWorker()
 
+    override fun observeSends(): Flow<SendUpdate> = callbackFlow {
+        val obs = object : frair.SendObserver {
+            override fun onUpdate(update: frair.SendUpdate) {
+                trySend(
+                    SendUpdate(
+                        roomId = update.roomId,
+                        txnId = update.txnId,
+                        attempts = update.attempts.toInt(),
+                        state = when (update.state) {
+                            frair.SendState.ENQUEUED -> SendState.Enqueued
+                            frair.SendState.SENDING -> SendState.Sending
+                            frair.SendState.SENT -> SendState.Sent
+                            frair.SendState.RETRYING -> SendState.Retrying
+                            frair.SendState.FAILED -> SendState.Failed
+                        },
+                        eventId = update.eventId,
+                        error = update.error
+                    )
+                )
+            }
+        }
+        client.observeSends(obs)
+        awaitClose { /* one-way observer; no explicit unreg */ }
+    }
+
     override suspend fun mediaCacheStats(): Pair<Long, Long> {
         val s = client.mediaCacheStats()
         return s.bytes.toLong() to s.files.toLong()
     }
+
     override suspend fun mediaCacheEvict(maxBytes: Long): Long =
         client.mediaCacheEvict(maxBytes.toULong()).toLong()
+
     override suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String> =
         runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
 
@@ -74,8 +98,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun paginateForward(roomId: String, count: Int) =
         client.paginateForwards(roomId, count.toUShort())
 
-    override suspend fun markRead(roomId: String) =
-        client.markRead(roomId)
+    override suspend fun markRead(roomId: String) = client.markRead(roomId)
 
     override suspend fun markReadAt(roomId: String, eventId: String) =
         client.markReadAt(roomId, eventId)
@@ -99,7 +122,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.observeTyping(roomId, obs)
     }
 
-    override fun startSupervisedSync(observer: SyncObserver) {
+    override fun startSupervisedSync(observer: MatrixPort.SyncObserver) {
         val cb = object : frair.SyncObserver {
             override fun onState(status: frair.SyncStatus) {
                 val phase = when (status.phase) {
@@ -191,7 +214,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 onProgress(sent.toLong(), total?.toLong())
             }
         } else null
-        // UniFFI maps Vec<u8> as List<UByte>, so pass data.toList()
+        // NOTE: UniFFI mapping: if your binding expects ByteArray, keep as-is; if List<UByte>, convert accordingly.
         return client.sendAttachmentBytes(roomId, filename, mime, data.toList().toByteArray(), cb)
     }
 

@@ -14,6 +14,17 @@ data class DeviceSummary(
 
 enum class SasPhase { Requested, Ready, Emojis, Confirmed, Cancelled, Failed, Done }
 
+enum class SendState { Enqueued, Sending, Sent, Retrying, Failed }
+
+data class SendUpdate(
+    val roomId: String,
+    val txnId: String,
+    val attempts: Int,
+    val state: SendState,
+    val eventId: String?,
+    val error: String?
+)
+
 interface VerificationObserver {
     fun onPhase(flowId: String, phase: SasPhase)
     fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>)
@@ -35,9 +46,13 @@ interface MatrixPort {
     fun isLoggedIn(): Boolean
     fun close()
 
+    // Queue + worker
     suspend fun enqueueText(roomId: String, body: String, txnId: String? = null): String
     fun startSendWorker()
+    // New: observe per-item send states
+    fun observeSends(): Flow<SendUpdate>
 
+    // Media
     suspend fun mediaCacheStats(): Pair<Long, Long>  // bytes, files
     suspend fun mediaCacheEvict(maxBytes: Long): Long
     suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String>
@@ -46,10 +61,9 @@ interface MatrixPort {
         fun onRequest(flowId: String, fromUser: String, fromDevice: String)
         fun onError(message: String)
     }
-
     fun startVerificationInbox(observer: VerificationInboxObserver)
 
-
+    // Timeline actions
     suspend fun paginateBack(roomId: String, count: Int): Boolean
     suspend fun paginateForward(roomId: String, count: Int): Boolean
     suspend fun markRead(roomId: String): Boolean
@@ -57,22 +71,24 @@ interface MatrixPort {
     suspend fun react(roomId: String, eventId: String, emoji: String): Boolean
     suspend fun reply(roomId: String, inReplyToEventId: String, body: String): Boolean
     suspend fun edit(roomId: String, targetEventId: String, newBody: String): Boolean
-
     suspend fun redact(roomId: String, eventId: String, reason: String? = null): Boolean
     fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit)
 
+    // Sync
     fun startSupervisedSync(observer: SyncObserver)
 
-
+    // Devices + verification
     suspend fun listMyDevices(): List<DeviceSummary>
     suspend fun setLocalTrust(deviceId: String, verified: Boolean): Boolean
-
     suspend fun startSelfSas(targetDeviceId: String, observer: VerificationObserver): String
     suspend fun acceptVerification(flowId: String): Boolean
     suspend fun confirmVerification(flowId: String): Boolean
     suspend fun cancelVerification(flowId: String): Boolean
+
+    // Session
     suspend fun logout(): Boolean
 
+    // Attachments
     suspend fun sendAttachmentFromPath(
         roomId: String,
         path: String,

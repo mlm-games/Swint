@@ -1,27 +1,8 @@
 package org.mlm.frair.ui
 
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
-import androidx.compose.material3.Divider
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -38,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.mlm.frair.MessageEvent
+import org.mlm.frair.SendIndicator
+import org.mlm.frair.matrix.SendState
 import kotlin.time.ExperimentalTime
 
 @Composable
@@ -98,6 +81,32 @@ fun MessageBubble(
                     color = textColor
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun OutboxChips(items: List<SendIndicator>) {
+    if (items.isEmpty()) return
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items.forEach { ind ->
+            val label = when (ind.state) {
+                SendState.Enqueued -> "Queued"
+                SendState.Sending -> "Sending"
+                SendState.Retrying -> "Retry ${ind.attempts}"
+                SendState.Sent -> "Sent"
+                SendState.Failed -> "Failed"
+            }
+            AssistChip(
+                onClick = {},
+                enabled = ind.state != SendState.Sent,
+                label = { Text(if (ind.error != null && ind.state == SendState.Failed) "$label: ${ind.error}" else label) }
+            )
         }
     }
 }
@@ -232,7 +241,6 @@ fun MarkdownText(
     val styled = remember(text) { parseMarkdown(text) }
     Text(styled, color = color, style = MaterialTheme.typography.bodyMedium)
 }
-
 
 private fun parseMarkdown(input: String): AnnotatedString {
     val bold = Regex("\\*\\*(.+?)\\*\\*")

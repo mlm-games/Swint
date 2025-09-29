@@ -3,6 +3,7 @@ package org.mlm.frair
 import kotlinx.coroutines.flow.Flow
 import org.mlm.frair.matrix.DeviceSummary
 import org.mlm.frair.matrix.MatrixPort
+import org.mlm.frair.matrix.SendUpdate
 import org.mlm.frair.matrix.VerificationObserver
 import kotlin.time.ExperimentalTime
 
@@ -11,16 +12,15 @@ class MatrixService(val port: MatrixPort) {
     suspend fun login(user: String, password: String): Result<Unit> =
         runCatching { port.login(user.trim(), password) }
 
-    fun isLoggedIn(): Boolean {
-        return port.isLoggedIn()
-    }
+    fun isLoggedIn(): Boolean = port.isLoggedIn()
+
+    fun observeSends(): Flow<SendUpdate> = port.observeSends()
 
     suspend fun mediaCacheStats() = port.mediaCacheStats()
     suspend fun mediaCacheEvict(maxBytes: Long) = port.mediaCacheEvict(maxBytes)
     suspend fun thumbnailToCache(mxc: String, w: Int, h: Int, crop: Boolean) = port.thumbnailToCache(mxc, w, h, crop)
 
-    fun startVerificationInbox(cb: MatrixPort.VerificationInboxObserver) =
-        port.startVerificationInbox(cb)
+    fun startVerificationInbox(cb: MatrixPort.VerificationInboxObserver) = port.startVerificationInbox(cb)
 
     suspend fun listRooms(): List<RoomSummary> = port.listRooms()
     suspend fun loadRecent(roomId: String, limit: Int = 50): List<MessageEvent> = port.recent(roomId, limit)
@@ -40,14 +40,10 @@ class MatrixService(val port: MatrixPort) {
     suspend fun redact(roomId: String, eventId: String, reason: String? = null) =
         runCatching { port.redact(roomId, eventId, reason) }.getOrElse { false }
 
-    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit) =
-        port.observeTyping(roomId, onUpdate)
+    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit) = port.observeTyping(roomId, onUpdate)
 
-    suspend fun enqueueText(roomId: String, body: String, txnId: String? = null) =
-        port.enqueueText(roomId, body, txnId)
-
+    suspend fun enqueueText(roomId: String, body: String, txnId: String? = null) = port.enqueueText(roomId, body, txnId)
     fun startSendWorker() = port.startSendWorker()
-
 
     suspend fun listMyDevices(): List<DeviceSummary> = runCatching { port.listMyDevices() }.getOrElse { emptyList() }
     suspend fun setLocalTrust(deviceId: String, verified: Boolean) = runCatching { port.setLocalTrust(deviceId, verified) }.getOrElse { false }

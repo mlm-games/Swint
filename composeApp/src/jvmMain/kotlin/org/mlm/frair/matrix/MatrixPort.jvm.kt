@@ -13,15 +13,13 @@ import org.mlm.frair.RoomSummary
 class RustMatrixPort(hs: String) : MatrixPort {
     private val client = FfiClient(hs)
 
-    override suspend fun init(hs: String) { /* already constructed */ }
+    override suspend fun init(hs: String) { /* constructed with hs */ }
 
     override suspend fun login(user: String, pass: String) {
         client.login(user, pass)
     }
 
-    override fun isLoggedIn(): Boolean {
-        return client.isLoggedIn()
-    }
+    override fun isLoggedIn(): Boolean = client.isLoggedIn()
 
     override suspend fun listRooms(): List<RoomSummary> =
         client.rooms().map { it.toModel() }
@@ -46,6 +44,31 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override fun startSendWorker() = client.startSendWorker()
 
+    override fun observeSends(): Flow<SendUpdate> = callbackFlow {
+        val obs = object : frair.SendObserver {
+            override fun onUpdate(update: frair.SendUpdate) {
+                trySend(
+                    SendUpdate(
+                        roomId = update.roomId,
+                        txnId = update.txnId,
+                        attempts = update.attempts.toInt(),
+                        state = when (update.state) {
+                            frair.SendState.ENQUEUED -> SendState.Enqueued
+                            frair.SendState.SENDING -> SendState.Sending
+                            frair.SendState.SENT -> SendState.Sent
+                            frair.SendState.RETRYING -> SendState.Retrying
+                            frair.SendState.FAILED -> SendState.Failed
+                        },
+                        eventId = update.eventId,
+                        error = update.error
+                    )
+                )
+            }
+        }
+        client.observeSends(obs)
+        awaitClose { /* keep alive as long as port exists */ }
+    }
+
     override fun close() = client.shutdown()
 
     override suspend fun mediaCacheStats(): Pair<Long, Long> {
@@ -54,6 +77,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
     override suspend fun mediaCacheEvict(maxBytes: Long): Long =
         client.mediaCacheEvict(maxBytes.toULong()).toLong()
+
     override suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String> =
         runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
 
@@ -73,8 +97,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun paginateForward(roomId: String, count: Int) =
         client.paginateForwards(roomId, count.toUShort())
 
-    override suspend fun markRead(roomId: String) =
-        client.markRead(roomId)
+    override suspend fun markRead(roomId: String) = client.markRead(roomId)
 
     override suspend fun markReadAt(roomId: String, eventId: String) =
         client.markReadAt(roomId, eventId)
