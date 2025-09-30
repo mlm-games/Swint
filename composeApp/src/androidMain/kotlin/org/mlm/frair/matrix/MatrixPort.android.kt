@@ -1,4 +1,3 @@
-// composeApp/src/androidMain/kotlin/org/mlm/frair/matrix/MatrixPort.android.kt
 package org.mlm.frair.matrix
 
 import kotlinx.coroutines.channels.awaitClose
@@ -205,7 +204,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.startSelfSas(targetDeviceId, obs)
     }
 
-    // NEW: verify other users
     override suspend fun startUserSas(userId: String, observer: VerificationObserver): String {
         val obs = object : frair.VerificationObserver {
             override fun onPhase(flowId: String, phase: frair.SasPhase) {

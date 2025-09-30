@@ -13,7 +13,7 @@ import org.mlm.frair.RoomSummary
 class RustMatrixPort(hs: String) : MatrixPort {
     private val client = FfiClient(hs)
 
-    override suspend fun init(hs: String) { }
+    override suspend fun init(hs: String) { /* constructed with hs */ }
     override suspend fun login(user: String, pass: String) { client.login(user, pass) }
     override fun isLoggedIn(): Boolean = client.isLoggedIn()
 
@@ -26,22 +26,63 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.observeRoomTimeline(roomId, obs)
         awaitClose { }
     }
+    override suspend fun initCaches(): Boolean = client.initCaches()
+
+    override suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean {
+        val ffiMessages = messages.map { msg ->
+            frair.MessageEvent(
+                eventId = msg.eventId,
+                roomId = msg.roomId,
+                sender = msg.sender,
+                body = msg.body,
+                timestampMs = msg.timestamp.toULong()
+            )
+        }
+        return client.cacheMessages(roomId, ffiMessages)
+    }
+
+    override suspend fun getCachedMessages(roomId: String, limit: Int): List<MessageEvent> =
+        client.getCachedMessages(roomId, limit.toUInt()).map { it.toModel() }
+
+    override suspend fun savePaginationState(state: MatrixPort.PaginationState): Boolean {
+        val ffiState = frair.PaginationState(
+            roomId = state.roomId,
+            prevBatch = state.prevBatch,
+            nextBatch = state.nextBatch,
+            atStart = state.atStart,
+            atEnd = state.atEnd
+        )
+        return client.savePaginationState(ffiState)
+    }
+
+    override suspend fun getPaginationState(roomId: String): MatrixPort.PaginationState? {
+        return client.getPaginationState(roomId)?.let { ffi ->
+            MatrixPort.PaginationState(
+                roomId = ffi.roomId,
+                prevBatch = ffi.prevBatch,
+                nextBatch = ffi.nextBatch,
+                atStart = ffi.atStart,
+                atEnd = ffi.atEnd
+            )
+        }
+    }
 
     override fun observeConnection(observer: MatrixPort.ConnectionObserver) {
         val cb = object : frair.ConnectionObserver {
             override fun onConnectionChange(state: frair.ConnectionState) {
                 val mapped = when (state) {
-                    is frair.ConnectionState.DISCONNECTED -> MatrixPort.ConnectionState.Disconnected
-                    is frair.ConnectionState.CONNECTING -> MatrixPort.ConnectionState.Connecting
-                    is frair.ConnectionState.CONNECTED -> MatrixPort.ConnectionState.Connected
-                    is frair.ConnectionState.SYNCING -> MatrixPort.ConnectionState.Syncing
-                    is frair.ConnectionState.RECONNECTING -> MatrixPort.ConnectionState.Reconnecting
+                    is frair.ConnectionState.Disconnected -> MatrixPort.ConnectionState.Disconnected
+                    is frair.ConnectionState.Connecting -> MatrixPort.ConnectionState.Connecting
+                    is frair.ConnectionState.Connected -> MatrixPort.ConnectionState.Connected
+                    is frair.ConnectionState.Syncing -> MatrixPort.ConnectionState.Syncing
+                    is frair.ConnectionState.Reconnecting -> MatrixPort.ConnectionState.Reconnecting
                 }
                 observer.onConnectionChange(mapped)
             }
         }
         client.monitorConnection(cb)
     }
+
 
     override suspend fun send(roomId: String, body: String) { client.sendMessage(roomId, body) }
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
@@ -73,8 +114,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         awaitClose { }
     }
 
-    override fun close() = client.shutdown()
-
     override suspend fun mediaCacheStats(): Pair<Long, Long> {
         val s = client.mediaCacheStats(); return s.bytes.toLong() to s.files.toLong()
     }
@@ -91,6 +130,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
         client.startVerificationInbox(cb)
     }
+
+    override fun close() = client.shutdown()
 
     override suspend fun paginateBack(roomId: String, count: Int) = client.paginateBackwards(roomId, count.toUShort())
     override suspend fun paginateForward(roomId: String, count: Int) = client.paginateForwards(roomId, count.toUShort())
