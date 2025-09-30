@@ -46,14 +46,11 @@ interface MatrixPort {
     fun isLoggedIn(): Boolean
     fun close()
 
-    // Queue + worker
     suspend fun enqueueText(roomId: String, body: String, txnId: String? = null): String
     fun startSendWorker()
-    // New: observe per-item send states
     fun observeSends(): Flow<SendUpdate>
 
-    // Media
-    suspend fun mediaCacheStats(): Pair<Long, Long>  // bytes, files
+    suspend fun mediaCacheStats(): Pair<Long, Long>
     suspend fun mediaCacheEvict(maxBytes: Long): Long
     suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String>
 
@@ -63,7 +60,6 @@ interface MatrixPort {
     }
     fun startVerificationInbox(observer: VerificationInboxObserver)
 
-    // Timeline actions
     suspend fun paginateBack(roomId: String, count: Int): Boolean
     suspend fun paginateForward(roomId: String, count: Int): Boolean
     suspend fun markRead(roomId: String): Boolean
@@ -74,21 +70,20 @@ interface MatrixPort {
     suspend fun redact(roomId: String, eventId: String, reason: String? = null): Boolean
     fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit)
 
-    // Sync
     fun startSupervisedSync(observer: SyncObserver)
 
-    // Devices + verification
     suspend fun listMyDevices(): List<DeviceSummary>
     suspend fun setLocalTrust(deviceId: String, verified: Boolean): Boolean
+
     suspend fun startSelfSas(targetDeviceId: String, observer: VerificationObserver): String
+    suspend fun startUserSas(userId: String, observer: VerificationObserver): String
+
     suspend fun acceptVerification(flowId: String): Boolean
     suspend fun confirmVerification(flowId: String): Boolean
     suspend fun cancelVerification(flowId: String): Boolean
 
-    // Session
     suspend fun logout(): Boolean
 
-    // Attachments
     suspend fun sendAttachmentFromPath(
         roomId: String,
         path: String,
@@ -111,7 +106,6 @@ interface MatrixPort {
         onProgress: ((Long, Long?) -> Unit)? = null,
     ): Result<String>
 
-    // Recovery
     suspend fun recoverWithKey(recoveryKey: String): Boolean
 }
 

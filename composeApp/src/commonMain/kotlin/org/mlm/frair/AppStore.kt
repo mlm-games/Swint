@@ -10,27 +10,19 @@ import org.mlm.frair.matrix.SasPhase
 import org.mlm.frair.matrix.SendState
 import org.mlm.frair.matrix.VerificationObserver
 
-sealed class Screen {
-    data object Login : Screen()
-    data object Rooms : Screen()
-    data class Room(val room: RoomSummary) : Screen()
-    data object Security : Screen()
-}
+sealed class Screen { object Login : Screen(); object Rooms : Screen(); data class Room(val room: RoomSummary) : Screen(); object Security : Screen() }
 
 sealed class Intent {
-    // login
     data class ChangeHomeserver(val v: String) : Intent()
     data class ChangeUser(val v: String) : Intent()
     data class ChangePass(val v: String) : Intent()
     data object SubmitLogin : Intent()
 
-    // rooms
     data object RefreshRooms : Intent()
     data class OpenRoom(val room: RoomSummary) : Intent()
     data object Back : Intent()
     data class MarkRoomRead(val roomId: String) : Intent()
 
-    // timeline
     data class ChangeInput(val v: String) : Intent()
     data object Send : Intent()
     data object SyncNow : Intent()
@@ -41,26 +33,23 @@ sealed class Intent {
     data object ConfirmEdit : Intent()
     data class React(val event: MessageEvent, val emoji: String) : Intent()
 
-    // pagination
     data object PaginateBack : Intent()
     data object PaginateForward : Intent()
 
-    // security
     data object OpenSecurity : Intent()
     data object CloseSecurity : Intent()
     data object RefreshSecurity : Intent()
     data class ToggleTrust(val deviceId: String, val verified: Boolean) : Intent()
     data class StartSelfVerify(val deviceId: String) : Intent()
+    data class StartUserVerify(val userId: String) : Intent()
     data object AcceptSas : Intent()
     data object ConfirmSas : Intent()
     data object CancelSas : Intent()
     data class MarkReadHere(val event: MessageEvent) : Intent()
     data class DeleteMessage(val event: MessageEvent, val reason: String? = null) : Intent()
 
-    // logout
     data object Logout : Intent()
 
-    // security - recovery
     data object OpenRecoveryDialog : Intent()
     data object CloseRecoveryDialog : Intent()
     data class SetRecoveryKey(val v: String) : Intent()
@@ -82,30 +71,24 @@ data class AppState(
     val isBusy: Boolean = false,
     val error: String? = null,
 
-    // Rooms + unread
     val rooms: List<RoomSummary> = emptyList(),
     val unread: Map<String, Int> = emptyMap(),
 
-    // Timeline
     val events: List<MessageEvent> = emptyList(),
     val input: String = "",
 
-    // Extras
     val drafts: Map<String, String> = emptyMap(),
     val replyingTo: MessageEvent? = null,
     val editing: MessageEvent? = null,
     val typing: Map<String, Set<String>> = emptyMap(),
 
-    // Pagination flags
     val isPaginatingBack: Boolean = false,
     val isPaginatingForward: Boolean = false,
     val hitStart: Boolean = false,
 
-    // Security screen
     val devices: List<org.mlm.frair.matrix.DeviceSummary> = emptyList(),
     val isLoadingDevices: Boolean = false,
 
-    // SAS modal
     val sasFlowId: String? = null,
     val sasPhase: SasPhase? = null,
     val sasEmojis: List<String> = emptyList(),
@@ -113,14 +96,13 @@ data class AppState(
     val sasOtherDevice: String? = null,
     val sasError: String? = null,
 
-    // Recovery dialog
     val showRecoveryDialog: Boolean = false,
     val recoveryKeyInput: String = "",
 
-    // New: per-room outgoing indicators
     val pendingByRoom: Map<String, List<SendIndicator>> = emptyMap(),
 
-    // New: sync banner
+    val myReactions: Map<String, Set<String>> = emptyMap(), // eventId -> emojis
+
     val syncBanner: String? = null,
 )
 
@@ -138,7 +120,6 @@ class AppStore(
     init { bootstrap() }
 
     private fun bootstrap() = scope.launch {
-        // Start supervised sync if already logged in
         if (matrix.isLoggedIn()) {
             matrixPortStartSupervised()
             matrix.startSendWorker()
@@ -146,45 +127,31 @@ class AppStore(
             set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
         }
 
-        // Observe verification inbox
         matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
             override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
                 set { copy(
-                    screen = screen as? Screen.Security ?: Screen.Rooms,
-                    sasFlowId = flowId,
-                    sasPhase = SasPhase.Requested,
-                    sasOtherUser = fromUser,
-                    sasOtherDevice = fromDevice,
-                    sasError = null
+                    screen = if (screen is Screen.Security) screen else Screen.Rooms,
+                    sasFlowId = flowId, sasPhase = SasPhase.Requested,
+                    sasOtherUser = fromUser, sasOtherDevice = fromDevice, sasError = null
                 ) }
             }
-            override fun onError(message: String) {
-                set { copy(error = "Verification inbox: $message") }
-            }
+            override fun onError(message: String) { set { copy(error = "Verification inbox: $message") } }
         })
 
-        // Observe send-state updates (drives “sending / retrying / failed” chips)
         scope.launch {
             matrix.observeSends().collectLatest { upd ->
                 set {
                     val prev = pendingByRoom[upd.roomId].orEmpty().associateBy { it.txnId }.toMutableMap()
-                    val indicator = SendIndicator(
-                        txnId = upd.txnId,
-                        attempts = upd.attempts,
-                        state = upd.state,
-                        error = upd.error
-                    )
+                    val indicator = SendIndicator(upd.txnId, upd.attempts, upd.state, upd.error)
                     when (upd.state) {
-                        SendState.Sent -> { prev.remove(upd.txnId) }
-                        SendState.Failed -> { prev[upd.txnId] = indicator } // keep failed for user to notice
-                        SendState.Enqueued, SendState.Sending, SendState.Retrying -> { prev[upd.txnId] = indicator }
+                        SendState.Sent -> prev.remove(upd.txnId)
+                        SendState.Failed -> prev[upd.txnId] = indicator
+                        else -> prev[upd.txnId] = indicator
                     }
                     copy(pendingByRoom = pendingByRoom + (upd.roomId to prev.values.toList()))
                 }
-
-                // If this was Sent and it belongs to current room, refresh recent
-                val currentRoomId = (state.value.screen as? Screen.Room)?.room?.id
-                if (upd.state == SendState.Sent && upd.roomId == currentRoomId) {
+                val current = (state.value.screen as? Screen.Room)?.room?.id
+                if (upd.state == SendState.Sent && upd.roomId == current) {
                     val recent = matrix.loadRecent(upd.roomId, limit = 60)
                     set { copy(events = recent) }
                 }
@@ -225,6 +192,7 @@ class AppStore(
             Intent.RefreshSecurity -> refreshDevices()
             is Intent.ToggleTrust -> toggleTrust(intent.deviceId, intent.verified)
             is Intent.StartSelfVerify -> startSelfVerify(intent.deviceId)
+            is Intent.StartUserVerify -> startUserVerify(intent.userId)
             Intent.AcceptSas -> acceptSas()
             Intent.ConfirmSas -> confirmSas()
             Intent.CancelSas -> cancelSas()
@@ -245,8 +213,7 @@ class AppStore(
         val s = _state.value
         try {
             matrix.init(s.homeserver)
-            val res = matrix.login(s.user, s.pass)
-            res.getOrThrow()
+            matrix.login(s.user, s.pass).getOrThrow()
         } catch (t: Throwable) {
             val msg = t.message?.let(::humanizeLoginError)
                 ?: "Could not sign in. Check your homeserver, username and password."
@@ -264,7 +231,7 @@ class AppStore(
         val s = raw.lowercase()
         return when {
             "forbidden" in s || "m_forbidden" in s -> "Invalid username or password."
-            "timeout" in s -> "Network timeout — please check your connection and try again."
+            "timeout" in s -> "Network timeout — please check your connection."
             "dns" in s || "resolve" in s -> "Could not reach homeserver — is the URL correct?"
             "ssl" in s || "certificate" in s -> "TLS/SSL error contacting homeserver."
             else -> raw
@@ -276,6 +243,7 @@ class AppStore(
         set { copy(rooms = rooms) }
     }
 
+    // FIX: ensure initial history is fetched (not just our own local sends).
     private fun openRoom(room: RoomSummary) = launchBusy {
         val draft = _state.value.drafts[room.id].orEmpty()
         set {
@@ -288,7 +256,16 @@ class AppStore(
             )
         }
 
-        val recent = matrix.loadRecent(room.id, limit = 50)
+        // Initial attempt
+        var recent = matrix.loadRecent(room.id, limit = 50)
+        // If empty (common on fresh start), try a few back-paginations to pull remote history.
+        if (recent.isEmpty()) {
+            repeat(5) {
+                matrix.paginateBack(room.id, 50)
+                recent = matrix.loadRecent(room.id, limit = 60)
+                if (recent.isNotEmpty()) return@repeat
+            }
+        }
         set { copy(events = recent) }
 
         startTimeline(room.id)
@@ -327,7 +304,7 @@ class AppStore(
     private fun handleTyping(roomId: String, text: String) {
         typingJob?.cancel()
         if (text.isBlank()) return
-        typingJob = scope.launch { delay(800) /* potential typing send hook */ }
+        typingJob = scope.launch { delay(800) /* hook typing send if needed */ }
     }
 
     private fun send() = launchBusy {
@@ -345,22 +322,22 @@ class AppStore(
                 true
             }
         }
-
         if (!ok) return@launchBusy fail("Send failed")
 
-        set {
-            copy(
-                input = "",
-                drafts = drafts + (room.id to ""),
-                replyingTo = null,
-                editing = null
-            )
-        }
+        set { copy(input = "", drafts = drafts + (room.id to ""), replyingTo = null, editing = null) }
     }
 
     private fun react(event: MessageEvent, emoji: String) {
         val room = (state.value.screen as? Screen.Room)?.room ?: return
-        scope.launch { matrix.react(room.id, event.eventId, emoji) }
+        scope.launch {
+            // optimistic toggle locally
+            set {
+                val before = myReactions[event.eventId].orEmpty()
+                val after = if (before.contains(emoji)) before - emoji else before + emoji
+                copy(myReactions = myReactions + (event.eventId to after))
+            }
+            matrix.react(room.id, event.eventId, emoji)
+        }
     }
 
     private fun startTimeline(roomId: String) {
@@ -369,19 +346,14 @@ class AppStore(
             matrix.timeline(roomId).collect { ev ->
                 set {
                     copy(
-                        events = (events + ev)
-                            .distinctBy { it.eventId }
-                            .sortedBy { it.timestamp }
+                        events = (events + ev).distinctBy { it.eventId }.sortedBy { it.timestamp }
                     )
                 }
             }
         }
     }
 
-    private fun stopTimeline() {
-        timelineJob?.cancel()
-        timelineJob = null
-    }
+    private fun stopTimeline() { timelineJob?.cancel(); timelineJob = null }
 
     private fun startTypingObserver(roomId: String) {
         typingObsJob?.cancel()
@@ -396,14 +368,11 @@ class AppStore(
         matrix.port.startSupervisedSync(object : MatrixPort.SyncObserver {
             override fun onState(status: MatrixPort.SyncStatus) {
                 set {
-                    copy(
-                        syncBanner = when (status.phase) {
-                            MatrixPort.SyncPhase.Running -> null
-                            MatrixPort.SyncPhase.Idle -> null
-                            MatrixPort.SyncPhase.BackingOff -> status.message ?: "Reconnecting…"
-                            MatrixPort.SyncPhase.Error -> status.message ?: "Sync error"
-                        }
-                    )
+                    copy(syncBanner = when (status.phase) {
+                        MatrixPort.SyncPhase.Running, MatrixPort.SyncPhase.Idle -> null
+                        MatrixPort.SyncPhase.BackingOff -> status.message ?: "Reconnecting…"
+                        MatrixPort.SyncPhase.Error -> status.message ?: "Sync error"
+                    })
                 }
             }
         })
@@ -430,12 +399,10 @@ class AppStore(
         if (state.value.isPaginatingBack) return@launch
         set { copy(isPaginatingBack = true) }
         try {
-            val hitStart = matrix.paginateBack(room.id, 40)
-            val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 40)
+            val hitStart = matrix.paginateBack(room.id, 50)
+            val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 50)
             set { copy(events = recent, hitStart = hitStart) }
-        } finally {
-            set { copy(isPaginatingBack = false) }
-        }
+        } finally { set { copy(isPaginatingBack = false) } }
     }
 
     private fun paginateForward() = scope.launch {
@@ -443,12 +410,10 @@ class AppStore(
         if (state.value.isPaginatingForward) return@launch
         set { copy(isPaginatingForward = true) }
         try {
-            val _hitEnd = matrix.paginateForward(room.id, 40)
+            matrix.paginateForward(room.id, 40)
             val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 40)
             set { copy(events = recent) }
-        } finally {
-            set { copy(isPaginatingForward = false) }
-        }
+        } finally { set { copy(isPaginatingForward = false) } }
     }
 
     private fun openSecurity() = launchBusy {
@@ -468,19 +433,27 @@ class AppStore(
     }
 
     private fun startSelfVerify(deviceId: String) = scope.launch {
-        val obs = object : VerificationObserver {
-            override fun onPhase(flowId: String, phase: SasPhase) {
-                set { copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
-            }
-            override fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>) {
-                set { copy(sasFlowId = flowId, sasOtherUser = otherUser, sasOtherDevice = otherDevice, sasEmojis = emojis) }
-            }
-            override fun onError(flowId: String, message: String) {
-                set { copy(sasFlowId = flowId, sasError = message) }
-            }
-        }
+        val obs = commonVerifObserver()
         val flowId = matrix.startSelfSas(deviceId, obs)
         if (flowId.isBlank()) set { copy(sasError = "Failed to start verification") }
+    }
+
+    private fun startUserVerify(userId: String) = scope.launch {
+        val obs = commonVerifObserver()
+        val flowId = matrix.port.startUserSas(userId, obs)
+        if (flowId.isBlank()) set { copy(sasError = "Failed to start user verification") }
+    }
+
+    private fun commonVerifObserver() = object : VerificationObserver {
+        override fun onPhase(flowId: String, phase: SasPhase) {
+            set { copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
+        }
+        override fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>) {
+            set { copy(sasFlowId = flowId, sasOtherUser = otherUser, sasOtherDevice = otherDevice, sasEmojis = emojis) }
+        }
+        override fun onError(flowId: String, message: String) {
+            set { copy(sasFlowId = flowId, sasError = message) }
+        }
     }
 
     private fun acceptSas() = scope.launch {
@@ -498,10 +471,7 @@ class AppStore(
         if (!matrix.cancelVerification(id)) set { copy(sasError = "Cancel failed") }
     }
 
-    private fun logout() = launchBusy {
-        val _ok = matrix.logout()
-        set { AppState() }
-    }
+    private fun logout() = launchBusy { matrix.logout(); set { AppState() } }
 
     private fun recoverNow() = launchBusy {
         val key = state.value.recoveryKeyInput.trim()
@@ -511,22 +481,11 @@ class AppStore(
         set { copy(showRecoveryDialog = false, recoveryKeyInput = "", error = "Recovery successful") }
     }
 
-    private fun set(mutator: AppState.() -> AppState) {
-        _state.value = _state.value.mutator()
-    }
-
-    private fun fail(msg: String) {
-        set { copy(error = msg) }
-    }
-
+    private fun set(mutator: AppState.() -> AppState) { _state.value = _state.value.mutator() }
+    private fun fail(msg: String) { set { copy(error = msg) } }
     private fun launchBusy(block: suspend () -> Unit) = scope.launch {
-        try {
-            set { copy(isBusy = true, error = null) }
-            block()
-        } catch (t: Throwable) {
-            fail(t.message ?: "Unexpected error")
-        } finally {
-            set { copy(isBusy = false) }
-        }
+        try { set { copy(isBusy = true, error = null) }; block() }
+        catch (t: Throwable) { fail(t.message ?: "Unexpected error") }
+        finally { set { copy(isBusy = false) } }
     }
 }

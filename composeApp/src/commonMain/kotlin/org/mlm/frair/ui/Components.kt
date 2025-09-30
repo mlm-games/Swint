@@ -2,6 +2,8 @@ package org.mlm.frair.ui
 
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -21,23 +23,32 @@ import kotlinx.datetime.toLocalDateTime
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.SendIndicator
 import org.mlm.frair.matrix.SendState
+import kotlin.collections.forEach
 import kotlin.time.ExperimentalTime
 
 @Composable
-fun Avatar(
-    initials: String,
-    size: Dp = 36.dp,
-    color: Color = MaterialTheme.colorScheme.primaryContainer
-) {
-    Surface(
-        color = color,
-        shape = MaterialTheme.shapes.small,
-        modifier = Modifier.size(size)
-    ) {
+fun Avatar(initials: String, size: Dp = 36.dp, color: Color = MaterialTheme.colorScheme.primaryContainer) {
+    Surface(color = color, shape = MaterialTheme.shapes.small, modifier = Modifier.size(size)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(initials.take(2), style = MaterialTheme.typography.labelLarge)
         }
     }
+}
+
+// Lightweight fallback reply parser: looks for quoted lines ("> ") then a blank line.
+private fun parseReplyFallback(body: String): Pair<String?, String> {
+    val lines = body.lines()
+    if (lines.isEmpty()) return null to body
+    val quoteLines = mutableListOf<String>()
+    var idx = 0
+    while (idx < lines.size && lines[idx].startsWith(">")) {
+        quoteLines += lines[idx].removePrefix(">").trim()
+        idx++
+    }
+    if (idx < lines.size && lines[idx].isBlank() && quoteLines.isNotEmpty()) idx++ // skip blank after quote
+    val rest = lines.drop(idx).joinToString("\n").ifBlank { body }
+    val preview = quoteLines.firstOrNull()
+    return preview to rest
 }
 
 @Composable
@@ -49,6 +60,8 @@ fun MessageBubble(
     grouped: Boolean,
     onLongPress: (() -> Unit)? = null,
 ) {
+    val (replyPreview, bodyShown) = remember(body) { parseReplyFallback(body) }
+
     val bg = if (isMine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
     val align = if (isMine) Arrangement.End else Arrangement.Start
     val textColor = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
@@ -63,27 +76,135 @@ fun MessageBubble(
         ) {
             Column(
                 Modifier
-                    .combinedClickable(
-                        onClick = {},
-                        onLongClick = { onLongPress?.invoke() }
-                    )
+                    .combinedClickable(onClick = {}, onLongClick = { onLongPress?.invoke() })
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 if (!isMine && !grouped && !sender.isNullOrBlank()) {
                     Text(sender, style = MaterialTheme.typography.labelSmall, color = textColor)
                     Spacer(Modifier.height(2.dp))
                 }
-                MarkdownText(body, color = textColor)
+
+                if (!replyPreview.isNullOrBlank()) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = MaterialTheme.shapes.small,
+                        tonalElevation = 0.dp
+                    ) {
+                        Text(
+                            "↩ $replyPreview",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+
+                MarkdownText(bodyShown, color = textColor)
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    formatTime(timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = textColor
-                )
+                Text(formatTime(timestamp), style = MaterialTheme.typography.labelSmall, color = textColor)
             }
         }
     }
 }
+
+@Composable
+fun ReactionBar(emojis: Set<String>, onClick: ((String) -> Unit)? = null) {
+    if (emojis.isEmpty()) return
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        emojis.forEach { e ->
+            AssistChip(
+                onClick = { onClick?.invoke(e) },
+                label = { Text(e) }
+            )
+        }
+    }
+}
+
+@Composable
+fun MessageComposer(value: String, enabled: Boolean, hint: String = "Message", onValueChange: (String) -> Unit, onSend: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(value = value, onValueChange = onValueChange, label = { Text(hint) }, modifier = Modifier.weight(1f), singleLine = true, enabled = enabled)
+        Spacer(Modifier.width(8.dp))
+        Button(onClick = onSend, enabled = enabled && value.isNotBlank()) { Text("Send") }
+    }
+}
+
+@Composable
+fun ActionBanner(replyingTo: MessageEvent?, editing: MessageEvent?, onCancelReply: () -> Unit, onCancelEdit: () -> Unit) {
+    val bg = MaterialTheme.colorScheme.surfaceVariant
+    if (replyingTo != null) {
+        Surface(color = bg, tonalElevation = 2.dp) {
+            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Replying to ${replyingTo.sender}: ", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.width(4.dp))
+                Text(replyingTo.body.take(80), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(12.dp))
+                TextButton(onClick = onCancelReply) { Text("Cancel") }
+            }
+        }
+    } else if (editing != null) {
+        Surface(color = bg, tonalElevation = 2.dp) {
+            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Editing", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onCancelEdit) { Text("Cancel") }
+            }
+        }
+    }
+}
+
+@Composable
+fun TypingIndicator(names: List<String>) {
+    if (names.isEmpty()) return
+    val text = when (names.size) { 1 -> "${names[0]} is typing…"; 2 -> "${names[0]} and ${names[1]} are typing…"; else -> "${names[0]}, ${names[1]} and others are typing…" }
+    Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MessageActionSheet(
+    event: MessageEvent,
+    isMine: Boolean,
+    onDismiss: () -> Unit,
+    onCopy: () -> Unit,
+    onReply: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onReact: (String) -> Unit,
+    onMarkReadHere: () -> Unit
+) {
+    val clipboard = LocalClipboardManager.current
+    val quick = listOf("👍", "💀", "😂", "🔥", "👀")
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text("Message actions", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(12.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(quick) { e -> FilledTonalButton(onClick = { onReact(e); onDismiss() }) { Text(e) } }
+            }
+            Spacer(Modifier.height(16.dp))
+            Divider()
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = { clipboard.setText(AnnotatedString(event.body)); onCopy(); onDismiss() }) { Text("Copy") }
+            TextButton(onClick = { onReply(); }) { Text("Reply") }
+            TextButton(onClick = { onMarkReadHere() }) { Text("Mark read to here") }
+            if (isMine) {
+                TextButton(onClick = { onEdit() }) { Text("Edit") }
+                TextButton(onClick = { onDelete() }) { Text("Delete") }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
 
 @Composable
 fun OutboxChips(items: List<SendIndicator>) {
@@ -110,128 +231,6 @@ fun OutboxChips(items: List<SendIndicator>) {
         }
     }
 }
-
-@Composable
-fun MessageComposer(
-    value: String,
-    enabled: Boolean,
-    hint: String = "Message",
-    onValueChange: (String) -> Unit,
-    onSend: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text(hint) },
-            modifier = Modifier.weight(1f),
-            singleLine = true,
-            enabled = enabled
-        )
-        Spacer(Modifier.width(8.dp))
-        Button(
-            onClick = onSend,
-            enabled = enabled && value.isNotBlank()
-        ) { Text("Send") }
-    }
-}
-
-@Composable
-fun ActionBanner(
-    replyingTo: MessageEvent?,
-    editing: MessageEvent?,
-    onCancelReply: () -> Unit,
-    onCancelEdit: () -> Unit
-) {
-    val bg = MaterialTheme.colorScheme.surfaceVariant
-    if (replyingTo != null) {
-        Surface(color = bg, tonalElevation = 2.dp) {
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Replying to ${replyingTo.sender}: ", style = MaterialTheme.typography.labelMedium)
-                Spacer(Modifier.width(4.dp))
-                Text(replyingTo.body.take(80), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                Spacer(Modifier.width(12.dp))
-                TextButton(onClick = onCancelReply) { Text("Cancel") }
-            }
-        }
-    } else if (editing != null) {
-        Surface(color = bg, tonalElevation = 2.dp) {
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Editing", style = MaterialTheme.typography.labelMedium)
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onCancelEdit) { Text("Cancel") }
-            }
-        }
-    }
-}
-
-@Composable
-fun TypingIndicator(names: List<String>) {
-    if (names.isEmpty()) return
-    val text = when (names.size) {
-        1 -> "${names[0]} is typing…"
-        2 -> "${names[0]} and ${names[1]} are typing…"
-        else -> "${names[0]}, ${names[1]} and others are typing…"
-    }
-    Text(
-        text,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun MessageActionSheet(
-    event: MessageEvent,
-    isMine: Boolean,
-    onDismiss: () -> Unit,
-    onCopy: () -> Unit,
-    onReply: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-    onReact: (String) -> Unit,
-    onMarkReadHere: () -> Unit
-) {
-    val clipboard = LocalClipboardManager.current
-    val quick = listOf("👍", "💀", "😂", "🫩", "🔥", "👀")
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Message actions", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                quick.forEach { e ->
-                    FilledTonalButton(onClick = { onReact(e); onDismiss() }) { Text(e) }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Divider()
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = {
-                clipboard.setText(AnnotatedString(event.body))
-                onCopy(); onDismiss()
-            }) { Text("Copy") }
-            TextButton(onClick = { onReply(); }) { Text("Reply") }
-            TextButton(onClick = { onMarkReadHere() }) { Text("Mark read to here") }
-            if (isMine) {
-                TextButton(onClick = { onEdit() }) { Text("Edit") }
-                TextButton(onClick = { onDelete() }) { Text("Delete") }
-            }
-            Spacer(Modifier.height(12.dp))
-        }
-    }
-}
-
-/* ------------ Markdown (lightweight) ------------ */
 
 @Composable
 fun MarkdownText(

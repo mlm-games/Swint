@@ -9,7 +9,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -20,17 +19,11 @@ import org.mlm.frair.ui.screens.SecurityScreen
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun RootScaffold(
-    state: AppState,
-    onIntent: (Intent) -> Unit
-) {
+fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(state.error) { state.error?.takeIf { it.isNotBlank() }?.let { snackbar.showSnackbar(it) } }
 
-    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
-
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
                 title = {
@@ -42,58 +35,39 @@ fun RootScaffold(
                                 is Screen.Room -> s.room.name
                                 is Screen.Security -> "Security"
                             },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                         if (state.syncBanner != null) {
-                            Text(
-                                state.syncBanner,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text(state.syncBanner, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 },
-                navigationIcon = {
-                    if (state.screen is Screen.Room || state.screen is Screen.Security) {
-                        TextButton(onClick = { onIntent(Intent.Back) }) { Text("Back") }
-                    }
-                },
+                navigationIcon = { if (state.screen is Screen.Room || state.screen is Screen.Security) TextButton(onClick = { onIntent(Intent.Back) }) { Text("Back") } },
                 actions = {
                     when (state.screen) {
                         is Screen.Rooms -> Row {
-                            TextButton(
-                                enabled = !state.isBusy,
-                                onClick = { onIntent(Intent.RefreshRooms) }
-                            ) { Text(if (state.isBusy) "…" else "Refresh") }
+                            TextButton(enabled = !state.isBusy, onClick = { onIntent(Intent.RefreshRooms) }) { Text(if (state.isBusy) "…" else "Refresh") }
                             Spacer(Modifier.width(8.dp))
                             TextButton(onClick = { onIntent(Intent.OpenSecurity) }) { Text("Security") }
                             Spacer(Modifier.width(8.dp))
                             TextButton(onClick = { onIntent(Intent.Logout) }) { Text("Log out") }
                         }
-                        is Screen.Room -> TextButton(
-                            enabled = !state.isBusy,
-                            onClick = { onIntent(Intent.SyncNow) }
-                        ) { Text(if (state.isBusy) "…" else "Sync") }
-                        is Screen.Security -> {}
-                        is Screen.Login -> {}
+                        is Screen.Room -> TextButton(enabled = !state.isBusy, onClick = { onIntent(Intent.SyncNow) }) { Text(if (state.isBusy) "…" else "Sync") }
+                        else -> {}
                     }
                 }
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) },
-        contentWindowInsets = WindowInsets.systemBars // edge-to-edge safely
+        snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         when (val s = state.screen) {
-            Screen.Login -> LoginScreen(state, padding, onIntent)
-            Screen.Rooms -> RoomsScreen(state, padding, onIntent)
+            is Screen.Login -> LoginScreen(state, padding, onIntent)
+            is Screen.Rooms -> RoomsScreen(state, padding, onIntent)
             is Screen.Room -> RoomScreen(state, padding, onIntent)
-            Screen.Security -> SecurityScreen(state, padding, onIntent)
+            is Screen.Security -> SecurityScreen(state, padding, onIntent)
         }
     }
 }
-
-/* ---------------- Login ---------------- */
 
 @Composable
 private fun LabeledField(
@@ -196,6 +170,7 @@ fun RoomsScreen(
     }
 }
 
+
 @Composable
 private fun RoomRow(
     name: String,
@@ -222,14 +197,9 @@ private fun RoomRow(
     )
 }
 
-/* ---------------- Room ---------------- */
 
 @Composable
-fun RoomScreen(
-    state: AppState,
-    padding: PaddingValues,
-    onIntent: (Intent) -> Unit
-) {
+fun RoomScreen(state: AppState, padding: PaddingValues, onIntent: (Intent) -> Unit) {
     val room = (state.screen as Screen.Room).room
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -251,31 +221,20 @@ fun RoomScreen(
     Box(Modifier.fillMaxSize().padding(padding)) {
         Column(Modifier.fillMaxSize()) {
 
-            // Start of history banner
             if (state.hitStart) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.Center) {
                     AssistChip(onClick = {}, enabled = false, label = { Text("Start of history") })
                 }
             }
 
-            // Load older
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                OutlinedButton(
-                    onClick = { onIntent(Intent.PaginateBack) },
-                    enabled = !state.isPaginatingBack
-                ) { Text(if (state.isPaginatingBack) "Loading…" else "Load older") }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.Center) {
+                OutlinedButton(onClick = { onIntent(Intent.PaginateBack) }, enabled = !state.isPaginatingBack) {
+                    Text(if (state.isPaginatingBack) "Loading…" else "Load older")
+                }
             }
 
             LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 state = listState,
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
             ) {
@@ -292,11 +251,11 @@ fun RoomScreen(
                         grouped = grouped,
                         onLongPress = { actionTarget = ev }
                     )
+                    ReactionBar(emojis = state.myReactions[ev.eventId].orEmpty())
                     Spacer(Modifier.height(6.dp))
                 }
             }
 
-            // Outbox indicator (sending/retrying/failed)
             OutboxChips(outbox)
 
             if (state.replyingTo != null || state.editing != null) {
@@ -317,9 +276,7 @@ fun RoomScreen(
                     else -> "Message"
                 },
                 onValueChange = { onIntent(Intent.ChangeInput(it)) },
-                onSend = {
-                    if (state.editing != null) onIntent(Intent.ConfirmEdit) else onIntent(Intent.Send)
-                }
+                onSend = { if (state.editing != null) onIntent(Intent.ConfirmEdit) else onIntent(Intent.Send) }
             )
 
             TypingIndicator(names = state.typing[room.id].orEmpty().toList())
@@ -332,45 +289,23 @@ fun RoomScreen(
                     scope.launch { listState.animateScrollToItem(events.lastIndex.coerceAtLeast(0)) }
                     onIntent(Intent.MarkRoomRead(room.id))
                 },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp)
             )
         }
     }
 
-    // Redact with reason dialog
     if (showRedact && actionTarget != null) {
         AlertDialog(
             onDismissRequest = { showRedact = false },
             title = { Text("Delete message") },
             text = {
                 Column {
-                    Text("Optional reason:")
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = redactReason,
-                        onValueChange = { redactReason = it },
-                        singleLine = true,
-                        placeholder = { Text("Reason (optional)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Text("Optional reason:"); Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = redactReason, onValueChange = { redactReason = it }, singleLine = true, placeholder = { Text("Reason (optional)") }, modifier = Modifier.fillMaxWidth())
                 }
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    onIntent(Intent.DeleteMessage(actionTarget!!, reason = redactReason.ifBlank { null }))
-                    showRedact = false
-                    redactReason = ""
-                    actionTarget = null
-                }) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showRedact = false
-                    redactReason = ""
-                }) { Text("Cancel") }
-            }
+            confirmButton = { TextButton(onClick = { onIntent(Intent.DeleteMessage(actionTarget!!, reason = redactReason.ifBlank { null })); showRedact = false; redactReason = ""; actionTarget = null }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { showRedact = false; redactReason = "" }) { Text("Cancel") } }
         )
     }
 
