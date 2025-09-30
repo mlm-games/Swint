@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
 
@@ -44,6 +44,20 @@ const SEND_MAX_ATTEMPTS: i64 = 10;
 pub struct RoomSummary {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Clone, Copy, uniffi::Enum)]
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Syncing,
+    Reconnecting { attempt: u32, next_retry_secs: u32 },
+}
+
+#[uniffi::export(callback_interface)]
+pub trait ConnectionObserver: Send + Sync {
+    fn on_connection_change(&self, state: ConnectionState);
 }
 
 #[derive(Clone, uniffi::Record)]
@@ -228,6 +242,15 @@ impl From<std::io::Error> for FfiError {
     fn from(e: std::io::Error) -> Self { FfiError::Msg(e.to_string()) }
 }
 
+#[derive(Clone, uniffi::Record)]
+pub struct PaginationState {
+    pub room_id: String,
+    pub prev_batch: Option<String>,
+    pub next_batch: Option<String>,
+    pub at_start: bool,
+    pub at_end: bool,
+}
+
 
 struct VerifFlow {
     sas: SasVerification,
@@ -297,7 +320,6 @@ impl Client {
                 .expect("client")
         });
 
-        // NEW: channel for send updates
         let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<SendUpdate>();
         
         let this = Self {
@@ -308,6 +330,8 @@ impl Client {
             send_observers: Arc::new(Mutex::new(Vec::new())),
             send_tx,
         };
+
+        let _ = this.init_caches();
 
         {
         let observers = this.send_observers.clone(); // Arc<Mutex<...>>
@@ -516,8 +540,60 @@ impl Client {
     }
 
     pub fn start_verification_inbox(&self, observer: Box<dyn VerificationInboxObserver>) {
- 
-}
+        let _obs: Arc<dyn VerificationInboxObserver> = Arc::from(observer);
+    }
+
+    pub fn check_verification_request(&self, user_id: String, flow_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(uid) = user_id.parse::<OwnedUserId>() else { return false; };
+            
+            self.inner
+                .encryption()
+                .get_verification_request(&uid, &flow_id)
+                .await
+                .is_some()
+        })
+    }
+
+    pub fn monitor_connection(&self, observer: Box<dyn ConnectionObserver>) {
+        let client = self.inner.clone();
+        let obs: Arc<dyn ConnectionObserver> = Arc::from(observer);
+        
+        let h = RT.spawn(async move {
+            let mut last_state = ConnectionState::Disconnected;
+            loop {
+                let current = if client.is_active() {
+                    // Check actual connectivity
+                    match client.sync_once(SyncSettings::default().timeout(Duration::from_secs(5))).await {
+                        Ok(_) => ConnectionState::Connected,
+                        Err(_) => ConnectionState::Disconnected,
+                    }
+                } else {
+                    ConnectionState::Disconnected
+                };
+                
+                let should_notify = match (&current, &last_state) {
+                    (ConnectionState::Disconnected, ConnectionState::Disconnected) => false,
+                    (ConnectionState::Connected, ConnectionState::Connected) => false,
+                    (ConnectionState::Reconnecting { attempt: a1, next_retry_secs: n1 }, 
+                    ConnectionState::Reconnecting { attempt: a2, next_retry_secs: n2 }) => {
+                        a1 != a2 || n1 != n2
+                    }
+                    _ => true,
+                };
+                
+                if should_notify {
+                    obs.on_connection_change(current.clone());
+                }
+                
+                last_state = current; 
+
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        });
+        self.guards.lock().unwrap().push(h);
+    }
+
 
 
     pub fn send_message(&self, room_id: String, body: String) {
@@ -1086,81 +1162,153 @@ impl Client {
     }
 
     /// Cancel a queued send by txn_id; returns true if an item was deleted.
-pub fn cancel_txn(&self, txn_id: String) -> bool {
-    let path = queue_db_path(&self.store_dir);
-    let Ok(conn) = rusqlite::Connection::open(path) else { return false; };
-    conn.execute("DELETE FROM queued_sends WHERE txn_id = ?1", [txn_id]).ok().map(|n| n > 0).unwrap_or(false)
-}
+    pub fn cancel_txn(&self, txn_id: String) -> bool {
+        let path = queue_db_path(&self.store_dir);
+        let Ok(conn) = rusqlite::Connection::open(path) else { return false; };
+        conn.execute("DELETE FROM queued_sends WHERE txn_id = ?1", [txn_id]).ok().map(|n| n > 0).unwrap_or(false)
+    }
 
-/// Force a retry "now" by setting next_try_ms = 0; returns true if updated.
-pub fn retry_txn_now(&self, txn_id: String) -> bool {
-    let path = queue_db_path(&self.store_dir);
-    let Ok(conn) = rusqlite::Connection::open(path) else { return false; };
-    conn.execute(
-        "UPDATE queued_sends SET next_try_ms = 0 WHERE txn_id = ?1",
-        [txn_id],
-    ).ok().map(|n| n > 0).unwrap_or(false)
-}
+    /// Force a retry "now" by setting next_try_ms = 0; returns true if updated.
+    pub fn retry_txn_now(&self, txn_id: String) -> bool {
+        let path = queue_db_path(&self.store_dir);
+        let Ok(conn) = rusqlite::Connection::open(path) else { return false; };
+        conn.execute(
+            "UPDATE queued_sends SET next_try_ms = 0 WHERE txn_id = ?1",
+            [txn_id],
+        ).ok().map(|n| n > 0).unwrap_or(false)
+    }
 
-/// Inspect the queue size (pending items count).
-pub fn pending_sends(&self) -> u32 {
-    let path = queue_db_path(&self.store_dir);
-    let Ok(conn) = rusqlite::Connection::open(path) else { return 0 };
+    /// Inspect the queue size (pending items count).
+    pub fn pending_sends(&self) -> u32 {
+        let path = queue_db_path(&self.store_dir);
+        let Ok(conn) = rusqlite::Connection::open(path) else { return 0 };
 
-    // Use query_row directly; default to 0 on any error.
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM queued_sends", [], |r| r.get::<_, i64>(0))
-        .unwrap_or(0);
+        // Use query_row directly; default to 0 on any error.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM queued_sends", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0);
 
-    count.try_into().unwrap_or(0)
-}
+        count.try_into().unwrap_or(0)
+    }
 
+    pub fn cache_messages(&self, room_id: String, messages: Vec<MessageEvent>) -> bool {
+        let path = self.store_dir.join("message_cache.sqlite3");
+        let Ok(mut conn) = rusqlite::Connection::open(path) else { return false; };
+        
+        // Fix: Don't use ? operator, handle the Result properly
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(_) => return false,
+        };
+        
+        for msg in messages {
+            let _ = tx.execute(
+                "INSERT OR REPLACE INTO messages(event_id, room_id, sender, body, timestamp_ms, received_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (&msg.event_id, &msg.room_id, &msg.sender, &msg.body, msg.timestamp_ms, now_ms())
+            );
+        }
+        tx.commit().is_ok()
+    }
+    
+    pub fn get_cached_messages(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {
+        let path = self.store_dir.join("message_cache.sqlite3");
+        
+        let result = (|| -> Result<Vec<MessageEvent>, rusqlite::Error> {
+            let conn = rusqlite::Connection::open(path)?;
+            let mut stmt = conn.prepare(
+                "SELECT event_id, room_id, sender, body, timestamp_ms 
+                FROM messages WHERE room_id = ?1 
+                ORDER BY timestamp_ms DESC LIMIT ?2"
+            )?;
+            
+            let messages = stmt.query_map(
+                [&room_id, &limit.to_string()],
+                |row| {
+                    Ok(MessageEvent {
+                        event_id: row.get(0)?,
+                        room_id: row.get(1)?,
+                        sender: row.get(2)?,
+                        body: row.get(3)?,
+                        timestamp_ms: row.get(4)?,
+                    })
+                }
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+            
+            Ok(messages)
+        })();
+        
+        result.unwrap_or_else(|_| vec![])
+    }
+        
+    pub fn init_caches(&self) -> bool {
+        let cache_db = self.store_dir.join("message_cache.sqlite3");
+        match rusqlite::Connection::open(&cache_db) {
+            Ok(conn) => {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS messages(
+                        event_id TEXT PRIMARY KEY,
+                        room_id TEXT NOT NULL,
+                        sender TEXT NOT NULL,
+                        body TEXT NOT NULL,
+                        timestamp_ms INTEGER NOT NULL,
+                        received_at INTEGER NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_room_timestamp ON messages(room_id, timestamp_ms DESC);
+                    
+                    CREATE TABLE IF NOT EXISTS pagination_tokens(
+                        room_id TEXT PRIMARY KEY,
+                        prev_batch TEXT,
+                        next_batch TEXT,
+                        at_start BOOLEAN DEFAULT 0,
+                        at_end BOOLEAN DEFAULT 0,
+                        updated_at INTEGER NOT NULL
+                    );"
+                ).is_ok()
+            }
+            Err(_) => false,
+        }
+    }
+
+    pub fn save_pagination_state(&self, state: PaginationState) -> bool {
+        let path = self.store_dir.join("message_cache.sqlite3");
+        let Ok(conn) = rusqlite::Connection::open(path) else { return false; };
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO pagination_tokens(room_id, prev_batch, next_batch, at_start, at_end, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                &state.room_id,
+                &state.prev_batch,
+                &state.next_batch,
+                state.at_start,
+                state.at_end,
+                now_ms()
+            )
+        ).is_ok()
+    }
+    
+    pub fn get_pagination_state(&self, room_id: String) -> Option<PaginationState> {
+        let path = self.store_dir.join("message_cache.sqlite3");
+        let conn = rusqlite::Connection::open(path).ok()?;
+        
+        conn.query_row(
+            "SELECT prev_batch, next_batch, at_start, at_end FROM pagination_tokens WHERE room_id = ?1",
+            [&room_id],
+            |row| Ok(PaginationState {
+                room_id: room_id.clone(),
+                prev_batch: row.get(0)?,
+                next_batch: row.get(1)?,
+                at_start: row.get(2)?,
+                at_end: row.get(3)?,
+            })
+        ).ok()
+    }
 }
 
 // Helper: attach SAS stream
 impl Client {
-    fn attach_sas(&self, flow_id: String, sas: SasVerification, observer: Box<dyn VerificationObserver>) -> String {
-        let verifs = self.verifs.clone();
-        let obs: Arc<dyn VerificationObserver> = Arc::<dyn VerificationObserver>::from(observer);
-
-        let other_user = sas.other_user_id().to_owned();
-        let other_device = sas.other_device().device_id().to_owned();
-
-        verifs.lock().unwrap().insert(
-            flow_id.clone(),
-            VerifFlow { sas: sas.clone(), other_user: other_user.clone(), other_device: other_device.clone() },
-        );
-
-        let flow_id_inner = flow_id.clone();
-        let h = RT.spawn(async move {
-            let mut stream = sas.changes();
-            obs.on_phase(flow_id_inner.clone(), SasPhase::Requested);
-            while let Some(state) = stream.next().await {
-                match state {
-                    SdkSasState::Started { .. } => obs.on_phase(flow_id_inner.clone(), SasPhase::Ready),
-                    SdkSasState::KeysExchanged { emojis, .. } => {
-                        if let Some(emojis) = emojis {
-                            let list: Vec<String> = emojis.emojis.iter().map(|e| e.symbol.to_string()).collect();
-                            obs.on_phase(flow_id_inner.clone(), SasPhase::Emojis);
-                            obs.on_emojis(SasEmojis {
-                                flow_id: flow_id_inner.clone(),
-                                other_user: other_user.to_string(),
-                                other_device: other_device.to_string(),
-                                emojis: list,
-                            });
-                        }
-                    }
-                    SdkSasState::Confirmed => obs.on_phase(flow_id_inner.clone(), SasPhase::Confirmed),
-                    SdkSasState::Cancelled(_) => obs.on_phase(flow_id_inner.clone(), SasPhase::Cancelled),
-                    SdkSasState::Done { .. } => { obs.on_phase(flow_id_inner.clone(), SasPhase::Done); break; }
-                    _ => {}
-                }
-            }
-        });
-        self.guards.lock().unwrap().push(h);
-        flow_id
-    }
-
     fn wait_and_start_sas(
         &self,
         flow_id: String,

@@ -27,6 +27,63 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.observeRoomTimeline(roomId, obs)
         awaitClose { }
     }
+    override suspend fun initCaches(): Boolean = client.initCaches()
+
+    override suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean {
+        val ffiMessages = messages.map { msg ->
+            frair.MessageEvent(
+                eventId = msg.eventId,
+                roomId = msg.roomId,
+                sender = msg.sender,
+                body = msg.body,
+                timestampMs = msg.timestamp.toULong()
+            )
+        }
+        return client.cacheMessages(roomId, ffiMessages)
+    }
+
+    override suspend fun getCachedMessages(roomId: String, limit: Int): List<MessageEvent> =
+        client.getCachedMessages(roomId, limit.toUInt()).map { it.toModel() }
+
+    override suspend fun savePaginationState(state: MatrixPort.PaginationState): Boolean {
+        val ffiState = frair.PaginationState(
+            roomId = state.roomId,
+            prevBatch = state.prevBatch,
+            nextBatch = state.nextBatch,
+            atStart = state.atStart,
+            atEnd = state.atEnd
+        )
+        return client.savePaginationState(ffiState)
+    }
+
+    override suspend fun getPaginationState(roomId: String): MatrixPort.PaginationState? {
+        return client.getPaginationState(roomId)?.let { ffi ->
+            MatrixPort.PaginationState(
+                roomId = ffi.roomId,
+                prevBatch = ffi.prevBatch,
+                nextBatch = ffi.nextBatch,
+                atStart = ffi.atStart,
+                atEnd = ffi.atEnd
+            )
+        }
+    }
+
+    override fun observeConnection(observer: MatrixPort.ConnectionObserver) {
+        val cb = object : frair.ConnectionObserver {
+            override fun onConnectionChange(state: frair.ConnectionState) {
+                val mapped = when (state) {
+                    is frair.ConnectionState.Disconnected -> MatrixPort.ConnectionState.Disconnected
+                    is frair.ConnectionState.Connecting -> MatrixPort.ConnectionState.Connecting
+                    is frair.ConnectionState.Connected -> MatrixPort.ConnectionState.Connected
+                    is frair.ConnectionState.Syncing -> MatrixPort.ConnectionState.Syncing
+                    is frair.ConnectionState.Reconnecting -> MatrixPort.ConnectionState.Reconnecting
+                }
+                observer.onConnectionChange(mapped)
+            }
+        }
+        client.monitorConnection(cb)
+    }
+
 
     override suspend fun send(roomId: String, body: String) { client.sendMessage(roomId, body) }
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =

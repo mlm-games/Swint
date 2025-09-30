@@ -35,6 +35,21 @@ interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
     enum class SyncPhase { Idle, Running, BackingOff, Error }
+    enum class ConnectionState {
+        Disconnected,
+        Connecting,
+        Connected,
+        Syncing,
+        Reconnecting
+    }
+
+    data class PaginationState(
+        val roomId: String,
+        val prevBatch: String?,
+        val nextBatch: String?,
+        val atStart: Boolean,
+        val atEnd: Boolean
+    )
     interface SyncObserver { fun onState(status: SyncStatus) }
 
     suspend fun init(hs: String)
@@ -59,6 +74,18 @@ interface MatrixPort {
         fun onError(message: String)
     }
     fun startVerificationInbox(observer: VerificationInboxObserver)
+
+    suspend fun initCaches(): Boolean
+    suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean
+    suspend fun getCachedMessages(roomId: String, limit: Int): List<MessageEvent>
+    suspend fun savePaginationState(state: PaginationState): Boolean
+    suspend fun getPaginationState(roomId: String): PaginationState?
+
+    fun observeConnection(observer: ConnectionObserver)
+
+    interface ConnectionObserver {
+        fun onConnectionChange(state: ConnectionState)
+    }
 
     suspend fun paginateBack(roomId: String, count: Int): Boolean
     suspend fun paginateForward(roomId: String, count: Int): Boolean

@@ -27,6 +27,22 @@ class RustMatrixPort(hs: String) : MatrixPort {
         awaitClose { }
     }
 
+    override fun observeConnection(observer: MatrixPort.ConnectionObserver) {
+        val cb = object : frair.ConnectionObserver {
+            override fun onConnectionChange(state: frair.ConnectionState) {
+                val mapped = when (state) {
+                    is frair.ConnectionState.DISCONNECTED -> MatrixPort.ConnectionState.Disconnected
+                    is frair.ConnectionState.CONNECTING -> MatrixPort.ConnectionState.Connecting
+                    is frair.ConnectionState.CONNECTED -> MatrixPort.ConnectionState.Connected
+                    is frair.ConnectionState.SYNCING -> MatrixPort.ConnectionState.Syncing
+                    is frair.ConnectionState.RECONNECTING -> MatrixPort.ConnectionState.Reconnecting
+                }
+                observer.onConnectionChange(mapped)
+            }
+        }
+        client.monitorConnection(cb)
+    }
+
     override suspend fun send(roomId: String, body: String) { client.sendMessage(roomId, body) }
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
         client.enqueueText(roomId, body, txnId)

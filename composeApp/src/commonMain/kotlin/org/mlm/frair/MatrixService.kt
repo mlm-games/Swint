@@ -20,6 +20,25 @@ class MatrixService(val port: MatrixPort) {
     suspend fun mediaCacheEvict(maxBytes: Long) = port.mediaCacheEvict(maxBytes)
     suspend fun thumbnailToCache(mxc: String, w: Int, h: Int, crop: Boolean) = port.thumbnailToCache(mxc, w, h, crop)
 
+    suspend fun initCaches(): Boolean =
+        runCatching { port.initCaches() }.getOrElse { false }
+
+    suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean =
+        runCatching { port.cacheMessages(roomId, messages) }.getOrElse { false }
+
+    suspend fun getCachedMessages(roomId: String, limit: Int = 50): List<MessageEvent> =
+        runCatching { port.getCachedMessages(roomId, limit) }.getOrElse { emptyList() }
+
+    suspend fun savePaginationState(state: MatrixPort.PaginationState): Boolean =
+        runCatching { port.savePaginationState(state) }.getOrElse { false }
+
+    suspend fun getPaginationState(roomId: String): MatrixPort.PaginationState? =
+        runCatching { port.getPaginationState(roomId) }.getOrNull()
+
+    // Connection monitoring
+    fun observeConnection(observer: MatrixPort.ConnectionObserver) {
+        port.observeConnection(observer)
+    }
     fun startVerificationInbox(cb: MatrixPort.VerificationInboxObserver) = port.startVerificationInbox(cb)
 
     suspend fun listRooms(): List<RoomSummary> = port.listRooms()

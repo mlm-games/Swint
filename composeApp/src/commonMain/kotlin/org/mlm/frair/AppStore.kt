@@ -54,6 +54,8 @@ sealed class Intent {
     data object CloseRecoveryDialog : Intent()
     data class SetRecoveryKey(val v: String) : Intent()
     data object SubmitRecoveryKey : Intent()
+
+    data class OpenRoomById(val roomId: String) : Intent()
 }
 
 data class SendIndicator(
@@ -104,6 +106,13 @@ data class AppState(
     val myReactions: Map<String, Set<String>> = emptyMap(), // eventId -> emojis
 
     val syncBanner: String? = null,
+
+    val connectionState: MatrixPort.ConnectionState = MatrixPort.ConnectionState.Disconnected,
+    val isOffline: Boolean = false,
+    val offlineBanner: String? = null,
+
+    val paginationStates: Map<String, MatrixPort.PaginationState> = emptyMap(),
+    val cachedRooms: Set<String> = emptySet(), // Track which rooms have cached data
 )
 
 class AppStore(
@@ -117,20 +126,65 @@ class AppStore(
     private var typingJob: Job? = null
     private var typingObsJob: Job? = null
 
-    init { bootstrap() }
+    init { bootstrap()
+        setupConnectionMonitoring()
+    }
+
+    private fun setupConnectionMonitoring() {
+        matrix.observeConnection(object : MatrixPort.ConnectionObserver {
+            override fun onConnectionChange(state: MatrixPort.ConnectionState) {
+                set {
+                    val isOffline = state == MatrixPort.ConnectionState.Disconnected
+                    val banner = when (state) {
+                        MatrixPort.ConnectionState.Disconnected -> "No connection"
+                        MatrixPort.ConnectionState.Reconnecting -> "Reconnecting..."
+                        MatrixPort.ConnectionState.Connecting -> "Connecting..."
+                        else -> null
+                    }
+                    copy(
+                        connectionState = state,
+                        isOffline = isOffline,
+                        offlineBanner = banner
+                    )
+                }
+
+                // Auto-refresh rooms when reconnected
+                if (state == MatrixPort.ConnectionState.Connected) {
+                    scope.launch {
+                        refreshRoomsQuietly()
+                        syncCachedRooms()
+                    }
+                }
+            }
+        })
+    }
+
 
     private fun bootstrap() = scope.launch {
+        matrix.initCaches()
+
         if (matrix.isLoggedIn()) {
             matrixPortStartSupervised()
             matrix.startSendWorker()
+
+            // Try cached rooms first for instant display
+            val cachedRooms = loadCachedRoomList()
+            if (cachedRooms.isNotEmpty()) {
+                set { copy(rooms = cachedRooms) }
+            }
+
+            // Then fetch fresh data
             val rooms = runCatching { matrix.listRooms() }.getOrDefault(emptyList())
             set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
+
+            // Cache the room list
+            saveCachedRoomList(rooms)
         }
 
         matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
             override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
                 set { copy(
-                    screen = if (screen is Screen.Security) screen else Screen.Rooms,
+                    screen = screen as? Screen.Security ?: Screen.Rooms,
                     sasFlowId = flowId, sasPhase = SasPhase.Requested,
                     sasOtherUser = fromUser, sasOtherDevice = fromDevice, sasError = null
                 ) }
@@ -157,6 +211,125 @@ class AppStore(
                 }
             }
         }
+    }
+
+    private fun openRoom(room: RoomSummary) = launchBusy {
+        val draft = _state.value.drafts[room.id].orEmpty()
+        set {
+            copy(
+                screen = Screen.Room(room),
+                events = emptyList(),
+                input = draft,
+                replyingTo = null,
+                editing = null
+            )
+        }
+
+        val cached = matrix.getCachedMessages(room.id, 50)
+        if (cached.isNotEmpty()) {
+            set {
+                copy(
+                    events = cached,
+                    cachedRooms = cachedRooms + room.id
+                )
+            }
+        }
+
+        val paginationState = matrix.getPaginationState(room.id)
+        if (paginationState != null) {
+            set {
+                copy(
+                    paginationStates = paginationStates + (room.id to paginationState),
+                    hitStart = paginationState.atStart
+                )
+            }
+        }
+
+        if (!state.value.isOffline) {
+            var recent = matrix.loadRecent(room.id, limit = 50)
+
+            if (recent.isEmpty() && cached.isEmpty()) {
+                    repeat(5) {
+                        val hitStart = matrix.paginateBack(room.id, 50)
+                        recent = matrix.loadRecent(room.id, limit = 60)
+
+                        matrix.savePaginationState(
+                            MatrixPort.PaginationState(
+                                roomId = room.id,
+                                prevBatch = null, // Would need to get from SDK
+                                nextBatch = null,
+                                atStart = hitStart,
+                                atEnd = false
+                            )
+                        )
+
+                        if (recent.isNotEmpty())
+                            return@repeat
+                    }
+            }
+
+            if (recent.isNotEmpty()) {
+                set { copy(events = recent) }
+                // Cache the fresh messages
+                matrix.cacheMessages(room.id, recent)
+            }
+        }
+
+        startTimeline(room.id)
+        startTypingObserver(room.id)
+        if (!state.value.isOffline) {
+            markRead(room.id)
+        }
+    }
+
+    private suspend fun refreshRoomsQuietly() {
+        val rooms = runCatching { matrix.listRooms() }.getOrDefault(emptyList())
+        if (rooms.isNotEmpty()) {
+            set { copy(rooms = rooms) }
+            saveCachedRoomList(rooms)
+        }
+    }
+
+    private suspend fun syncCachedRooms() {
+        // Update cached messages for recently viewed rooms
+        state.value.cachedRooms.forEach { roomId ->
+            val recent = matrix.loadRecent(roomId, limit = 50)
+            if (recent.isNotEmpty()) {
+                matrix.cacheMessages(roomId, recent)
+            }
+        }
+    }
+
+    // Local room list persistence (using SharedPreferences on Android, UserDefaults on iOS)
+    private suspend fun saveCachedRoomList(rooms: List<RoomSummary>) {
+        // For simplicity, using a JSON file
+        val json = kotlinx.serialization.json.Json.encodeToString(
+            RoomsPayload.serializer(),
+            RoomsPayload(rooms)
+        )
+        // Save to platform-specific storage
+        saveToLocalStorage("cached_rooms", json)
+    }
+
+    private suspend fun loadCachedRoomList(): List<RoomSummary> {
+        return try {
+            val json = loadFromLocalStorage("cached_rooms") ?: return emptyList()
+            kotlinx.serialization.json.Json.decodeFromString<RoomsPayload>(json).rooms
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // Platform-specific storage helpers (implement per platform)
+    private suspend fun saveToLocalStorage(key: String, value: String) {
+        // Implement using platform-specific storage
+        // Android: SharedPreferences
+        // Desktop: File system
+    }
+
+    private suspend fun loadFromLocalStorage(key: String): String? {
+        // Implement using platform-specific storage
+        return null
     }
 
     fun dispatch(intent: Intent) {
@@ -206,6 +379,9 @@ class AppStore(
             Intent.CloseRecoveryDialog -> set { copy(showRecoveryDialog = false, recoveryKeyInput = "") }
             is Intent.SetRecoveryKey -> set { copy(recoveryKeyInput = intent.v) }
             Intent.SubmitRecoveryKey -> recoverNow()
+
+            is Intent.OpenRoomById -> openRoomById(intent.roomId)
+
         }
     }
 
@@ -243,34 +419,14 @@ class AppStore(
         set { copy(rooms = rooms) }
     }
 
-    // FIX: ensure initial history is fetched (not just our own local sends).
-    private fun openRoom(room: RoomSummary) = launchBusy {
-        val draft = _state.value.drafts[room.id].orEmpty()
-        set {
-            copy(
-                screen = Screen.Room(room),
-                events = emptyList(),
-                input = draft,
-                replyingTo = null,
-                editing = null
-            )
+    private fun openRoomById(roomId: String) = launchBusy {
+        val rooms = matrix.listRooms()
+        val room = rooms.find { it.id == roomId }
+        if (room != null) {
+            openRoom(room)
+        } else {
+            set { copy(error = "Room not found: $roomId") }
         }
-
-        // Initial attempt
-        var recent = matrix.loadRecent(room.id, limit = 50)
-        // If empty (common on fresh start), try a few back-paginations to pull remote history.
-        if (recent.isEmpty()) {
-            repeat(5) {
-                matrix.paginateBack(room.id, 50)
-                recent = matrix.loadRecent(room.id, limit = 60)
-                if (recent.isNotEmpty()) return@repeat
-            }
-        }
-        set { copy(events = recent) }
-
-        startTimeline(room.id)
-        startTypingObserver(room.id)
-        markRead(room.id)
     }
 
     private fun reloadCurrentRoom() = scope.launch {
