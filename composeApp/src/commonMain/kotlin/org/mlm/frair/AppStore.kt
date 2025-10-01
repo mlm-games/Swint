@@ -1,5 +1,7 @@
 package org.mlm.frair
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -9,8 +11,15 @@ import org.mlm.frair.matrix.MatrixPort
 import org.mlm.frair.matrix.SasPhase
 import org.mlm.frair.matrix.SendState
 import org.mlm.frair.matrix.VerificationObserver
+import org.mlm.frair.storage.loadString
+import org.mlm.frair.storage.saveString
 
-sealed class Screen { object Login : Screen(); object Rooms : Screen(); data class Room(val room: RoomSummary) : Screen(); object Security : Screen() }
+sealed class Screen {
+    object Login : Screen()
+    object Rooms : Screen()
+    data class Room(val room: RoomSummary) : Screen()
+    object Security : Screen()
+}
 
 sealed class Intent {
     data class ChangeHomeserver(val v: String) : Intent()
@@ -56,6 +65,7 @@ sealed class Intent {
     data object SubmitRecoveryKey : Intent()
 
     data class OpenRoomById(val roomId: String) : Intent()
+    data class SetRoomSearch(val query: String) : Intent()
 }
 
 data class SendIndicator(
@@ -75,6 +85,8 @@ data class AppState(
 
     val rooms: List<RoomSummary> = emptyList(),
     val unread: Map<String, Int> = emptyMap(),
+
+    val roomSearchQuery: String = "",
 
     val events: List<MessageEvent> = emptyList(),
     val input: String = "",
@@ -103,7 +115,7 @@ data class AppState(
 
     val pendingByRoom: Map<String, List<SendIndicator>> = emptyMap(),
 
-    val myReactions: Map<String, Set<String>> = emptyMap(), // eventId -> emojis
+    val myReactions: Map<String, Set<String>> = emptyMap(),
 
     val syncBanner: String? = null,
 
@@ -112,12 +124,13 @@ data class AppState(
     val offlineBanner: String? = null,
 
     val paginationStates: Map<String, MatrixPort.PaginationState> = emptyMap(),
-    val cachedRooms: Set<String> = emptySet(), // Track which rooms have cached data
+    val cachedRooms: Set<String> = emptySet(),
 )
 
 class AppStore(
     val matrix: MatrixService,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default)
+    private val prefs: DataStore<Preferences>,  // injected per platform
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 ) {
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -126,7 +139,8 @@ class AppStore(
     private var typingJob: Job? = null
     private var typingObsJob: Job? = null
 
-    init { bootstrap()
+    init {
+        bootstrap()
         setupConnectionMonitoring()
     }
 
@@ -148,7 +162,6 @@ class AppStore(
                     )
                 }
 
-                // Auto-refresh rooms when reconnected
                 if (state == MatrixPort.ConnectionState.Connected) {
                     scope.launch {
                         refreshRoomsQuietly()
@@ -159,57 +172,74 @@ class AppStore(
         })
     }
 
-
     private fun bootstrap() = scope.launch {
-        matrix.initCaches()
-
-        if (matrix.isLoggedIn()) {
-            matrixPortStartSupervised()
-            matrix.startSendWorker()
-
-            // Try cached rooms first for instant display
-            val cachedRooms = loadCachedRoomList()
-            if (cachedRooms.isNotEmpty()) {
-                set { copy(rooms = cachedRooms) }
+        try {
+            if (!matrix.initCaches()) {
+                set { copy(error = "Failed to initialize local cache") }
+                return@launch
             }
 
-            // Then fetch fresh data
-            val rooms = runCatching { matrix.listRooms() }.getOrDefault(emptyList())
-            set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
+            if (matrix.isLoggedIn()) {
+                matrixPortStartSupervised()
+                matrix.startSendWorker()
 
-            // Cache the room list
-            saveCachedRoomList(rooms)
-        }
+                val cachedRooms = loadCachedRoomList()
+                if (cachedRooms.isNotEmpty()) {
+                    set { copy(rooms = cachedRooms) }
+                }
 
-        matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
-            override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
-                set { copy(
-                    screen = screen as? Screen.Security ?: Screen.Rooms,
-                    sasFlowId = flowId, sasPhase = SasPhase.Requested,
-                    sasOtherUser = fromUser, sasOtherDevice = fromDevice, sasError = null
-                ) }
+                val rooms = runCatching { matrix.listRooms() }.getOrElse { emptyList() }
+                set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
+
+                saveCachedRoomList(rooms)
             }
-            override fun onError(message: String) { set { copy(error = "Verification inbox: $message") } }
-        })
 
-        scope.launch {
-            matrix.observeSends().collectLatest { upd ->
-                set {
-                    val prev = pendingByRoom[upd.roomId].orEmpty().associateBy { it.txnId }.toMutableMap()
-                    val indicator = SendIndicator(upd.txnId, upd.attempts, upd.state, upd.error)
-                    when (upd.state) {
-                        SendState.Sent -> prev.remove(upd.txnId)
-                        SendState.Failed -> prev[upd.txnId] = indicator
-                        else -> prev[upd.txnId] = indicator
+            matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
+                override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
+                    set {
+                        copy(
+                            screen = screen as? Screen.Security ?: Screen.Rooms,
+                            sasFlowId = flowId,
+                            sasPhase = SasPhase.Requested,
+                            sasOtherUser = fromUser,
+                            sasOtherDevice = fromDevice,
+                            sasError = null
+                        )
                     }
-                    copy(pendingByRoom = pendingByRoom + (upd.roomId to prev.values.toList()))
                 }
-                val current = (state.value.screen as? Screen.Room)?.room?.id
-                if (upd.state == SendState.Sent && upd.roomId == current) {
-                    val recent = matrix.loadRecent(upd.roomId, limit = 60)
-                    set { copy(events = recent) }
+
+                override fun onError(message: String) {
+                    set { copy(error = "Verification inbox: $message") }
+                }
+            })
+
+            scope.launch {
+                matrix.observeSends().collectLatest { upd ->
+                    set {
+                        val prev = pendingByRoom[upd.roomId].orEmpty()
+                            .associateBy { it.txnId }
+                            .toMutableMap()
+
+                        val indicator = SendIndicator(upd.txnId, upd.attempts, upd.state, upd.error)
+
+                        when (upd.state) {
+                            SendState.Sent -> prev.remove(upd.txnId)
+                            SendState.Failed -> prev[upd.txnId] = indicator
+                            else -> prev[upd.txnId] = indicator
+                        }
+
+                        copy(pendingByRoom = pendingByRoom + (upd.roomId to prev.values.toList()))
+                    }
+
+                    val current = (state.value.screen as? Screen.Room)?.room?.id
+                    if (upd.state == SendState.Sent && upd.roomId == current) {
+                        val recent = matrix.loadRecent(upd.roomId, limit = 60)
+                        set { copy(events = recent) }
+                    }
                 }
             }
+        } catch (t: Throwable) {
+            set { copy(error = "Startup failed: ${t.message}") }
         }
     }
 
@@ -257,7 +287,7 @@ class AppStore(
                         matrix.savePaginationState(
                             MatrixPort.PaginationState(
                                 roomId = room.id,
-                                prevBatch = null, // Would need to get from SDK
+                                prevBatch = null,
                                 nextBatch = null,
                                 atStart = hitStart,
                                 atEnd = false
@@ -271,8 +301,13 @@ class AppStore(
             }
 
             if (recent.isNotEmpty()) {
-                set { copy(events = recent) }
-                // Cache the fresh messages
+                set {
+                    copy(
+                        events = (events + recent)
+                            .distinctBy { it.eventId }
+                            .sortedBy { it.timestamp }
+                    )
+                }
                 matrix.cacheMessages(room.id, recent)
             }
         }
@@ -293,7 +328,6 @@ class AppStore(
     }
 
     private suspend fun syncCachedRooms() {
-        // Update cached messages for recently viewed rooms
         state.value.cachedRooms.forEach { roomId ->
             val recent = matrix.loadRecent(roomId, limit = 50)
             if (recent.isNotEmpty()) {
@@ -302,14 +336,11 @@ class AppStore(
         }
     }
 
-    // Local room list persistence (using SharedPreferences on Android, UserDefaults on iOS)
     private suspend fun saveCachedRoomList(rooms: List<RoomSummary>) {
-        // For simplicity, using a JSON file
         val json = kotlinx.serialization.json.Json.encodeToString(
             RoomsPayload.serializer(),
             RoomsPayload(rooms)
         )
-        // Save to platform-specific storage
         saveToLocalStorage("cached_rooms", json)
     }
 
@@ -322,16 +353,11 @@ class AppStore(
         }
     }
 
-    // Platform-specific storage helpers (implement per platform)
     private suspend fun saveToLocalStorage(key: String, value: String) {
-        // Implement using platform-specific storage
-        // Android: SharedPreferences
-        // Desktop: File system
+        saveString(prefs, key, value)
     }
-
     private suspend fun loadFromLocalStorage(key: String): String? {
-        // Implement using platform-specific storage
-        return null
+        return loadString(prefs, key)
     }
 
     fun dispatch(intent: Intent) {
@@ -363,7 +389,15 @@ class AppStore(
             Intent.PaginateForward -> paginateForward()
 
             Intent.OpenSecurity -> openSecurity()
-            Intent.CloseSecurity -> set { copy(screen = Screen.Rooms, sasFlowId = null, sasPhase = null, sasEmojis = emptyList(), sasError = null) }
+            Intent.CloseSecurity -> set {
+                copy(
+                    screen = Screen.Rooms,
+                    sasFlowId = null,
+                    sasPhase = null,
+                    sasEmojis = emptyList(),
+                    sasError = null
+                )
+            }
             Intent.RefreshSecurity -> refreshDevices()
             is Intent.ToggleTrust -> toggleTrust(intent.deviceId, intent.verified)
             is Intent.StartSelfVerify -> startSelfVerify(intent.deviceId)
@@ -384,6 +418,8 @@ class AppStore(
 
             is Intent.OpenRoomById -> openRoomById(intent.roomId)
 
+            // FIX: Handle search query in state
+            is Intent.SetRoomSearch -> set { copy(roomSearchQuery = intent.query) }
         }
     }
 
@@ -462,7 +498,7 @@ class AppStore(
     private fun handleTyping(roomId: String, text: String) {
         typingJob?.cancel()
         if (text.isBlank()) return
-        typingJob = scope.launch { delay(800) /* hook typing send if needed */ }
+        typingJob = scope.launch { delay(800) }
     }
 
     private fun send() = launchBusy {
@@ -488,7 +524,6 @@ class AppStore(
     private fun react(event: MessageEvent, emoji: String) {
         val room = (state.value.screen as? Screen.Room)?.room ?: return
         scope.launch {
-            // optimistic toggle locally
             set {
                 val before = myReactions[event.eventId].orEmpty()
                 val after = if (before.contains(emoji)) before - emoji else before + emoji
@@ -504,14 +539,20 @@ class AppStore(
             matrix.timeline(roomId).collect { ev ->
                 set {
                     copy(
-                        events = (events + ev).distinctBy { it.eventId }.sortedBy { it.timestamp }
+                        events = (events + ev)
+                            .distinctBy { it.eventId }
+                            .sortedBy { it.timestamp }
+                            .takeLast(500) // Keep last 500 messages max
                     )
                 }
             }
         }
     }
 
-    private fun stopTimeline() { timelineJob?.cancel(); timelineJob = null }
+    private fun stopTimeline() {
+        timelineJob?.cancel()
+        timelineJob = null
+    }
 
     private fun startTypingObserver(roomId: String) {
         typingObsJob?.cancel()
@@ -526,28 +567,46 @@ class AppStore(
         matrix.port.startSupervisedSync(object : MatrixPort.SyncObserver {
             override fun onState(status: MatrixPort.SyncStatus) {
                 set {
-                    copy(syncBanner = when (status.phase) {
-                        MatrixPort.SyncPhase.Running, MatrixPort.SyncPhase.Idle -> null
-                        MatrixPort.SyncPhase.BackingOff -> status.message ?: "Reconnecting…"
-                        MatrixPort.SyncPhase.Error -> status.message ?: "Sync error"
-                    })
+                    copy(
+                        syncBanner = when (status.phase) {
+                            MatrixPort.SyncPhase.Running, MatrixPort.SyncPhase.Idle -> null
+                            MatrixPort.SyncPhase.BackingOff -> status.message ?: "Reconnecting…"
+                            MatrixPort.SyncPhase.Error -> status.message ?: "Sync error"
+                        }
+                    )
                 }
             }
         })
     }
 
     private fun markRead(roomId: String) {
-        scope.launch { matrix.markRead(roomId) }
-        set { copy(unread = unread - roomId) }
+        val oldUnread = state.value.unread
+        set { copy(unread = unread - roomId) } // Optimistic update
+
+        scope.launch {
+            if (!matrix.markRead(roomId)) {
+                set { copy(unread = oldUnread) } // Rollback on failure
+                set { copy(error = "Failed to mark room as read") }
+            }
+        }
     }
 
     private fun markReadHere(event: MessageEvent) = scope.launch {
-        matrix.markReadAt(event.roomId, event.eventId)
+        val oldUnread = state.value.unread
         set { copy(unread = unread - event.roomId) }
+
+        if (!matrix.markReadAt(event.roomId, event.eventId)) {
+            set { copy(unread = oldUnread) }
+            set { copy(error = "Failed to mark read") }
+        }
     }
 
     private fun deleteMessage(event: MessageEvent, reason: String?) = scope.launch {
-        matrix.redact(event.roomId, event.eventId, reason)
+        if (!matrix.redact(event.roomId, event.eventId, reason)) {
+            set { copy(error = "Failed to delete message") }
+            return@launch
+        }
+
         val recent = matrix.loadRecent(event.roomId, limit = state.value.events.size)
         set { copy(events = recent) }
     }
@@ -555,23 +614,29 @@ class AppStore(
     private fun paginateBack() = scope.launch {
         val room = (state.value.screen as? Screen.Room)?.room ?: return@launch
         if (state.value.isPaginatingBack) return@launch
+
         set { copy(isPaginatingBack = true) }
         try {
             val hitStart = matrix.paginateBack(room.id, 50)
             val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 50)
             set { copy(events = recent, hitStart = hitStart) }
-        } finally { set { copy(isPaginatingBack = false) } }
+        } finally {
+            set { copy(isPaginatingBack = false) }
+        }
     }
 
     private fun paginateForward() = scope.launch {
         val room = (state.value.screen as? Screen.Room)?.room ?: return@launch
         if (state.value.isPaginatingForward) return@launch
+
         set { copy(isPaginatingForward = true) }
         try {
             matrix.paginateForward(room.id, 40)
             val recent = matrix.loadRecent(room.id, limit = state.value.events.size + 40)
             set { copy(events = recent) }
-        } finally { set { copy(isPaginatingForward = false) } }
+        } finally {
+            set { copy(isPaginatingForward = false) }
+        }
     }
 
     private fun openSecurity() = launchBusy {
@@ -606,9 +671,18 @@ class AppStore(
         override fun onPhase(flowId: String, phase: SasPhase) {
             set { copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
         }
+
         override fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>) {
-            set { copy(sasFlowId = flowId, sasOtherUser = otherUser, sasOtherDevice = otherDevice, sasEmojis = emojis) }
+            set {
+                copy(
+                    sasFlowId = flowId,
+                    sasOtherUser = otherUser,
+                    sasOtherDevice = otherDevice,
+                    sasEmojis = emojis
+                )
+            }
         }
+
         override fun onError(flowId: String, message: String) {
             set { copy(sasFlowId = flowId, sasError = message) }
         }
@@ -629,21 +703,37 @@ class AppStore(
         if (!matrix.cancelVerification(id)) set { copy(sasError = "Cancel failed") }
     }
 
-    private fun logout() = launchBusy { matrix.logout(); set { AppState() } }
+    private fun logout() = launchBusy {
+        matrix.logout()
+        set { AppState() }
+    }
 
     private fun recoverNow() = launchBusy {
         val key = state.value.recoveryKeyInput.trim()
         if (key.isEmpty()) return@launchBusy fail("Enter a recovery key")
+
         val ok = matrix.recoverWithKey(key)
         if (!ok) return@launchBusy fail("Recovery failed")
+
         set { copy(showRecoveryDialog = false, recoveryKeyInput = "", error = "Recovery successful") }
     }
 
-    private fun set(mutator: AppState.() -> AppState) { _state.value = _state.value.mutator() }
-    private fun fail(msg: String) { set { copy(error = msg) } }
+    private fun set(mutator: AppState.() -> AppState) {
+        _state.value = _state.value.mutator()
+    }
+
+    private fun fail(msg: String) {
+        set { copy(error = msg) }
+    }
+
     private fun launchBusy(block: suspend () -> Unit) = scope.launch {
-        try { set { copy(isBusy = true, error = null) }; block() }
-        catch (t: Throwable) { fail(t.message ?: "Unexpected error") }
-        finally { set { copy(isBusy = false) } }
+        try {
+            set { copy(isBusy = true, error = null) }
+            block()
+        } catch (t: Throwable) {
+            fail(t.message ?: "Unexpected error")
+        } finally {
+            set { copy(isBusy = false) }
+        }
     }
 }

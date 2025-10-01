@@ -5,15 +5,18 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import android.content.Intent
-import kotlin.let
+import org.mlm.frair.storage.provideAppDataStore
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        val dataStore = provideAppDataStore(this)
+
         handleIntent(intent)
         setContent {
-            App()
+            App(dataStore)
         }
     }
 

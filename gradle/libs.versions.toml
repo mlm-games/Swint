@@ -10,15 +10,18 @@ androidx-espresso = "3.7.0"
 androidx-lifecycle = "2.9.4"
 androidx-testExt = "1.3.0"
 composeMultiplatform = "1.9.0"
-jnaVersion = "5.17.0"
+datastorePreferencesCore = "1.1.7"
+jnaVersion = "5.18.0"
 junit = "4.13.2"
 kotlin = "2.2.20"
 kotlinxDatetime = "0.7.1"
 materialIconsExtended = "1.7.3"
+okio = "3.16.0"
 serialization = "1.7.3"
 coroutines = "1.10.2"
 
 [libraries]
+androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferencesCore" }
 androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
@@ -35,6 +38,7 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
 net-jna = { module = "net.java.dev.jna:jna", version.ref = "jnaVersion" }
+okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
