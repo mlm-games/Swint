@@ -27,6 +27,10 @@ sealed class Intent {
     data class ChangePass(val v: String) : Intent()
     data object SubmitLogin : Intent()
 
+    data object AcceptIncomingVerification : Intent()
+    data object RejectIncomingVerification : Intent()
+    data object DismissVerificationDialog : Intent()
+
     data object RefreshRooms : Intent()
     data class OpenRoom(val room: RoomSummary) : Intent()
     data object Back : Intent()
@@ -100,6 +104,10 @@ data class AppState(
     val isPaginatingForward: Boolean = false,
     val hitStart: Boolean = false,
 
+    val showVerificationDialog: Boolean = false,
+    val pendingVerifications: List<VerificationRequest> = emptyList(),
+    val currentVerificationIndex: Int = 0,
+
     val devices: List<org.mlm.frair.matrix.DeviceSummary> = emptyList(),
     val isLoadingDevices: Boolean = false,
 
@@ -125,6 +133,13 @@ data class AppState(
 
     val paginationStates: Map<String, MatrixPort.PaginationState> = emptyMap(),
     val cachedRooms: Set<String> = emptySet(),
+)
+
+data class VerificationRequest(
+    val flowId: String,
+    val fromUser: String,
+    val fromDevice: String,
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 class AppStore(
@@ -194,6 +209,7 @@ class AppStore(
                 saveCachedRoomList(rooms)
             }
 
+            // CHANGED: Don't switch screens on verification request
             matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
                 override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
                     set {
@@ -388,6 +404,10 @@ class AppStore(
             Intent.PaginateBack -> paginateBack()
             Intent.PaginateForward -> paginateForward()
 
+            Intent.AcceptIncomingVerification -> acceptIncomingVerification()
+            Intent.RejectIncomingVerification -> rejectIncomingVerification()
+            Intent.DismissVerificationDialog -> dismissVerificationDialog()
+
             Intent.OpenSecurity -> openSecurity()
             Intent.CloseSecurity -> set {
                 copy(
@@ -580,24 +600,40 @@ class AppStore(
     }
 
     private fun markRead(roomId: String) {
-        val oldUnread = state.value.unread
+        val oldUnreadCount = state.value.unread[roomId] // Only capture this room
         set { copy(unread = unread - roomId) } // Optimistic update
 
         scope.launch {
             if (!matrix.markRead(roomId)) {
-                set { copy(unread = oldUnread) } // Rollback on failure
-                set { copy(error = "Failed to mark room as read") }
+                set {
+                    copy(
+                        unread = if (oldUnreadCount != null) {
+                            unread + (roomId to oldUnreadCount)
+                        } else {
+                            unread
+                        },
+                        error = "Failed to mark room as read"
+                    )
+                }
             }
         }
     }
 
     private fun markReadHere(event: MessageEvent) = scope.launch {
-        val oldUnread = state.value.unread
+        val oldUnreadCount = state.value.unread[event.roomId]
         set { copy(unread = unread - event.roomId) }
 
         if (!matrix.markReadAt(event.roomId, event.eventId)) {
-            set { copy(unread = oldUnread) }
-            set { copy(error = "Failed to mark read") }
+            set {
+                copy(
+                    unread = if (oldUnreadCount != null) {
+                        unread + (event.roomId to oldUnreadCount)
+                    } else {
+                        unread
+                    },
+                    error = "Failed to mark read"
+                )
+            }
         }
     }
 
@@ -685,6 +721,54 @@ class AppStore(
 
         override fun onError(flowId: String, message: String) {
             set { copy(sasFlowId = flowId, sasError = message) }
+        }
+    }
+
+    private fun acceptIncomingVerification() = scope.launch {
+        val request = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
+        if (request == null) {
+            set { copy(showVerificationDialog = false) }
+            return@launch
+        }
+
+        val obs = commonVerifObserver()
+
+        // Start the verification flow
+        if (!matrix.acceptVerification(request.flowId)) {
+            set { copy(sasError = "Accept failed") }
+        }
+        // Dialog stays open to show emoji verification
+    }
+
+    // NEW: Handle incoming verification rejection
+    private fun rejectIncomingVerification() = scope.launch {
+        val request = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
+        if (request != null) {
+            matrix.cancelVerification(request.flowId)
+        }
+
+        moveToNextVerification()
+    }
+
+    // NEW: Dismiss dialog and move to next pending verification
+    private fun dismissVerificationDialog() {
+        moveToNextVerification()
+    }
+
+    // NEW: Move to next verification in queue
+    private fun moveToNextVerification() {
+        set {
+            val remaining = pendingVerifications.drop(1)
+            copy(
+                pendingVerifications = remaining,
+                showVerificationDialog = remaining.isNotEmpty(),
+                currentVerificationIndex = 0,
+                sasFlowId = remaining.firstOrNull()?.flowId,
+                sasPhase = if (remaining.isNotEmpty()) SasPhase.Requested else null,
+                sasOtherUser = remaining.firstOrNull()?.fromUser,
+                sasOtherDevice = remaining.firstOrNull()?.fromDevice,
+                sasError = null
+            )
         }
     }
 

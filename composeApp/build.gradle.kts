@@ -22,9 +22,8 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
-            implementation("net.java.dev.jna:jna:5.18.0@aar")
+            implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
             implementation(libs.okio)
-            implementation("androidx.datastore:datastore-preferences:1.1.7")
         }
         commonMain.dependencies {
             implementation(compose.runtime)

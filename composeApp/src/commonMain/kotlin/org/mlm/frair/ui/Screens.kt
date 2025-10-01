@@ -306,7 +306,7 @@ fun RoomScreen(state: AppState, padding: PaddingValues, onIntent: (Intent) -> Un
                 value = state.input,
                 enabled = !state.isBusy && !state.isOffline,
                 hint = when {
-                    state.isOffline -> "Offline"
+                    state.isOffline -> "Offline - messages will be queued"
                     state.replyingTo != null -> "Reply…"
                     state.editing != null -> "Edit message…"
                     else -> "Message"

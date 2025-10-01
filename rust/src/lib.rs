@@ -12,9 +12,6 @@ use futures_util::StreamExt;
 use thiserror::Error;
 
 // Matrix SDK core and UI
-use matrix_sdk::encryption::verification::{
-    SasState as SdkSasState, SasVerification, VerificationRequest,
-};
 use matrix_sdk::ruma::{
     api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod,
     api::client::receipt::create_receipt::v3::ReceiptType, events::typing::SyncTypingEvent,
@@ -27,6 +24,10 @@ use matrix_sdk::{
     media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
     ruma::{events::room::MediaSource, OwnedMxcUri},
     Client as SdkClient, Room, SessionTokens,
+};
+use matrix_sdk::{
+    encryption::verification::{SasState as SdkSasState, SasVerification, VerificationRequest},
+    ruma::events::receipt::ReceiptThread,
 };
 use matrix_sdk_ui::timeline::{
     EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem,
@@ -687,13 +688,25 @@ impl Client {
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
                 return false;
             };
-            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
+
+            let Some(room) = self.inner.get_room(&room_id) else {
                 return false;
             };
-            timeline
-                .mark_as_read(ReceiptType::Read)
-                .await
-                .unwrap_or(false)
+
+            let Some(latest_event) = room.latest_event() else {
+                return true; // Not an error, just nothing to do
+            };
+
+            room.send_single_receipt(
+                ReceiptType::Read,
+                ReceiptThread::Unthreaded,
+                latest_event
+                    .event_id()
+                    .to_owned()
+                    .expect("Panic in reading message"),
+            )
+            .await
+            .is_ok()
         })
     }
 
@@ -705,13 +718,14 @@ impl Client {
             let Ok(eid) = EventId::parse(event_id) else {
                 return false;
             };
-            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
+
+            let Some(room) = self.inner.get_room(&room_id) else {
                 return false;
             };
-            timeline
-                .send_single_receipt(ReceiptType::Read, eid.to_owned())
+
+            room.send_single_receipt(ReceiptType::Read, ReceiptThread::Unthreaded, eid.to_owned())
                 .await
-                .unwrap_or(false)
+                .is_ok()
         })
     }
 
