@@ -37,8 +37,18 @@ fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
                             },
                             maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
-                        if (state.syncBanner != null) {
-                            Text(state.syncBanner, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (state.offlineBanner != null) {
+                            Text(
+                                state.offlineBanner,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else if (state.syncBanner != null) {
+                            Text(
+                                state.syncBanner,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 },
@@ -57,6 +67,12 @@ fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
                     }
                 }
             )
+            if (state.isOffline) {
+                Surface(
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.fillMaxWidth().height(2.dp)
+                ) {}
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
@@ -269,14 +285,20 @@ fun RoomScreen(state: AppState, padding: PaddingValues, onIntent: (Intent) -> Un
 
             MessageComposer(
                 value = state.input,
-                enabled = !state.isBusy,
+                enabled = !state.isBusy && !state.isOffline, // Disable when offline
                 hint = when {
+                    state.isOffline -> "Offline - messages will be queued"
                     state.replyingTo != null -> "Reply…"
                     state.editing != null -> "Edit message…"
                     else -> "Message"
                 },
                 onValueChange = { onIntent(Intent.ChangeInput(it)) },
-                onSend = { if (state.editing != null) onIntent(Intent.ConfirmEdit) else onIntent(Intent.Send) }
+                onSend = {
+                    if (!state.isOffline || state.editing == null) {
+                        if (state.editing != null) onIntent(Intent.ConfirmEdit)
+                        else onIntent(Intent.Send) //TODO: save any draft present locally
+                    }
+                }
             )
 
             TypingIndicator(names = state.typing[room.id].orEmpty().toList())

@@ -249,6 +249,7 @@ class AppStore(
             var recent = matrix.loadRecent(room.id, limit = 50)
 
             if (recent.isEmpty() && cached.isEmpty()) {
+                run repeatBlock@{
                     repeat(5) {
                         val hitStart = matrix.paginateBack(room.id, 50)
                         recent = matrix.loadRecent(room.id, limit = 60)
@@ -264,8 +265,9 @@ class AppStore(
                         )
 
                         if (recent.isNotEmpty())
-                            return@repeat
+                            return@repeatBlock
                     }
+                }
             }
 
             if (recent.isNotEmpty()) {
