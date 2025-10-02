@@ -1,110 +1,112 @@
 package org.mlm.frair.ui.screens
 
+import androidx.compose.animation.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import org.mlm.frair.AppState
-import org.mlm.frair.Intent
-import org.mlm.frair.matrix.DeviceSummary
-import org.mlm.frair.matrix.SasPhase
+import org.mlm.frair.*
+import org.mlm.frair.matrix.*
+import org.mlm.frair.ui.components.EmptyStateView
+import org.mlm.frair.ui.components.PrivacyTab
+import org.mlm.frair.ui.components.RecoveryDialog
+import org.mlm.frair.ui.components.SasDialog
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SecurityScreen(state: AppState, padding: PaddingValues, onIntent: (Intent) -> Unit) {
-    var query by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) { if (state.devices.isEmpty() && !state.isLoadingDevices) onIntent(Intent.RefreshSecurity) }
+fun SecurityScreen(
+    state: AppState,
+    padding: PaddingValues,
+    onIntent: (Intent) -> Unit
+) {
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val tabs = listOf("Devices", "Recovery", "Privacy")
 
-    val filtered = remember(state.devices, query) {
-        if (query.isBlank()) state.devices
-        else state.devices.filter {
-            it.deviceId.contains(query, true) || it.displayName.contains(query, true) || it.ed25519.contains(query, true)
-        }
-    }
-
-    Column(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // Call to action: ensure the user can verify this device or start user-verification
-        ElevatedCard(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium) {
-            LazyColumn(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item {
-                    Text("Verify your session", style = MaterialTheme.typography.titleSmall)
+    Scaffold(
+        modifier = Modifier.padding(padding),
+        topBar = {
+            TopAppBar(
+                title = {
                     Text(
-                        "If this session isn’t verified yet, restore with your recovery key or verify from another session.",
-                        style = MaterialTheme.typography.bodySmall
+                        "Security & Privacy",
+                        fontWeight = FontWeight.SemiBold
                     )
-                }
-                item {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item {
-                            OutlinedButton(onClick = { onIntent(Intent.OpenRecoveryDialog) }) {
-                                Text(
-                                    "Recover with key"
-                                )
-                            }
-                        }
+                },
+                navigationIcon = {
+                    IconButton(onClick = { onIntent(Intent.CloseSecurity) }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBackIos, "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { onIntent(Intent.RefreshSecurity) }) {
+                        Icon(Icons.Default.Refresh, "Refresh")
                     }
                 }
-                // Verify a user (other user SAS)
-//                var userId by remember { mutableStateOf("") }
-//                OutlinedTextField(
-//                    value = userId,
-//                    onValueChange = { userId = it },
-//                    singleLine = true,
-//                    label = { Text("Verify user (MXID)") },
-//                    placeholder = { Text("@user:server") },
-//                    modifier = Modifier.fillMaxWidth()
-//                )
-//                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-//                    OutlinedButton(
-//                        onClick = { if (userId.isNotBlank()) onIntent(Intent.StartUserVerify(userId.trim())) }
-//                    ) { Text("Start user verification") }
-//                }
-            }
+            )
         }
-
-        Spacer(Modifier.height(12.dp))
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true, label = { Text("Search devices") }, modifier = Modifier.weight(1f))
-            OutlinedButton(onClick = { onIntent(Intent.RefreshSecurity) }, enabled = !state.isLoadingDevices) {
-                Text(if (state.isLoadingDevices) "Refreshing…" else "Refresh")
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        if (filtered.isEmpty() && !state.isLoadingDevices) {
-            Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
-                Box(Modifier.fillMaxWidth().padding(16.dp)) { Text("No devices found.", style = MaterialTheme.typography.bodyMedium) }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 48.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            // Tab row
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.onSurface
             ) {
-                items(filtered, key = { it.deviceId }) { d ->
-                    DeviceRow(
-                        d = d,
-                        onToggleTrust = { checked -> onIntent(Intent.ToggleTrust(d.deviceId, checked)) },
-                        onStartSas = { onIntent(Intent.StartSelfVerify(d.deviceId)) }
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { Text(title) },
+                        icon = {
+                            Icon(
+                                imageVector = when (index) {
+                                    0 -> Icons.Default.Devices
+                                    1 -> Icons.Default.Key
+                                    else -> Icons.Default.Lock
+                                },
+                                contentDescription = null
+                            )
+                        }
                     )
-                    Divider()
+                }
+            }
+
+            // Tab content
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = {
+                    slideInHorizontally { it } togetherWith slideOutHorizontally { -it }
+                }
+            ) { tab ->
+                when (tab) {
+                    0 -> DevicesTab(state, onIntent)
+                    1 -> RecoveryTab(state, onIntent)
+                    2 -> PrivacyTab(state, onIntent)
                 }
             }
         }
     }
 
+    // Dialogs
     if (state.sasFlowId != null) {
         SasDialog(
             phase = state.sasPhase,
@@ -123,110 +125,396 @@ fun SecurityScreen(state: AppState, padding: PaddingValues, onIntent: (Intent) -
             keyValue = state.recoveryKeyInput,
             onChange = { onIntent(Intent.SetRecoveryKey(it)) },
             onCancel = { onIntent(Intent.CloseRecoveryDialog) },
-            onConfirm = { onIntent(Intent.SubmitRecoveryKey) },
+            onConfirm = { onIntent(Intent.SubmitRecoveryKey) }
         )
     }
 }
 
 @Composable
-private fun DeviceRow(d: DeviceSummary, onToggleTrust: (Boolean) -> Unit, onStartSas: () -> Unit) {
-    val fpGrouped = remember(d.ed25519) { d.ed25519.chunked(4).joinToString(" ") }
-    ListItem(
-        headlineContent = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(d.displayName.ifBlank { d.deviceId }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.width(8.dp))
-                if (d.isOwn) AssistChip(onClick = {}, enabled = false, label = { Text("My device") })
-                if (d.locallyTrusted) { Spacer(Modifier.width(6.dp)); AssistChip(onClick = {}, enabled = false, label = { Text("Locally trusted") }) }
-            }
-        },
-        supportingContent = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("ID: ${d.deviceId}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                Text("FP: $fpGrouped", style = MaterialTheme.typography.bodySmall, maxLines = 2)
-            }
-        },
-        trailingContent = {
-            Column(horizontalAlignment = Alignment.End) {
-                OutlinedButton(onClick = onStartSas, enabled = !d.isOwn) { Text(if (d.isOwn) "This device" else "Verify (emoji)") }
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Trusted", style = MaterialTheme.typography.labelSmall)
-                    Switch(checked = d.locallyTrusted, onCheckedChange = onToggleTrust)
+private fun DevicesTab(state: AppState, onIntent: (Intent) -> Unit) {
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filtered = remember(state.devices, searchQuery) {
+        if (searchQuery.isBlank()) state.devices
+        else state.devices.filter {
+            it.deviceId.contains(searchQuery, true) ||
+                    it.displayName.contains(searchQuery, true)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        // Current device card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = CircleShape,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            Icons.Default.PhoneAndroid,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(16.dp))
+
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "This Device",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        "Currently signed in",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+
+                if (state.devices.find { it.isOwn }?.locallyTrusted == false) {
+                    FilledTonalButton(
+                        onClick = { /* Verify this device */ }
+                    ) {
+                        Text("Verify")
+                    }
                 }
             }
         }
-    )
+
+        // Search bar
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            placeholder = { Text("Search devices...") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            singleLine = true,
+            shape = MaterialTheme.shapes.large
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        // Device list
+        if (state.isLoadingDevices) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        } else if (filtered.isEmpty()) {
+            EmptyStateView(
+                icon = Icons.Default.DevicesOther,
+                title = "No devices found",
+                subtitle = "Try refreshing the list"
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(filtered.filter { !it.isOwn }) { device ->
+                    DeviceCard(
+                        device = device,
+                        onToggleTrust = { verified ->
+                            onIntent(Intent.ToggleTrust(device.deviceId, verified))
+                        },
+                        onVerify = {
+                            onIntent(Intent.StartSelfVerify(device.deviceId))
+                        }
+                    )
+                }
+            }
+        }
+    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SasDialog(
-    phase: SasPhase?, emojis: List<String>, otherUser: String, otherDevice: String, error: String?,
-    onAccept: () -> Unit, onConfirm: () -> Unit, onCancel: () -> Unit
+private fun DeviceCard(
+    device: DeviceSummary,
+    onToggleTrust: (Boolean) -> Unit,
+    onVerify: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onCancel,
-        title = { Text("Emoji Verification") },
-        text = {
-            Column {
-                if (otherUser.isNotBlank() || otherDevice.isNotBlank())
-                    Text("Other: $otherUser • $otherDevice", style = MaterialTheme.typography.labelSmall)
-                if (error != null) { Spacer(Modifier.height(8.dp)); Text(error, color = MaterialTheme.colorScheme.error) }
-                Spacer(Modifier.height(8.dp))
-                when (phase) {
-                    SasPhase.Requested -> Text("Verification requested.")
-                    SasPhase.Ready -> Text("Handshake ready. Waiting for emoji…")
-                    SasPhase.Emojis -> FlowRowMain(emojis)
-                    SasPhase.Confirmed -> Text("Confirmed. Finalizing…")
-                    SasPhase.Done -> Text("Verified!", color = MaterialTheme.colorScheme.primary)
-                    SasPhase.Cancelled, SasPhase.Failed -> Text("Verification cancelled/failed.")
-                    null -> Text("Starting…")
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (device.locallyTrusted)
+                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+            else MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top
+            ) {
+                // Device icon
+                Surface(
+                    color = if (device.locallyTrusted)
+                        MaterialTheme.colorScheme.secondary
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = CircleShape,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Computer,
+                            contentDescription = null,
+                            tint = if (device.locallyTrusted)
+                                MaterialTheme.colorScheme.onSecondary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(12.dp))
+
+                // Device info
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = device.displayName.ifBlank { device.deviceId },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        if (device.locallyTrusted) {
+                            Spacer(Modifier.width(8.dp))
+                            Icon(
+                                Icons.Default.Verified,
+                                contentDescription = "Verified",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        text = "ID: ${device.deviceId}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // Fingerprint
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                    ) {
+                        Text(
+                            text = device.ed25519.chunked(4).joinToString(" "),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
                 }
             }
-        },
-        confirmButton = {
-            when (phase) {
-                SasPhase.Requested -> Button(onClick = onAccept) { Text("Accept") }
-                SasPhase.Emojis -> Button(onClick = onConfirm) { Text("They match") }
-                SasPhase.Confirmed, SasPhase.Done, SasPhase.Cancelled, SasPhase.Failed -> TextButton(onClick = onCancel) { Text("Close") }
-                SasPhase.Ready, null -> TextButton(onClick = onCancel) { Text("Cancel") }
-            }
-        },
-        dismissButton = {
-            when (phase) {
-                SasPhase.Requested, SasPhase.Ready, SasPhase.Emojis -> TextButton(onClick = onCancel) { Text("Cancel") }
-                else -> {}
-            }
-        }
-    )
-}
 
-@Composable private fun FlowRowMain(items: List<String>) {
-    if (items.isEmpty()) return
-    Column {
-        val perRow = 4
-        items.chunked(perRow).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { e -> Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.small) { Text(e, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) } }
+            // Actions
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onVerify,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        Icons.Default.VerifiedUser,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Verify")
+                }
+
+                FilledTonalButton(
+                    onClick = { onToggleTrust(!device.locallyTrusted) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (device.locallyTrusted)
+                            MaterialTheme.colorScheme.errorContainer
+                        else MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (device.locallyTrusted)
+                            Icons.Default.RemoveModerator
+                        else Icons.Default.Shield,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (device.locallyTrusted) "Untrust" else "Trust")
+                }
             }
-            Spacer(Modifier.height(6.dp))
         }
     }
 }
 
 @Composable
-private fun RecoveryDialog(keyValue: String, onChange: (String) -> Unit, onCancel: () -> Unit, onConfirm: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onCancel,
-        title = { Text("Recover with key") },
-        text = {
-            Column {
-                Text("Paste your human‑readable recovery key to restore E2EE secrets.", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(value = keyValue, onValueChange = onChange, singleLine = true, placeholder = { Text("groups of 4 characters") }, modifier = Modifier.fillMaxWidth())
+private fun RecoveryTab(state: AppState, onIntent: (Intent) -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Recovery status card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Key,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Recovery Key",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+
+                Text(
+                    "Use your recovery key to restore encryption keys and verify this session",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+
+                Button(
+                    onClick = { onIntent(Intent.OpenRecoveryDialog) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    )
+                ) {
+                    Icon(Icons.Default.LockOpen, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Enter Recovery Key")
+                }
             }
-        },
-        confirmButton = { Button(onClick = onConfirm) { Text("Recover") } },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } }
-    )
+        }
+
+        // Additional security options
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "Security Options",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                // Options list
+                SecurityOption(
+                    icon = Icons.Default.Backup,
+                    title = "Backup Keys",
+                    subtitle = "Export your encryption keys",
+                    onClick = { /* TODO */ }
+                )
+
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+                SecurityOption(
+                    icon = Icons.Default.History,
+                    title = "Session History",
+                    subtitle = "View all active sessions",
+                    onClick = { /* TODO */ }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SecurityOption(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .clickable { onClick() }
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Filled.ArrowForward,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }

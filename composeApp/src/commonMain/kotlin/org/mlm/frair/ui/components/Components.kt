@@ -1,19 +1,31 @@
-package org.mlm.frair.ui
+package org.mlm.frair.ui.components
 
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Dp
@@ -23,8 +35,8 @@ import kotlinx.datetime.toLocalDateTime
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.SendIndicator
 import org.mlm.frair.matrix.SendState
-import kotlin.collections.forEach
 import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 @Composable
 fun Avatar(initials: String, size: Dp = 36.dp, color: Color = MaterialTheme.colorScheme.primaryContainer) {
@@ -36,7 +48,7 @@ fun Avatar(initials: String, size: Dp = 36.dp, color: Color = MaterialTheme.colo
 }
 
 // Lightweight fallback reply parser: looks for quoted lines ("> ") then a blank line.
-private fun parseReplyFallback(body: String): Pair<String?, String> {
+fun parseReplyFallback(body: String): Pair<String?, String> {
     val lines = body.lines()
     if (lines.isEmpty()) return null to body
     val quoteLines = mutableListOf<String>()
@@ -52,63 +64,6 @@ private fun parseReplyFallback(body: String): Pair<String?, String> {
 }
 
 @Composable
-fun MessageBubble(
-    isMine: Boolean,
-    body: String,
-    sender: String?,
-    timestamp: Long,
-    grouped: Boolean,
-    onLongPress: (() -> Unit)? = null,
-) {
-    val (replyPreview, bodyShown) = remember(body) { parseReplyFallback(body) }
-
-    val bg = if (isMine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-    val align = if (isMine) Arrangement.End else Arrangement.Start
-    val textColor = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
-
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = align) {
-        Surface(
-            color = bg,
-            shape = MaterialTheme.shapes.medium,
-            tonalElevation = if (isMine) 2.dp else 0.dp,
-            shadowElevation = 0.dp,
-            modifier = Modifier.fillMaxWidth(0.9f)
-        ) {
-            Column(
-                Modifier
-                    .combinedClickable(onClick = {}, onLongClick = { onLongPress?.invoke() })
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                if (!isMine && !grouped && !sender.isNullOrBlank()) {
-                    Text(sender, style = MaterialTheme.typography.labelSmall, color = textColor)
-                    Spacer(Modifier.height(2.dp))
-                }
-
-                if (!replyPreview.isNullOrBlank()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surface,
-                        shape = MaterialTheme.shapes.small,
-                        tonalElevation = 0.dp
-                    ) {
-                        Text(
-                            "↩ $replyPreview",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                }
-
-                MarkdownText(bodyShown, color = textColor)
-                Spacer(Modifier.height(4.dp))
-                Text(formatTime(timestamp), style = MaterialTheme.typography.labelSmall, color = textColor)
-            }
-        }
-    }
-}
-
-@Composable
 fun ReactionBar(emojis: Set<String>, onClick: ((String) -> Unit)? = null) {
     if (emojis.isEmpty()) return
     Row(
@@ -121,18 +76,6 @@ fun ReactionBar(emojis: Set<String>, onClick: ((String) -> Unit)? = null) {
                 label = { Text(e) }
             )
         }
-    }
-}
-
-@Composable
-fun MessageComposer(value: String, enabled: Boolean, hint: String = "Message", onValueChange: (String) -> Unit, onSend: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        OutlinedTextField(value = value, onValueChange = onValueChange, label = { Text(hint) }, modifier = Modifier.weight(1f), singleLine = true, enabled = enabled)
-        Spacer(Modifier.width(8.dp))
-        Button(onClick = onSend, enabled = enabled && value.isNotBlank()) { Text("Send") }
     }
 }
 
@@ -156,51 +99,6 @@ fun ActionBanner(replyingTo: MessageEvent?, editing: MessageEvent?, onCancelRepl
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = onCancelEdit) { Text("Cancel") }
             }
-        }
-    }
-}
-
-@Composable
-fun TypingIndicator(names: List<String>) {
-    if (names.isEmpty()) return
-    val text = when (names.size) { 1 -> "${names[0]} is typing…"; 2 -> "${names[0]} and ${names[1]} are typing…"; else -> "${names[0]}, ${names[1]} and others are typing…" }
-    Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun MessageActionSheet(
-    event: MessageEvent,
-    isMine: Boolean,
-    onDismiss: () -> Unit,
-    onCopy: () -> Unit,
-    onReply: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-    onReact: (String) -> Unit,
-    onMarkReadHere: () -> Unit
-) {
-    val clipboard = LocalClipboardManager.current
-    val quick = listOf("👍", "💀", "😂", "🔥", "👀")
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Message actions", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(12.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(quick) { e -> FilledTonalButton(onClick = { onReact(e); onDismiss() }) { Text(e) } }
-            }
-            Spacer(Modifier.height(16.dp))
-            Divider()
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = { clipboard.setText(AnnotatedString(event.body)); onCopy(); onDismiss() }) { Text("Copy") }
-            TextButton(onClick = { onReply(); }) { Text("Reply") }
-            TextButton(onClick = { onMarkReadHere() }) { Text("Mark read to here") }
-            if (isMine) {
-                TextButton(onClick = { onEdit() }) { Text("Edit") }
-                TextButton(onClick = { onDelete() }) { Text("Delete") }
-            }
-            Spacer(Modifier.height(12.dp))
         }
     }
 }
@@ -264,7 +162,7 @@ private fun parseMarkdown(input: String): AnnotatedString {
     }
 
     apply(bold, { SpanStyle(fontWeight = FontWeight.Bold) })
-    apply(italic, { SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic) })
+    apply(italic, { SpanStyle(fontStyle = FontStyle.Italic) })
     apply(code, { SpanStyle(background = Color(0x33FFFFFF)) })
     apply(link, { SpanStyle(color = Color.Magenta, textDecoration = TextDecoration.Underline) })
 
@@ -304,8 +202,8 @@ fun DayDivider(text: String) {
 /* ------------ Utilities ------------ */
 
 @OptIn(ExperimentalTime::class)
-private fun formatTime(epochMs: Long): String {
-    val instant = kotlin.time.Instant.fromEpochMilliseconds(epochMs)
+fun formatTime(epochMs: Long): String {
+    val instant = Instant.fromEpochMilliseconds(epochMs)
     val local = instant.toLocalDateTime(TimeZone.currentSystemDefault())
     val hh = local.hour.toString().padStart(2, '0')
     val mm = local.minute.toString().padStart(2, '0')

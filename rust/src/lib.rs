@@ -11,6 +11,9 @@ use tokio::runtime::Runtime;
 use futures_util::StreamExt;
 use thiserror::Error;
 
+use matrix_sdk::{
+    executor::spawn, ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent,
+};
 // Matrix SDK core and UI
 use matrix_sdk::ruma::{
     api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod,
