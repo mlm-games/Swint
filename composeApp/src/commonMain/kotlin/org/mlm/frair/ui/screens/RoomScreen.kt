@@ -346,7 +346,7 @@ fun RoomScreen(
                                 (event.timestamp - (previousEvent?.timestamp ?: 0)) < 60000
 
                         MessageBubble(
-                            isMine = event.sender == state.user,
+                            isMine = (event.sender == state.myUserId),
                             body = event.body,
                             sender = event.sender,
                             timestamp = event.timestamp,
@@ -442,7 +442,7 @@ fun RoomScreen(
     actionTarget?.let { target ->
         MessageActionSheet(
             event = target,
-            isMine = target.sender == state.user,
+            isMine = (target.sender == state.myUserId),
             onDismiss = { actionTarget = null },
             onReply = {
                 onIntent(Intent.StartReply(target))

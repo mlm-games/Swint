@@ -487,6 +487,10 @@ impl Client {
         self.send_observers.lock().unwrap().push(obs);
     }
 
+    pub fn whoami(&self) -> Option<String> {
+        self.inner.user_id().map(|u| u.to_string())
+    }
+
     pub fn login(&self, username: String, password: String) {
         RT.block_on(async {
             let res = self
@@ -623,6 +627,19 @@ impl Client {
         }
     }
 
+    pub fn set_typing(&self, room_id: String, typing: bool) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return false;
+            };
+            // Typing notice stays active ~4s server-side; safe to debounce on client.
+            room.typing_notice(typing).await.is_ok()
+        })
+    }
+
     pub fn recent_events(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {
         RT.block_on(async {
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
@@ -694,7 +711,13 @@ impl Client {
                             }
                         }
                         VectorDiff::Remove { index, .. } => {
-                            obs.on_remove(index.to_string());
+                            if let Some(item) = tl.items().await.get(index) {
+                                if let Some(ev) = item.as_event() {
+                                    if let Some(eid) = ev.event_id().map(|e| e.to_string()) {
+                                        obs.on_remove(eid);
+                                    }
+                                }
+                            }
                         }
                         VectorDiff::Clear {} => obs.on_clear(),
                         VectorDiff::Reset { values } => {
@@ -854,25 +877,17 @@ impl Client {
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
                 return false;
             };
-
             let Some(room) = self.inner.get_room(&room_id) else {
                 return false;
             };
-
-            let Some(latest_event) = room.latest_event() else {
-                return true; // Not an error, just nothing to do
+            let Ok(tl) = room.timeline().await else {
+                return false;
             };
-
-            room.send_single_receipt(
-                ReceiptType::Read,
-                ReceiptThread::Unthreaded,
-                latest_event
-                    .event_id()
-                    .to_owned()
-                    .expect("Panic in reading message"),
-            )
-            .await
-            .is_ok()
+            // Use the UI helper
+            match tl.mark_as_read(ReceiptType::Read).await {
+                Ok(_) => true, // success even if no new receipt was sent
+                Err(_) => false,
+            }
         })
     }
 
@@ -1990,36 +2005,21 @@ async fn start_v2_fallback_loop(client: SdkClient, obs: Arc<dyn SyncObserver>) {
             Ok(_) => {
                 consecutive_failures = 0;
                 backoff_secs = 1;
+                obs.on_state(SyncStatus {
+                    phase: SyncPhase::Idle,
+                    message: None,
+                });
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(e) => {
                 consecutive_failures += 1;
-
-                if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
-                    obs.on_state(SyncStatus {
-                        phase: SyncPhase::Error,
-                        message: Some(format!(
-                            "Connection lost after {} attempts. Restart app to retry.",
-                            consecutive_failures
-                        )),
-                    });
-                    break;
-                }
-
-                obs.on_state(SyncStatus {
-                    phase: SyncPhase::Error,
-                    message: Some(e.to_string()),
-                });
-
                 let jitter = rand::rng().random_range(0.8f64..1.2f64);
                 let wait = (backoff_secs as f64 * jitter).round() as u64;
+                // Show only BackingOff to avoid a sticky “Error” bar
                 obs.on_state(SyncStatus {
                     phase: SyncPhase::BackingOff,
-                    message: Some(format!(
-                        "retrying in {}s (attempt {})",
-                        wait, consecutive_failures
-                    )),
+                    message: Some(format!("retrying in {}s", wait)),
                 });
-
                 tokio::time::sleep(Duration::from_secs(wait)).await;
                 backoff_secs = (backoff_secs * 2).min(max_backoff);
             }

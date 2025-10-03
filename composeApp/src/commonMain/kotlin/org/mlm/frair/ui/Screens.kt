@@ -54,15 +54,6 @@ fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
                             overflow = TextOverflow.Ellipsis
                         )
 
-                        // Show sync banner if present
-                        if (state.syncBanner != null) {
-                            Text(
-                                state.syncBanner,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
                         // Show offline banner if offline
                         if (state.offlineBanner != null) {
                             Text(

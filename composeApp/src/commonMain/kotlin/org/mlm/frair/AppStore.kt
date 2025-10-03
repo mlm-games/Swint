@@ -99,6 +99,7 @@ data class AppState(
     val homeserver: String = "https://matrix.org",
     val user: String = "@user:matrix.org",
     val pass: String = "",
+    val myUserId: String? = null,
     val isBusy: Boolean = false,
     val error: String? = null,
 
@@ -239,6 +240,9 @@ class AppStore(
                     set {
                         copy(
                             screen = screen as? Screen.Security ?: Screen.Rooms,
+                            pendingVerifications = pendingVerifications + VerificationRequest(flowId, fromUser, fromDevice),
+                            showVerificationDialog = true,
+                            currentVerificationIndex = 0,
                             sasFlowId = flowId,
                             sasPhase = SasPhase.Requested,
                             sasOtherUser = fromUser,
@@ -247,13 +251,12 @@ class AppStore(
                         )
                     }
                 }
-
-                override fun onError(message: String) {
-                    set { copy(error = "Verification inbox: $message") }
-                }
+                override fun onError(message: String) { set { copy(error = "Verification inbox: $message") } }
             })
 
             scope.launch {
+                set { copy(myUserId = matrix.port.whoami()) }
+
                 matrix.observeSends().collectLatest { upd ->
                     set {
                         val prev = pendingByRoom[upd.roomId].orEmpty()
@@ -271,6 +274,7 @@ class AppStore(
                         copy(pendingByRoom = pendingByRoom + (upd.roomId to prev.values.toList()))
                     }
 
+                    refreshPendingMessages()
                     val current = (state.value.screen as? Screen.Room)?.room?.id
                     if (upd.state == SendState.Sent && upd.roomId == current) {
                         val recent = matrix.loadRecent(upd.roomId, limit = 60)
@@ -552,8 +556,15 @@ class AppStore(
 
     private fun handleTyping(roomId: String, text: String) {
         typingJob?.cancel()
-        if (text.isBlank()) return
-        typingJob = scope.launch { delay(800) }
+        if (text.isBlank()) {
+            scope.launch { matrix.port.setTyping(roomId, false) }
+            return
+        }
+        typingJob = scope.launch {
+            matrix.port.setTyping(roomId, true)
+            delay(4_000) // server-side window is also ~4s
+            matrix.port.setTyping(roomId, false)
+        }
     }
 
     private fun send() = launchBusy {
@@ -798,18 +809,11 @@ class AppStore(
     }
 
     private fun acceptIncomingVerification() = scope.launch {
-        val request =
-            state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
-        if (request == null) {
-            set { copy(showVerificationDialog = false) }
-            return@launch
-        }
-
+        val current = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
+        val flowId = current?.flowId ?: state.value.sasFlowId
+        if (flowId == null) { set { copy(showVerificationDialog = false) }; return@launch }
         val obs = commonVerifObserver()
-
-        if (!matrix.acceptVerification(request.flowId, obs)) {
-            set { copy(sasError = "Accept failed") }
-        }
+        if (!matrix.acceptVerification(flowId, obs)) set { copy(sasError = "Accept failed") }
     }
 
     private fun rejectIncomingVerification() = scope.launch {
