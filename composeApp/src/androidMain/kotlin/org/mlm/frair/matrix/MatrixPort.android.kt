@@ -1,14 +1,14 @@
 package org.mlm.frair.matrix
 
+import frair.TimelineObserver
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import frair.Client as FfiClient
-import frair.RoomSummary as FfiRoom
-import frair.MessageEvent as FfiEvent
-import frair.TimelineObserver
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
+import frair.Client as FfiClient
+import frair.MessageEvent as FfiEvent
+import frair.RoomSummary as FfiRoom
 
 class RustMatrixPort(hs: String) : MatrixPort {
     private val client = FfiClient(hs)
@@ -235,6 +235,14 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
     override suspend fun confirmVerification(flowId: String): Boolean = client.confirmVerification(flowId)
     override suspend fun cancelVerification(flowId: String): Boolean = client.cancelVerification(flowId)
+
+    override fun enterForeground() {
+        client.enterForeground()
+    }
+    override fun enterBackground() {
+        client.enterBackground()
+    }
+
     override suspend fun logout(): Boolean = client.logout()
     override suspend fun cancelTxn(txnId: String): Boolean =
         client.cancelTxn(txnId)

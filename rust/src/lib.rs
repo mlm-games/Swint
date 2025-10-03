@@ -1,14 +1,14 @@
 use mime::Mime;
 use once_cell::sync::Lazy;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, time::timeout};
 
-use futures_util::StreamExt;
+use futures_util::{pin_mut, StreamExt};
 use thiserror::Error;
 
 use matrix_sdk::{
@@ -33,6 +33,7 @@ use matrix_sdk::{
     ruma::events::receipt::ReceiptThread,
 };
 use matrix_sdk_ui::{
+    eyeball_im::VectorDiff,
     sync_service::SyncService,
     timeline::{EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem},
 };
@@ -507,6 +508,83 @@ impl Client {
 
     pub fn rooms(&self) -> Vec<RoomSummary> {
         RT.block_on(async {
+            // Prefer Sliding Sync (RoomListService) if the supervised SyncService is running.
+            if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
+                // Get the “all rooms” list from the RoomListService.
+                let room_list_service = svc.room_list_service();
+                if let Ok(all_rooms) = room_list_service.all_rooms().await {
+                    // Build a dynamic entries stream; we’ll fetch an initial page quickly.
+                    let page_size: usize = 200;
+                    let (diffs_stream, controller) =
+                        all_rooms.entries_with_dynamic_adapters(page_size);
+
+                    // Only non-left rooms is the usual UX for “Rooms”.
+                    controller.set_filter(Box::new(
+                        matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
+                    ));
+
+                    // Collect a quick snapshot (first emission, up to ~600ms) into a map.
+                    let mut ids: HashSet<String> = HashSet::new();
+                    pin_mut!(diffs_stream);
+                    if let Ok(Some(diffs)) =
+                        timeout(Duration::from_millis(600), diffs_stream.next()).await
+                    {
+                        for d in diffs {
+                            match d {
+                                VectorDiff::Reset { values } => {
+                                    ids.clear();
+                                    for r in values {
+                                        ids.insert(r.room_id().to_string());
+                                    }
+                                }
+                                VectorDiff::Append { values } => {
+                                    for r in values {
+                                        ids.insert(r.room_id().to_string());
+                                    }
+                                }
+                                VectorDiff::PushBack { value }
+                                | VectorDiff::PushFront { value }
+                                | VectorDiff::Insert { value, .. }
+                                | VectorDiff::Set { value, .. } => {
+                                    ids.insert(value.room_id().to_string());
+                                }
+                                VectorDiff::Remove { .. }
+                                | VectorDiff::Clear {}
+                                | VectorDiff::PopBack {}
+                                | VectorDiff::PopFront {}
+                                | VectorDiff::Truncate { .. } => {}
+                            }
+                        }
+                    }
+
+                    if !ids.is_empty() {
+                        // Resolve display names from the SDK Room objects we already have.
+                        let mut out: Vec<RoomSummary> = Vec::with_capacity(ids.len());
+                        for id in ids {
+                            if let Ok(rid) = matrix_sdk::ruma::OwnedRoomId::try_from(id.clone()) {
+                                if let Some(room) = self.inner.get_room(&rid) {
+                                    let name = room
+                                        .display_name()
+                                        .await
+                                        .map(|dn| dn.to_string())
+                                        .unwrap_or_else(|_| id.clone());
+                                    out.push(RoomSummary { id, name });
+                                    continue;
+                                }
+                            }
+                            // Fallback if we couldn't resolve the Room or name.
+                            out.push(RoomSummary {
+                                id: id.clone(),
+                                name: id,
+                            });
+                        }
+                        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        return out;
+                    }
+                }
+            }
+
+            // Fallback: legacy joined rooms via /sync v2 state.
             let mut out = Vec::new();
             for r in self.inner.joined_rooms() {
                 let name = r
@@ -521,6 +599,19 @@ impl Client {
             }
             out
         })
+    }
+
+    pub fn enter_foreground(&self) {
+        if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
+            let _ = RT.block_on(async { svc.start().await });
+        }
+    }
+
+    /// Send the app to background: stop Sliding Sync supervision.
+    pub fn enter_background(&self) {
+        if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
+            let _ = RT.block_on(async { svc.stop().await });
+        }
     }
 
     pub fn recent_events(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {

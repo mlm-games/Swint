@@ -1,11 +1,4 @@
 import org.gradle.internal.os.OperatingSystem
-import javax.inject.Inject
-import org.gradle.api.DefaultTask
-import org.gradle.api.file.DirectoryProperty
-import org.gradle.api.file.RegularFileProperty
-import org.gradle.api.provider.Property
-import org.gradle.api.tasks.*
-import org.gradle.process.ExecOperations
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -36,7 +29,6 @@ kotlin {
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
             implementation(libs.androidx.datastore.preferences.core)
-
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)

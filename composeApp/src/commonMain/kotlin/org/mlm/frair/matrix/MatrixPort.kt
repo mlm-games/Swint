@@ -109,6 +109,9 @@ interface MatrixPort {
     suspend fun confirmVerification(flowId: String): Boolean
     suspend fun cancelVerification(flowId: String): Boolean
 
+    fun enterForeground()
+    fun enterBackground()
+
     suspend fun logout(): Boolean
 
     suspend fun cancelTxn(txnId: String): Boolean

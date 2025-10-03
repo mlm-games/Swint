@@ -1,14 +1,18 @@
-package org.mlm.frair.matrix
+package org.mlm.frair
 
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import frair.Client as FfiClient
-import frair.RoomSummary as FfiRoom
 import frair.MessageEvent as FfiEvent
 import frair.TimelineObserver
 import org.mlm.frair.MessageEvent
-import org.mlm.frair.RoomSummary
+import org.mlm.frair.matrix.DeviceSummary
+import org.mlm.frair.matrix.MatrixPort
+import org.mlm.frair.matrix.SasPhase
+import org.mlm.frair.matrix.SendState
+import org.mlm.frair.matrix.SendUpdate
+import org.mlm.frair.matrix.VerificationObserver
 
 internal class RustMatrixPort(hs: String) : MatrixPort {
     private val client = FfiClient(hs)

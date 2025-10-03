@@ -73,6 +73,8 @@ class MatrixService(val port: MatrixPort) {
     suspend fun confirmVerification(flowId: String) = port.confirmVerification(flowId)
     suspend fun cancelVerification(flowId: String) = port.cancelVerification(flowId)
 
+    fun enterForeground() = port.enterForeground()
+    fun enterBackground() = port.enterBackground()
     suspend fun logout(): Boolean = port.logout()
 
     suspend fun sendAttachmentFromPath(
