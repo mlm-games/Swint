@@ -21,10 +21,26 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun recent(roomId: String, limit: Int): List<MessageEvent> =
         client.recentEvents(roomId, limit.toUInt()).map { it.toModel() }
 
-    override fun timeline(roomId: String): Flow<MessageEvent> = callbackFlow {
-        val obs = object : TimelineObserver { override fun onEvent(event: FfiEvent) { trySend(event.toModel()) } }
-        client.observeRoomTimeline(roomId, obs)
-        awaitClose { }
+    override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
+        val obs = object : frair.TimelineDiffObserver {
+            override fun onInsert(event: frair.MessageEvent) {
+                trySend(TimelineDiff.Insert(event.toModel()))
+            }
+            override fun onUpdate(event: frair.MessageEvent) {
+                trySend(TimelineDiff.Update(event.toModel()))
+            }
+            override fun onRemove(eventId: String) {
+                trySend(TimelineDiff.Remove(eventId))
+            }
+            override fun onClear() {
+                trySend(TimelineDiff.Clear)
+            }
+            override fun onReset(events: List<frair.MessageEvent>) {
+                trySend(TimelineDiff.Reset(events.map { it.toModel() }))
+            }
+        }
+        client.observeRoomTimelineDiffs(roomId, obs)
+        awaitClose { /* TODO: unsubscribe from Rust side */ }
     }
     override suspend fun initCaches(): Boolean = client.initCaches()
 
