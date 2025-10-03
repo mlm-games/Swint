@@ -149,6 +149,13 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override fun close() = client.shutdown()
+    override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
+        return client.setTyping(roomId, typing)
+    }
+
+    override fun whoami(): String? {
+        return client.whoami()
+    }
 
     override suspend fun paginateBack(roomId: String, count: Int) = client.paginateBackwards(roomId, count.toUShort())
     override suspend fun paginateForward(roomId: String, count: Int) = client.paginateForwards(roomId, count.toUShort())
@@ -275,7 +282,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         val cb = if (onProgress != null) object : frair.ProgressObserver {
             override fun onProgress(sent: ULong, total: ULong?) { onProgress(sent.toLong(), total?.toLong()) }
         } else null
-        return client.sendAttachmentBytes(roomId, filename, mime, data.toList().toByteArray(), cb)
+        return client.sendAttachmentBytes(roomId, filename, mime, data, cb)
     }
     override suspend fun downloadToPath(mxcUri: String, savePath: String, onProgress: ((Long, Long?) -> Unit)?): Result<String> {
         val cb = if (onProgress != null) object : frair.ProgressObserver {

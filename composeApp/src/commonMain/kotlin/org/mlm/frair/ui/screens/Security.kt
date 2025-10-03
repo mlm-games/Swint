@@ -447,32 +447,36 @@ private fun RecoveryTab(state: AppState, onIntent: (Intent) -> Unit) {
         }
 
         // Additional security options
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    "Security Options",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium
-                )
+        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+            LazyColumn(modifier = Modifier.padding(16.dp)) {
+                item {
+                    Text(
+                        "Security Options",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
+                    )
 
-                Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(12.dp))
 
-                // Options list
-                SecurityOption(
-                    icon = Icons.Default.Backup,
-                    title = "Backup Keys",
-                    subtitle = "Export your encryption keys",
-                    onClick = { /* TODO */ }
-                )
+                    // Options list
+                    SecurityOption(
+                        icon = Icons.Default.Backup,
+                        title = "Backup Keys",
+                        subtitle = "Export your encryption keys",
+                        onClick = { /* TODO */ }
+                    )
+                }
 
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                item {
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
-                SecurityOption(
-                    icon = Icons.Default.History,
-                    title = "Session History",
-                    subtitle = "View all active sessions",
-                    onClick = { /* TODO */ }
-                )
+                    SecurityOption(
+                        icon = Icons.Default.History,
+                        title = "Session History",
+                        subtitle = "View all active sessions",
+                        onClick = { /* TODO */ }
+                    )
+                }
             }
         }
     }

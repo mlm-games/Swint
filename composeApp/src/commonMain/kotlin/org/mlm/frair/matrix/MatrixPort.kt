@@ -69,6 +69,9 @@ interface MatrixPort {
     fun isLoggedIn(): Boolean
     fun close()
 
+    suspend fun setTyping(roomId: String, typing: Boolean): Boolean
+    fun whoami(): String?  // "@user:server" or null if not logged in
+
     suspend fun enqueueText(roomId: String, body: String, txnId: String? = null): String
     fun startSendWorker()
     fun observeSends(): Flow<SendUpdate>

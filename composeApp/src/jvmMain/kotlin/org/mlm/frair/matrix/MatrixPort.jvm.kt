@@ -166,6 +166,14 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.observeTyping(roomId, obs)
     }
 
+    override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
+        return client.setTyping(roomId, typing)
+    }
+
+    override fun whoami(): String? {
+        return client.whoami()
+    }
+
     override fun startSupervisedSync(observer: MatrixPort.SyncObserver) {
         val cb = object : frair.SyncObserver {
             override fun onState(status: frair.SyncStatus) {
