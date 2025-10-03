@@ -5,9 +5,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import android.content.Intent
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import org.mlm.frair.storage.provideAppDataStore
 
 class MainActivity : ComponentActivity() {
+    private val deepLinkRoomIds = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    private val deepLinks = deepLinkRoomIds.asSharedFlow()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -16,7 +21,7 @@ class MainActivity : ComponentActivity() {
 
         handleIntent(intent)
         setContent {
-            App(dataStore)
+            App(dataStore = dataStore, deepLinks = deepLinks)
         }
     }
 
@@ -26,15 +31,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent) {
-//        intent.data?.let { uri ->
-//            when {
-//                uri.scheme == "frair" && uri.host == "room" -> {
-//                    val roomId = uri.getQueryParameter("id")
-//                    roomId?.let {
-//                        store.dispatch(org.mlm.frair.Intent.OpenRoomById(it))
-//                    }
-//                }
-//            }
-//        }
+        intent.data?.let { uri ->
+            if (uri.scheme == "frair" && uri.host == "room") {
+                val roomId = uri.getQueryParameter("id")
+                if (!roomId.isNullOrBlank()) {
+                    deepLinkRoomIds.tryEmit(roomId)
+                }
+            }
+        }
     }
 }
