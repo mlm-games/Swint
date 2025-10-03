@@ -258,7 +258,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         val cb = if (onProgress != null) object : frair.ProgressObserver {
             override fun onProgress(sent: ULong, total: ULong?) { onProgress(sent.toLong(), total?.toLong()) }
         } else null
-        return client.sendAttachmentBytes(roomId, filename, mime, data.toList().toByteArray(), cb)
+        return client.sendAttachmentBytes(roomId, filename, mime, data, cb)
     }
     override suspend fun downloadToPath(mxcUri: String, savePath: String, onProgress: ((Long, Long?) -> Unit)?): Result<String> {
         val cb = if (onProgress != null) object : frair.ProgressObserver {
