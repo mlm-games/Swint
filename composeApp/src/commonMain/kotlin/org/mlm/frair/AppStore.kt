@@ -13,6 +13,7 @@ import org.mlm.frair.matrix.SendState
 import org.mlm.frair.matrix.VerificationObserver
 import org.mlm.frair.storage.loadString
 import org.mlm.frair.storage.saveString
+import org.mlm.frair.ui.components.AttachmentData
 
 sealed class Screen {
     object Login : Screen()
@@ -70,6 +71,19 @@ sealed class Intent {
 
     data class OpenRoomById(val roomId: String) : Intent()
     data class SetRoomSearch(val query: String) : Intent()
+
+    data class AttachFile(val path: String, val mimeType: String, val fileName: String) : Intent()
+    data class DownloadFile(val mxcUri: String, val savePath: String) : Intent()
+    data object CancelCurrentUpload : Intent()
+
+    // Send queue management
+    data class CancelQueuedMessage(val txnId: String) : Intent()
+    data class RetryQueuedMessage(val txnId: String) : Intent()
+    data object ClearFailedMessages : Intent()
+
+    // Media cache
+    data object ShowMediaCacheInfo : Intent()
+    data class ClearMediaCache(val maxBytes: Long) : Intent()
 }
 
 data class SendIndicator(
@@ -133,6 +147,16 @@ data class AppState(
 
     val paginationStates: Map<String, MatrixPort.PaginationState> = emptyMap(),
     val cachedRooms: Set<String> = emptySet(),
+
+    val uploadProgress: Map<String, Float> = emptyMap(),
+    val downloadProgress: Map<String, Float> = emptyMap(),
+    val mediaCacheSize: Long = 0L,
+    val mediaCacheFiles: Long = 0L,
+    val pendingSendCount: Int = 0,
+
+    val currentAttachment: AttachmentData? = null,
+    val isUploadingAttachment: Boolean = false,
+    val attachmentError: String? = null,
 )
 
 data class VerificationRequest(
@@ -209,7 +233,6 @@ class AppStore(
                 saveCachedRoomList(rooms)
             }
 
-            // CHANGED: Don't switch screens on verification request
             matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
                 override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
                     set {
@@ -364,7 +387,7 @@ class AppStore(
         return try {
             val json = loadFromLocalStorage("cached_rooms") ?: return emptyList()
             kotlinx.serialization.json.Json.decodeFromString<RoomsPayload>(json).rooms
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -400,6 +423,17 @@ class AppStore(
 
             is Intent.React -> react(intent.event, intent.emoji)
             Intent.SyncNow -> reloadCurrentRoom()
+
+            is Intent.AttachFile -> attachFile(intent.path, intent.mimeType, intent.fileName)
+            is Intent.DownloadFile -> downloadFile(intent.mxcUri, intent.savePath)
+            Intent.CancelCurrentUpload -> set { copy(currentAttachment = null, isUploadingAttachment = false) }
+
+            is Intent.CancelQueuedMessage -> cancelQueuedMessage(intent.txnId)
+            is Intent.RetryQueuedMessage -> retryQueuedMessage(intent.txnId)
+            Intent.ClearFailedMessages -> clearFailedMessages()
+
+            Intent.ShowMediaCacheInfo -> updateMediaCacheInfo()
+            is Intent.ClearMediaCache -> clearMediaCache(intent.maxBytes)
 
             Intent.PaginateBack -> paginateBack()
             Intent.PaginateForward -> paginateForward()
@@ -725,7 +759,8 @@ class AppStore(
     }
 
     private fun acceptIncomingVerification() = scope.launch {
-        val request = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
+        val request =
+            state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
         if (request == null) {
             set { copy(showVerificationDialog = false) }
             return@launch
@@ -733,14 +768,11 @@ class AppStore(
 
         val obs = commonVerifObserver()
 
-        // Start the verification flow
-        if (!matrix.acceptVerification(request.flowId)) {
+        if (!matrix.acceptVerification(request.flowId, obs)) {
             set { copy(sasError = "Accept failed") }
         }
-        // Dialog stays open to show emoji verification
     }
 
-    // NEW: Handle incoming verification rejection
     private fun rejectIncomingVerification() = scope.launch {
         val request = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
         if (request != null) {
@@ -750,12 +782,10 @@ class AppStore(
         moveToNextVerification()
     }
 
-    // NEW: Dismiss dialog and move to next pending verification
     private fun dismissVerificationDialog() {
         moveToNextVerification()
     }
 
-    // NEW: Move to next verification in queue
     private fun moveToNextVerification() {
         set {
             val remaining = pendingVerifications.drop(1)
@@ -774,7 +804,8 @@ class AppStore(
 
     private fun acceptSas() = scope.launch {
         val id = state.value.sasFlowId ?: return@launch
-        if (!matrix.acceptVerification(id)) set { copy(sasError = "Accept failed") }
+        val obs = commonVerifObserver()
+        if (!matrix.acceptVerification(id, obs)) set { copy(sasError = "Accept failed") }
     }
 
     private fun confirmSas() = scope.launch {
@@ -790,6 +821,112 @@ class AppStore(
     private fun logout() = launchBusy {
         matrix.logout()
         set { AppState() }
+    }
+
+    private fun clearFailedMessages() = scope.launch {
+        state.value.pendingByRoom.values.flatten()
+            .filter { it.state == SendState.Failed }
+            .forEach { indicator ->
+                matrix.port.cancelTxn(indicator.txnId)
+            }
+        refreshPendingMessages()
+    }
+
+        private fun attachFile(path: String, mimeType: String, fileName: String) = launchBusy {
+        val room = (state.value.screen as? Screen.Room)?.room ?: return@launchBusy
+
+        set {
+            copy(
+                currentAttachment = AttachmentData(path, mimeType, fileName, 0),
+                isUploadingAttachment = true
+            )
+        }
+
+        val success = matrix.sendAttachmentFromPath(
+            roomId = room.id,
+            path = path,
+            mime = mimeType,
+            filename = fileName
+        ) { sent, total ->
+            val progress = if (total != null && total > 0) {
+                sent.toFloat() / total.toFloat()
+            } else 0f
+
+            set {
+                copy(uploadProgress = uploadProgress + (path to progress))
+            }
+        }
+
+        set {
+            copy(
+                currentAttachment = null,
+                isUploadingAttachment = false,
+                uploadProgress = uploadProgress - path,
+                attachmentError = if (!success) "Failed to send attachment" else null
+            )
+        }
+
+        if (success) {
+            reloadCurrentRoom()
+        }
+    }
+
+    private fun downloadFile(mxcUri: String, savePath: String) = scope.launch {
+        matrix.downloadToPath(
+            mxc = mxcUri,
+            savePath = savePath
+        ) { sent, total ->
+            val progress = if (total != null && total > 0) {
+                sent.toFloat() / total.toFloat()
+            } else 0f
+
+            set {
+                copy(downloadProgress = downloadProgress + (mxcUri to progress))
+            }
+        }.onSuccess {
+            set { copy(downloadProgress = downloadProgress - mxcUri) }
+            // Notify user of successful download
+        }.onFailure {
+            set {
+                copy(
+                    downloadProgress = downloadProgress - mxcUri,
+                    error = "Download failed: ${it.message}"
+                )
+            }
+        }
+    }
+
+    private fun updateMediaCacheInfo() = scope.launch {
+        val (bytes, files) = matrix.mediaCacheStats()
+        set {
+            copy(
+                mediaCacheSize = bytes,
+                mediaCacheFiles = files
+            )
+        }
+    }
+
+    private fun clearMediaCache(maxBytes: Long) = scope.launch {
+        val cleared = matrix.mediaCacheEvict(maxBytes)
+        set {
+            copy(error = "Cleared $cleared files from cache")
+        }
+        updateMediaCacheInfo()
+    }
+
+    private fun cancelQueuedMessage(txnId: String) = scope.launch {
+        matrix.port.cancelTxn(txnId)
+        refreshPendingMessages()
+    }
+
+    private fun retryQueuedMessage(txnId: String) = scope.launch {
+        matrix.port.retryTxnNow(txnId)
+        refreshPendingMessages()
+    }
+
+    private fun refreshPendingMessages() = scope.launch {
+        val count = matrix.port.pendingSends()
+        set { copy(pendingSendCount = count.toInt()) }
     }
 
     private fun recoverNow() = launchBusy {

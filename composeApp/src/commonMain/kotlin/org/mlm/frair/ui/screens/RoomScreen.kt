@@ -21,15 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.frair.*
-import org.mlm.frair.ui.components.EmptyRoomView
-import org.mlm.frair.ui.components.MessageActionSheet
-import org.mlm.frair.ui.components.MessageBubble
-import org.mlm.frair.ui.components.MessageComposer
-import org.mlm.frair.ui.components.SendStatusChip
-import org.mlm.frair.ui.components.TypingDots
-import org.mlm.frair.ui.components.formatDate
-import org.mlm.frair.ui.components.formatTypingText
-import java.time.format.DateTimeFormatter
+import org.mlm.frair.ui.components.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,6 +36,7 @@ fun RoomScreen(
 
     var showActions by remember { mutableStateOf(false) }
     var actionTarget by remember { mutableStateOf<MessageEvent?>(null) }
+    var showAttachmentPicker by remember { mutableStateOf(false) }
 
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
     val outbox = state.pendingByRoom[room.id].orEmpty()
@@ -154,11 +147,34 @@ fun RoomScreen(
                             )
                         }
                     }
+
+                    // Sync progress bar
+                    AnimatedVisibility(visible = state.syncBanner != null) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
         },
         bottomBar = {
             Column {
+                // Upload progress
+                AnimatedVisibility(
+                    visible = state.currentAttachment != null && state.isUploadingAttachment
+                ) {
+                    state.currentAttachment?.let { attachment ->
+                        val progress = state.uploadProgress[attachment.path] ?: 0f
+                        AttachmentProgress(
+                            fileName = attachment.fileName,
+                            progress = progress,
+                            totalSize = attachment.sizeBytes,
+                            onCancel = { onIntent(Intent.CancelCurrentUpload) }
+                        )
+                    }
+                }
+
                 // Send status chips
                 AnimatedVisibility(visible = outbox.isNotEmpty()) {
                     Surface(
@@ -178,16 +194,54 @@ fun RoomScreen(
                     }
                 }
 
+                // Pending message count
+                AnimatedVisibility(visible = state.pendingSendCount > 0) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "${state.pendingSendCount} messages in queue",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            TextButton(
+                                onClick = { onIntent(Intent.ClearFailedMessages) }
+                            ) {
+                                Text("Clear failed", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+
+                // Modern composer with attachment support
                 MessageComposer(
                     value = state.input,
                     enabled = !state.isBusy,
                     isOffline = state.isOffline,
                     replyingTo = state.replyingTo,
                     editing = state.editing,
+                    currentAttachment = state.currentAttachment,
+                    isUploadingAttachment = state.isUploadingAttachment,
                     onValueChange = { onIntent(Intent.ChangeInput(it)) },
-                    onSend = { onIntent(Intent.Send) },
+                    onSend = {
+                        if (state.editing != null) {
+                            onIntent(Intent.ConfirmEdit)
+                        } else {
+                            onIntent(Intent.Send)
+                        }
+                    },
                     onCancelReply = { onIntent(Intent.CancelReply) },
-                    onCancelEdit = { onIntent(Intent.CancelEdit) }
+                    onCancelEdit = { onIntent(Intent.CancelEdit) },
+                    onAttach = { showAttachmentPicker = true },
+                    onCancelUpload = { onIntent(Intent.CancelCurrentUpload) }
                 )
             }
         },
@@ -202,6 +256,7 @@ fun RoomScreen(
                         scope.launch {
                             listState.animateScrollToItem(events.size - 1)
                         }
+                        onIntent(Intent.MarkRoomRead(room.id))
                     },
                     containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                     contentColor = MaterialTheme.colorScheme.onTertiaryContainer
@@ -238,7 +293,7 @@ fun RoomScreen(
                             ) {
                                 OutlinedButton(
                                     onClick = { onIntent(Intent.PaginateBack) },
-                                    enabled = !state.isPaginatingBack
+                                    enabled = !state.isPaginatingBack && !state.isOffline
                                 ) {
                                     if (state.isPaginatingBack) {
                                         CircularProgressIndicator(
@@ -252,6 +307,21 @@ fun RoomScreen(
                                         else "Load earlier messages"
                                     )
                                 }
+                            }
+                        }
+                    } else {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                AssistChip(
+                                    onClick = {},
+                                    enabled = false,
+                                    label = { Text("Beginning of conversation") }
+                                )
                             }
                         }
                     }
@@ -270,6 +340,7 @@ fun RoomScreen(
                             lastDate = eventDate
                         }
 
+                        // Message bubble
                         val previousEvent = if (index > 0) events[index - 1] else null
                         val grouped = previousEvent?.sender == event.sender &&
                                 (event.timestamp - (previousEvent?.timestamp ?: 0)) < 60000
@@ -293,9 +364,78 @@ fun RoomScreen(
                             Spacer(modifier = Modifier.height(2.dp))
                         }
                     }
+
+                    // Load more at bottom (for forward pagination)
+                    if (state.isPaginatingForward) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Download progress overlay
+            if (state.downloadProgress.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                ) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
+                        elevation = CardDefaults.cardElevation(4.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            state.downloadProgress.forEach { (uri, progress) ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        progress = progress,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        "Downloading... ${(progress * 100).toInt()}%",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+
+    // Attachment picker
+    if (showAttachmentPicker) {
+        AttachmentPicker(
+            onAttachmentSelected = { attachment ->
+                onIntent(Intent.AttachFile(
+                    path = attachment.path,
+                    mimeType = attachment.mimeType,
+                    fileName = attachment.fileName
+                ))
+                showAttachmentPicker = false
+            },
+            onDismiss = { showAttachmentPicker = false }
+        )
     }
 
     // Message action sheet
@@ -325,6 +465,45 @@ fun RoomScreen(
             }
         )
     }
+
+    // Room actions dropdown
+    DropdownMenu(
+        expanded = showActions,
+        onDismissRequest = { showActions = false }
+    ) {
+        DropdownMenuItem(
+            text = { Text("Room settings") },
+            onClick = {
+                showActions = false
+                // Navigate to room settings
+            },
+            leadingIcon = { Icon(Icons.Default.Settings, null) }
+        )
+        DropdownMenuItem(
+            text = { Text("Media & files") },
+            onClick = {
+                showActions = false
+                // Navigate to media gallery
+            },
+            leadingIcon = { Icon(Icons.Default.PermMedia, null) }
+        )
+        DropdownMenuItem(
+            text = { Text("Search in room") },
+            onClick = {
+                showActions = false
+                // Open search
+            },
+            leadingIcon = { Icon(Icons.Default.Search, null) }
+        )
+        DropdownMenuItem(
+            text = { Text("Clear cache") },
+            onClick = {
+                showActions = false
+                onIntent(Intent.ShowMediaCacheInfo)
+            },
+            leadingIcon = { Icon(Icons.Default.CleaningServices, null) }
+        )
+    }
 }
 
 @Composable
@@ -336,7 +515,10 @@ private fun DateHeader(date: String) {
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        HorizontalDivider(modifier = Modifier.weight(1f))
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
+        )
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = MaterialTheme.shapes.small,
@@ -349,6 +531,9 @@ private fun DateHeader(date: String) {
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
             )
         }
-        HorizontalDivider(modifier = Modifier.weight(1f))
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
+        )
     }
 }

@@ -219,10 +219,35 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.startUserSas(userId, obs)
     }
 
-    override suspend fun acceptVerification(flowId: String): Boolean = client.acceptVerification(flowId)
+    override suspend fun acceptVerification(flowId: String, observer: VerificationObserver): Boolean {
+        val obs = object : frair.VerificationObserver {
+            override fun onPhase(flowId: String, phase: frair.SasPhase) {
+                observer.onPhase(flowId, phase.toCommon())
+            }
+            override fun onEmojis(payload: frair.SasEmojis) {
+                observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
+            }
+            override fun onError(flowId: String, message: String) {
+                observer.onError(flowId, message)
+            }
+        }
+        return client.acceptVerification(flowId, obs)
+    }
     override suspend fun confirmVerification(flowId: String): Boolean = client.confirmVerification(flowId)
     override suspend fun cancelVerification(flowId: String): Boolean = client.cancelVerification(flowId)
     override suspend fun logout(): Boolean = client.logout()
+    override suspend fun cancelTxn(txnId: String): Boolean =
+        client.cancelTxn(txnId)
+
+    override suspend fun retryTxnNow(txnId: String): Boolean =
+        client.retryTxnNow(txnId)
+
+    override suspend fun pendingSends(): UInt =
+        client.pendingSends()
+
+    override suspend fun checkVerificationRequest(userId: String, flowId: String): Boolean =
+        client.checkVerificationRequest(userId, flowId)
+
     override suspend fun sendAttachmentFromPath(roomId: String, path: String, mime: String, filename: String?, onProgress: ((Long, Long?) -> Unit)?): Boolean {
         val cb = if (onProgress != null) object : frair.ProgressObserver {
             override fun onProgress(sent: ULong, total: ULong?) { onProgress(sent.toLong(), total?.toLong()) }

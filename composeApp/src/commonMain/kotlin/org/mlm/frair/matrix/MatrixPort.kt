@@ -105,11 +105,17 @@ interface MatrixPort {
     suspend fun startSelfSas(targetDeviceId: String, observer: VerificationObserver): String
     suspend fun startUserSas(userId: String, observer: VerificationObserver): String
 
-    suspend fun acceptVerification(flowId: String): Boolean
+    suspend fun acceptVerification(flowId: String, observer: VerificationObserver): Boolean
     suspend fun confirmVerification(flowId: String): Boolean
     suspend fun cancelVerification(flowId: String): Boolean
 
     suspend fun logout(): Boolean
+
+    suspend fun cancelTxn(txnId: String): Boolean
+    suspend fun retryTxnNow(txnId: String): Boolean
+    suspend fun pendingSends(): UInt
+
+    suspend fun checkVerificationRequest(userId: String, flowId: String): Boolean
 
     suspend fun sendAttachmentFromPath(
         roomId: String,

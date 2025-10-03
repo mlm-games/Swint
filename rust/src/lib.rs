@@ -287,6 +287,7 @@ pub struct Client {
     verifs: VerifMap,
     send_observers: Arc<Mutex<Vec<Arc<dyn SendObserver>>>>,
     send_tx: tokio::sync::mpsc::UnboundedSender<SendUpdate>,
+    inbox: Arc<Mutex<HashMap<String, (OwnedUserId, OwnedDeviceId)>>>,
 }
 
 #[derive(Clone, uniffi::Enum)]
@@ -345,6 +346,7 @@ impl Client {
             verifs: Arc::new(Mutex::new(HashMap::new())),
             send_observers: Arc::new(Mutex::new(Vec::new())),
             send_tx,
+            inbox: Arc::new(Mutex::new(HashMap::new())),
         };
 
         // Initialize caches early - fail fast if there's a problem
@@ -588,7 +590,34 @@ impl Client {
     }
 
     pub fn start_verification_inbox(&self, observer: Box<dyn VerificationInboxObserver>) {
-        let _obs: Arc<dyn VerificationInboxObserver> = Arc::from(observer);
+        let client = self.inner.clone();
+        let obs: Arc<dyn VerificationInboxObserver> = Arc::from(observer);
+        let inbox = self.inbox.clone();
+
+        let h = RT.spawn(async move {
+            // Observe to-device verification requests and forward them
+            let handler = client.observe_events::<ToDeviceKeyVerificationRequestEvent, ()>();
+            let mut sub = handler.subscribe();
+
+            while let Some((ev, ())) = sub.next().await {
+                let flow_id = ev.content.transaction_id.to_string();
+                let from_user = ev.sender.to_string();
+                let from_device = ev.content.from_device.to_string();
+
+                // Remember for later acceptance
+                inbox
+                    .lock()
+                    .unwrap()
+                    .insert(flow_id.clone(), (ev.sender, ev.content.from_device.clone()));
+
+                // Best-effort callback (shield UI from panics)
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    obs.on_request(flow_id.clone(), from_user.clone(), from_device.clone());
+                }));
+            }
+        });
+
+        self.guards.lock().unwrap().push(h);
     }
 
     pub fn check_verification_request(&self, user_id: String, flow_id: String) -> bool {
@@ -1260,12 +1289,40 @@ impl Client {
         })
     }
 
-    pub fn accept_verification(&self, flow_id: String) -> bool {
+    pub fn accept_verification(
+        &self,
+        flow_id: String,
+        observer: Box<dyn VerificationObserver>,
+    ) -> bool {
+        let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
+            // If we already have a SAS flow, accept it.
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
-                f.sas.accept().await.is_ok()
-            } else {
-                false
+                return f.sas.accept().await.is_ok();
+            }
+
+            // Otherwise, this should be an incoming request we saw earlier.
+            let (user, _device) = match self.inbox.lock().unwrap().get(&flow_id).cloned() {
+                Some(x) => x,
+                None => return false,
+            };
+
+            // Find the request from the verification machine.
+            match self
+                .inner
+                .encryption()
+                .get_verification_request(&user, &flow_id)
+                .await
+            {
+                Some(req) => {
+                    // Accept and then transition to SAS
+                    if req.accept().await.is_err() {
+                        return false;
+                    }
+                    self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
+                    true
+                }
+                None => false,
             }
         })
     }

@@ -1,6 +1,7 @@
 package org.mlm.frair.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,11 +12,29 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -148,5 +167,170 @@ fun MessageBubble(
                 }
             }
         }
+    }
+}
+
+
+data class AttachmentData(
+    val path: String,
+    val mimeType: String,
+    val fileName: String,
+    val sizeBytes: Long
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AttachmentPicker(
+    onAttachmentSelected: (AttachmentData) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 32.dp)
+        ) {
+            Text(
+                "Choose attachment type",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            AttachmentOption(
+                icon = Icons.Default.Image,
+                title = "Photo",
+                subtitle = "Send an image from gallery",
+                onClick = {
+                    // Platform-specific file picker
+                    onDismiss()
+                }
+            )
+
+            AttachmentOption(
+                icon = Icons.Default.VideoLibrary,
+                title = "Video",
+                subtitle = "Share a video",
+                onClick = {
+                    onDismiss()
+                }
+            )
+
+            AttachmentOption(
+                icon = Icons.AutoMirrored.Filled.InsertDriveFile,
+                title = "Document",
+                subtitle = "Send a file",
+                onClick = {
+                    onDismiss()
+                }
+            )
+
+            AttachmentOption(
+                icon = Icons.Default.LocationOn,
+                title = "Location",
+                subtitle = "Share your location",
+                onClick = {
+                    onDismiss()
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AttachmentOption(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = { Text(subtitle) },
+        leadingContent = {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = CircleShape
+            ) {
+                Box(
+                    modifier = Modifier.padding(12.dp)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        },
+        modifier = Modifier.clickable { onClick() }
+    )
+}
+
+@Composable
+fun AttachmentProgress(
+    fileName: String,
+    progress: Float,
+    totalSize: Long,
+    onCancel: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(
+            progress = { progress },
+            modifier = Modifier.size(40.dp),
+            color = ProgressIndicatorDefaults.circularColor,
+            strokeWidth = ProgressIndicatorDefaults.CircularStrokeWidth,
+            trackColor = ProgressIndicatorDefaults.circularIndeterminateTrackColor,
+            strokeCap = ProgressIndicatorDefaults.CircularDeterminateStrokeCap,
+            )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(Modifier.weight(1f)) {
+                Text(
+                    fileName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${formatBytes((totalSize * progress).toLong())} / ${formatBytes(totalSize)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            IconButton(onClick = onCancel) {
+                Icon(Icons.Default.Close, "Cancel")
+            }
+        }
+
+        LinearProgressIndicator(
+        progress = { progress },
+        modifier = Modifier.fillMaxWidth(),
+        color = ProgressIndicatorDefaults.linearColor,
+        trackColor = ProgressIndicatorDefaults.linearTrackColor,
+        strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
+        )
+    }
+}
+
+fun formatBytes(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+        bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
+        else -> "${bytes / (1024 * 1024 * 1024)} GB"
     }
 }

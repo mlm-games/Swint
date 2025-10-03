@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,13 +40,27 @@ fun MessageComposer(
     isOffline: Boolean,
     replyingTo: MessageEvent?,
     editing: MessageEvent?,
+    currentAttachment: AttachmentData?,
+    isUploadingAttachment: Boolean,
     onValueChange: (String) -> Unit,
     onSend: () -> Unit,
     onCancelReply: () -> Unit,
     onCancelEdit: () -> Unit,
-    onAttach: (() -> Unit)? = null
+    onAttach: (() -> Unit)? = null,
+    onCancelUpload: (() -> Unit)? = null
 ) {
     Column {
+        AnimatedVisibility(visible = currentAttachment != null && isUploadingAttachment) {
+            currentAttachment?.let { attachment ->
+                AttachmentProgress(
+                    fileName = attachment.fileName,
+                    progress = 0.5f, // Get from state
+                    totalSize = attachment.sizeBytes,
+                    onCancel = { onCancelUpload?.invoke() }
+                )
+            }
+        }
+
         // Context banner (reply/edit)
         AnimatedVisibility(visible = replyingTo != null || editing != null) {
             Surface(
@@ -85,7 +101,6 @@ fun MessageComposer(
             }
         }
 
-        // Main composer
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 3.dp,
@@ -98,8 +113,10 @@ fun MessageComposer(
                 verticalAlignment = Alignment.Bottom
             ) {
                 // Attachment button
-                if (onAttach != null) {
-                    IconButton(onClick = onAttach) {
+                AnimatedVisibility(
+                    visible = onAttach != null && !isUploadingAttachment
+                ) {
+                    IconButton(onClick = { onAttach?.invoke() }) {
                         Icon(
                             Icons.Default.AttachFile,
                             contentDescription = "Attach",
@@ -108,15 +125,16 @@ fun MessageComposer(
                     }
                 }
 
-                // Text field with better styling
+                // Text field
                 OutlinedTextField(
                     value = value,
                     onValueChange = onValueChange,
                     modifier = Modifier.weight(1f),
-                    enabled = enabled,
+                    enabled = enabled && !isUploadingAttachment,
                     placeholder = {
                         Text(
                             text = when {
+                                isUploadingAttachment -> "Uploading..."
                                 isOffline -> "Offline - messages queued"
                                 editing != null -> "Edit message..."
                                 replyingTo != null -> "Type reply..."
@@ -134,19 +152,27 @@ fun MessageComposer(
 
                 Spacer(Modifier.width(8.dp))
 
-                // Send button with animation
+                // Send button
                 FilledIconButton(
                     onClick = onSend,
-                    enabled = enabled && value.isNotBlank(),
+                    enabled = enabled && value.isNotBlank() && !isUploadingAttachment,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary
                     )
                 ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send"
-                    )
+                    if (isUploadingAttachment) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send"
+                        )
+                    }
                 }
             }
         }
