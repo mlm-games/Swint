@@ -317,6 +317,15 @@ pub trait SendObserver: Send + Sync {
     fn on_update(&self, update: SendUpdate);
 }
 
+#[uniffi::export(callback_interface)]
+pub trait TimelineDiffObserver: Send + Sync {
+    fn on_insert(&self, event: MessageEvent);
+    fn on_update(&self, event: MessageEvent);
+    fn on_remove(&self, event_id: String);
+    fn on_clear(&self);
+    fn on_reset(&self, events: Vec<MessageEvent>);
+}
+
 struct QueuedItem {
     id: i64,
     room_id: String,
@@ -638,12 +647,16 @@ impl Client {
         })
     }
 
-    pub fn observe_room_timeline(&self, room_id: String, observer: Box<dyn TimelineObserver>) {
+    pub fn observe_room_timeline_diffs(
+        &self,
+        room_id: String,
+        observer: Box<dyn TimelineDiffObserver>,
+    ) {
         let client = self.inner.clone();
         let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
             return;
         };
-        let obs: Arc<dyn TimelineObserver> = Arc::from(observer);
+        let obs: Arc<dyn TimelineDiffObserver> = Arc::from(observer);
 
         let h = RT.spawn(async move {
             let Some(room) = client.get_room(&room_id) else {
@@ -654,28 +667,49 @@ impl Client {
             };
             let (items, mut stream) = tl.subscribe().await;
 
-            for it in items.iter() {
-                if let Some(ei) = it.as_event() {
-                    if let Some(ev) = map_event(ei, room_id.as_str()) {
-                        obs.on_event(ev);
-                    }
-                }
-            }
+            // First snapshot as a reset
+            let initial: Vec<_> = items
+                .iter()
+                .filter_map(|it| it.as_event().and_then(|ei| map_event(ei, room_id.as_str())))
+                .collect();
+            obs.on_reset(initial);
+
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
-                    use matrix_sdk_ui::eyeball_im::VectorDiff;
                     match diff {
                         VectorDiff::PushBack { value }
                         | VectorDiff::PushFront { value }
-                        | VectorDiff::Insert { value, .. }
-                        | VectorDiff::Set { value, .. } => {
+                        | VectorDiff::Insert { value, .. } => {
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event(ei, room_id.as_str()) {
-                                    obs.on_event(ev);
+                                    obs.on_insert(ev);
                                 }
                             }
                         }
-                        _ => {}
+                        VectorDiff::Set { value, .. } => {
+                            if let Some(ei) = value.as_event() {
+                                if let Some(ev) = map_event(ei, room_id.as_str()) {
+                                    obs.on_update(ev);
+                                }
+                            }
+                        }
+                        VectorDiff::Remove { index, .. } => {
+                            obs.on_remove(index.to_string());
+                        }
+                        VectorDiff::Clear {} => obs.on_clear(),
+                        VectorDiff::Reset { values } => {
+                            let events = values
+                                .into_iter()
+                                .filter_map(|it| {
+                                    it.as_event().and_then(|ei| map_event(ei, room_id.as_str()))
+                                })
+                                .collect();
+                            obs.on_reset(events);
+                        }
+                        VectorDiff::PopBack {}
+                        | VectorDiff::PopFront {}
+                        | VectorDiff::Truncate { .. }
+                        | VectorDiff::Append { .. } => {}
                     }
                 }
             }
@@ -780,15 +814,14 @@ impl Client {
 
     pub fn send_message(&self, room_id: String, body: String) {
         RT.block_on(async {
+            use matrix_sdk::ruma::events::room::message::RoomMessageEventContent as Msg;
+
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
                 return;
             };
-            if let Some(room) = self.inner.get_room(&room_id) {
-                let content =
-                    matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
-                        body,
-                    );
-                let _ = room.send(content).await;
+            if let Some(timeline) = get_timeline_for(&self.inner, &room_id).await {
+                // Local echo + auto encryption if needed.
+                let _ = timeline.send(Msg::text_plain(body).into()).await;
             }
         });
     }
@@ -1114,23 +1147,29 @@ impl Client {
         progress: Option<Box<dyn ProgressObserver>>,
     ) -> bool {
         RT.block_on(async {
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
+            use matrix_sdk_ui::timeline::{AttachmentConfig, AttachmentSource};
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
                 return false;
             };
-            let Some(room) = self.inner.get_room(&room_id) else {
+            let Some(tl) = get_timeline_for(&self.inner, &rid).await else {
                 return false;
             };
 
             let parsed: Mime = mime.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
-            let res = room
-                .send_attachment(&filename, &parsed, bytes.clone(), AttachmentConfig::new())
-                .await;
-
+            // No local echo currently; see docs
+            let fut = tl.send_attachment(
+                AttachmentSource::Data {
+                    filename: filename.clone(),
+                    bytes: bytes.clone(),
+                },
+                parsed,
+                AttachmentConfig::default(),
+            );
+            let res = fut.await;
             if let Some(p) = progress {
                 let sz = bytes.len() as u64;
                 p.on_progress(sz, Some(sz));
             }
-
             res.is_ok()
         })
     }
@@ -1858,11 +1897,12 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         .event_id()
         .map(|e| e.to_string())
         .unwrap_or_else(|| format!("local-{ts}"));
+
     Some(MessageEvent {
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),
-        body: msg.body().to_string(),
+        body: render_message_text(msg),
         timestamp_ms: ts,
     })
 }
@@ -1970,7 +2010,7 @@ async fn start_v2_fallback_loop(client: SdkClient, obs: Arc<dyn SyncObserver>) {
                     message: Some(e.to_string()),
                 });
 
-                let jitter = rand::thread_rng().gen_range(0.8f64..1.2f64);
+                let jitter = rand::rng().random_range(0.8f64..1.2f64);
                 let wait = (backoff_secs as f64 * jitter).round() as u64;
                 obs.on_state(SyncStatus {
                     phase: SyncPhase::BackingOff,
@@ -1985,4 +2025,12 @@ async fn start_v2_fallback_loop(client: SdkClient, obs: Arc<dyn SyncObserver>) {
             }
         }
     }
+}
+
+fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
+    let mut s = msg.body().to_owned();
+    if msg.is_edited() {
+        s.push_str(" (edited)");
+    }
+    s
 }

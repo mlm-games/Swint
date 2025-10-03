@@ -12,6 +12,14 @@ data class DeviceSummary(
     val locallyTrusted: Boolean
 )
 
+sealed class TimelineDiff<out T> {
+    data class Insert<T>(val item: T) : TimelineDiff<T>()
+    data class Update<T>(val item: T) : TimelineDiff<T>()
+    data class Remove(val eventId: String) : TimelineDiff<Nothing>()
+    data object Clear : TimelineDiff<Nothing>()
+    data class Reset<T>(val items: List<T>) : TimelineDiff<T>()
+}
+
 enum class SasPhase { Requested, Ready, Emojis, Confirmed, Cancelled, Failed, Done }
 
 enum class SendState { Enqueued, Sending, Sent, Retrying, Failed }
@@ -56,7 +64,7 @@ interface MatrixPort {
     suspend fun login(user: String, pass: String)
     suspend fun listRooms(): List<RoomSummary>
     suspend fun recent(roomId: String, limit: Int = 50): List<MessageEvent>
-    fun timeline(roomId: String): Flow<MessageEvent>
+    fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>>
     suspend fun send(roomId: String, body: String)
     fun isLoggedIn(): Boolean
     fun close()

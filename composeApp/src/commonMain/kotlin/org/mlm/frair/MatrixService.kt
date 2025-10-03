@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.Flow
 import org.mlm.frair.matrix.DeviceSummary
 import org.mlm.frair.matrix.MatrixPort
 import org.mlm.frair.matrix.SendUpdate
+import org.mlm.frair.matrix.TimelineDiff
 import org.mlm.frair.matrix.VerificationObserver
 import kotlin.time.ExperimentalTime
 
@@ -43,7 +44,8 @@ class MatrixService(val port: MatrixPort) {
 
     suspend fun listRooms(): List<RoomSummary> = port.listRooms()
     suspend fun loadRecent(roomId: String, limit: Int = 50): List<MessageEvent> = port.recent(roomId, limit)
-    fun timeline(roomId: String): Flow<MessageEvent> = port.timeline(roomId)
+    fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = port.timelineDiffs(roomId)
+
     suspend fun sendMessage(roomId: String, body: String) = runCatching { port.send(roomId, body) }.isSuccess
 
     suspend fun paginateBack(roomId: String, count: Int) = runCatching { port.paginateBack(roomId, count) }.getOrElse { false }

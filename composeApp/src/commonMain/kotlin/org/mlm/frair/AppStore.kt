@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.collectLatest
 import org.mlm.frair.matrix.MatrixPort
 import org.mlm.frair.matrix.SasPhase
 import org.mlm.frair.matrix.SendState
+import org.mlm.frair.matrix.TimelineDiff
 import org.mlm.frair.matrix.VerificationObserver
 import org.mlm.frair.storage.loadString
 import org.mlm.frair.storage.saveString
@@ -590,14 +591,52 @@ class AppStore(
     private fun startTimeline(roomId: String) {
         stopTimeline()
         timelineJob = scope.launch {
-            matrix.timeline(roomId).collect { ev ->
+            matrix.timelineDiffs(roomId).collect { diff ->
                 set {
-                    copy(
-                        events = (events + ev)
-                            .distinctBy { it.eventId }
-                            .sortedBy { it.timestamp }
-                            .takeLast(500) // Keep last 500 messages max
-                    )
+                    val cap = 500
+                    when (diff) {
+                        is TimelineDiff.Reset -> {
+                            copy(
+                                events = diff.items
+                                    .distinctBy { it.eventId }
+                                    .sortedBy { it.timestamp }
+                                    .takeLast(cap)
+                            )
+                        }
+                        is TimelineDiff.Clear -> {
+                            copy(events = emptyList())
+                        }
+                        is TimelineDiff.Insert -> {
+                            val e = diff.item
+                            val idx = events.indexOfFirst { it.eventId == e.eventId }
+                            val next = events.toMutableList().apply {
+                                if (idx >= 0) set(idx, e) else add(e)
+                                sortBy { it.timestamp }
+                                if (size > cap) repeat(size - cap) { removeAt(0) }
+                            }
+                            copy(events = next)
+                        }
+                        is TimelineDiff.Update -> {
+                            val e = diff.item
+                            val idx = events.indexOfFirst { it.eventId == e.eventId }
+                            if (idx < 0) {
+                                // fall back to insert semantics
+                                val next = (events + e).sortedBy { it.timestamp }.takeLast(cap)
+                                copy(events = next)
+                            } else {
+                                val next = events.toMutableList().apply {
+                                    set(idx, e)
+                                    // keep sorted; if you trust monotonic timestamps you can skip
+                                    sortBy { it.timestamp }
+                                }
+                                copy(events = next)
+                            }
+                        }
+                        is TimelineDiff.Remove -> {
+                            val next = events.filterNot { it.eventId == diff.eventId }
+                            copy(events = next)
+                        }
+                    }
                 }
             }
         }
