@@ -19,10 +19,12 @@ materialIconsExtended = "1.7.3"
 okio = "3.16.0"
 serialization = "1.7.3"
 coroutines = "1.10.2"
+workRuntimeKtx = "2.10.5"
 
 [libraries]
 androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferencesCore" }
 androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
+androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "workRuntimeKtx" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 junit = { module = "junit:junit", version.ref = "junit" }

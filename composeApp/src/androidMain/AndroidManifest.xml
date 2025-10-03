@@ -24,6 +24,9 @@
                     android:host="room" />
             </intent-filter>
         </activity>
+        <receiver
+            android:name=".SyncReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

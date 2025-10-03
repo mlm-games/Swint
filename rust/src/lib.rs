@@ -32,8 +32,9 @@ use matrix_sdk::{
     encryption::verification::{SasState as SdkSasState, SasVerification, VerificationRequest},
     ruma::events::receipt::ReceiptThread,
 };
-use matrix_sdk_ui::timeline::{
-    EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem,
+use matrix_sdk_ui::{
+    sync_service::SyncService,
+    timeline::{EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem},
 };
 
 use std::panic::AssertUnwindSafe;
@@ -288,6 +289,7 @@ pub struct Client {
     send_observers: Arc<Mutex<Vec<Arc<dyn SendObserver>>>>,
     send_tx: tokio::sync::mpsc::UnboundedSender<SendUpdate>,
     inbox: Arc<Mutex<HashMap<String, (OwnedUserId, OwnedDeviceId)>>>,
+    sync_service: Arc<Mutex<Option<Arc<SyncService>>>>,
 }
 
 #[derive(Clone, uniffi::Enum)]
@@ -347,6 +349,7 @@ impl Client {
             send_observers: Arc::new(Mutex::new(Vec::new())),
             send_tx,
             inbox: Arc::new(Mutex::new(HashMap::new())),
+            sync_service: Arc::new(Mutex::new(None)),
         };
 
         // Initialize caches early - fail fast if there's a problem
@@ -700,12 +703,19 @@ impl Client {
     }
 
     pub fn shutdown(&self) {
+        if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
+            // Best-effort stop; ignore errors.
+            let _ = RT.block_on(async { svc.stop().await });
+        }
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();
         }
     }
 
     pub fn logout(&self) -> bool {
+        if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
+            let _ = RT.block_on(async { svc.stop().await });
+        }
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();
         }
@@ -1100,64 +1110,58 @@ impl Client {
     pub fn start_supervised_sync(&self, observer: Box<dyn SyncObserver>) {
         let client = self.inner.clone();
         let obs: Arc<dyn SyncObserver> = Arc::from(observer);
+        let svc_slot = self.sync_service.clone();
 
+        // Try supervised Sliding Sync first (MSC4186); fall back to /sync v2 if unavailable.
         let h = RT.spawn(async move {
-            use rand::Rng;
-
-            let mut backoff_secs: u64 = 1;
-            let max_backoff: u64 = 60;
-            let mut consecutive_failures: u32 = 0;
-
             obs.on_state(SyncStatus {
                 phase: SyncPhase::Idle,
                 message: None,
             });
 
-            loop {
-                obs.on_state(SyncStatus {
-                    phase: SyncPhase::Running,
-                    message: None,
-                });
-
-                match client.sync_once(SyncSettings::default()).await {
-                    Ok(_) => {
-                        consecutive_failures = 0;
-                        backoff_secs = 1;
-                        continue;
+            match SyncService::builder(client.clone()).build().await {
+                Ok(svc) => {
+                    let svc = Arc::new(svc);
+                    {
+                        let mut guard = svc_slot.lock().unwrap();
+                        *guard = Some(svc.clone());
                     }
-                    Err(e) => {
-                        consecutive_failures += 1;
-                        let msg = e.to_string();
 
-                        if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
-                            obs.on_state(SyncStatus {
-                                phase: SyncPhase::Error,
-                                message: Some(format!(
-                                    "Connection lost after {} attempts. Restart app to retry.",
-                                    consecutive_failures
-                                )),
+                    // Observe state and forward to UI.
+                    let mut state_stream = svc.state();
+                    let obs_clone = obs.clone();
+                    spawn(async move {
+                        use futures_util::StreamExt;
+                        while let Some(state) = state_stream.next().await {
+                            use matrix_sdk_ui::sync_service::State as UiSyncState;
+                            let (phase, msg) = match state {
+                                UiSyncState::Idle => (SyncPhase::Idle, None),
+                                UiSyncState::Running => (SyncPhase::Running, None),
+                                UiSyncState::Offline => (SyncPhase::BackingOff, None),
+                                UiSyncState::Error => (SyncPhase::Error, Some("sync error".into())),
+                                UiSyncState::Terminated => {
+                                    (SyncPhase::Error, Some("terminated".into()))
+                                }
+                            };
+                            obs_clone.on_state(SyncStatus {
+                                phase,
+                                message: msg,
                             });
-                            break;
                         }
+                    });
 
-                        obs.on_state(SyncStatus {
-                            phase: SyncPhase::Error,
-                            message: Some(msg.clone()),
-                        });
-
-                        let jitter = rand::thread_rng().gen_range(0.8f64..1.2f64);
-                        let wait = (backoff_secs as f64 * jitter).round() as u64;
-                        obs.on_state(SyncStatus {
-                            phase: SyncPhase::BackingOff,
-                            message: Some(format!(
-                                "retrying in {}s (attempt {})",
-                                wait, consecutive_failures
-                            )),
-                        });
-
-                        tokio::time::sleep(Duration::from_secs(wait)).await;
-                        backoff_secs = (backoff_secs * 2).min(max_backoff);
-                    }
+                    // Start supervising (non-blocking).
+                    svc.start().await;
+                }
+                Err(e) => {
+                    // Likely unsupported MSC4186 (e.g. 404 M_UNRECOGNIZED) or early setup failure.
+                    obs.on_state(SyncStatus {
+                        phase: SyncPhase::Error,
+                        message: Some(format!(
+                            "sliding sync unavailable: {e} — using /sync v2 fallback"
+                        )),
+                    });
+                    start_v2_fallback_loop(client.clone(), obs.clone()).await;
                 }
             }
         });
@@ -1837,4 +1841,57 @@ fn now_unix_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     dur.as_millis() as i64
+}
+
+async fn start_v2_fallback_loop(client: SdkClient, obs: Arc<dyn SyncObserver>) {
+    use rand::Rng;
+    let mut backoff_secs: u64 = 1;
+    let max_backoff: u64 = 60;
+    let mut consecutive_failures: u32 = 0;
+
+    loop {
+        obs.on_state(SyncStatus {
+            phase: SyncPhase::Running,
+            message: None,
+        });
+
+        match client.sync_once(SyncSettings::default()).await {
+            Ok(_) => {
+                consecutive_failures = 0;
+                backoff_secs = 1;
+            }
+            Err(e) => {
+                consecutive_failures += 1;
+
+                if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
+                    obs.on_state(SyncStatus {
+                        phase: SyncPhase::Error,
+                        message: Some(format!(
+                            "Connection lost after {} attempts. Restart app to retry.",
+                            consecutive_failures
+                        )),
+                    });
+                    break;
+                }
+
+                obs.on_state(SyncStatus {
+                    phase: SyncPhase::Error,
+                    message: Some(e.to_string()),
+                });
+
+                let jitter = rand::thread_rng().gen_range(0.8f64..1.2f64);
+                let wait = (backoff_secs as f64 * jitter).round() as u64;
+                obs.on_state(SyncStatus {
+                    phase: SyncPhase::BackingOff,
+                    message: Some(format!(
+                        "retrying in {}s (attempt {})",
+                        wait, consecutive_failures
+                    )),
+                });
+
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                backoff_secs = (backoff_secs * 2).min(max_backoff);
+            }
+        }
+    }
 }

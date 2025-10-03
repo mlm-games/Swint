@@ -16,6 +16,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        Notifications.ensureChannel(this)
+        Sync.scheduleBackgroundSync(this)
 
         val dataStore = provideAppDataStore(this)
 

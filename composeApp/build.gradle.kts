@@ -24,6 +24,7 @@ kotlin {
             implementation(libs.androidx.activity.compose)
             implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
             implementation(libs.okio)
+            implementation(libs.androidx.work.runtime.ktx)
         }
         commonMain.dependencies {
             implementation(compose.runtime)
