@@ -3,12 +3,15 @@ use once_cell::sync::Lazy;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{runtime::Runtime, time::timeout};
 
-use futures_util::{pin_mut, StreamExt};
+use futures_util::{StreamExt, pin_mut};
 use thiserror::Error;
 
 use matrix_sdk::{
@@ -16,17 +19,17 @@ use matrix_sdk::{
 };
 // Matrix SDK core and UI
 use matrix_sdk::ruma::{
+    DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
     api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod,
     api::client::receipt::create_receipt::v3::ReceiptType, events::typing::SyncTypingEvent,
-    DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
 };
 use matrix_sdk::{
+    Client as SdkClient, Room, SessionTokens,
     attachment::AttachmentConfig,
     authentication::matrix::MatrixSession,
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
-    ruma::{events::room::MediaSource, OwnedMxcUri},
-    Client as SdkClient, Room, SessionTokens,
+    ruma::{OwnedMxcUri, events::room::MediaSource},
 };
 use matrix_sdk::{
     encryption::verification::{SasState as SdkSasState, SasVerification, VerificationRequest},
@@ -71,6 +74,7 @@ pub trait ConnectionObserver: Send + Sync {
 
 #[derive(Clone, uniffi::Record)]
 pub struct MessageEvent {
+    pub item_id: String,
     pub event_id: String,
     pub room_id: String,
     pub sender: String,
@@ -291,6 +295,9 @@ pub struct Client {
     send_tx: tokio::sync::mpsc::UnboundedSender<SendUpdate>,
     inbox: Arc<Mutex<HashMap<String, (OwnedUserId, OwnedDeviceId)>>>,
     sync_service: Arc<Mutex<Option<Arc<SyncService>>>>,
+    subs_counter: AtomicU64,
+    timeline_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    typing_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone, uniffi::Enum)]
@@ -360,6 +367,9 @@ impl Client {
             send_tx,
             inbox: Arc::new(Mutex::new(HashMap::new())),
             sync_service: Arc::new(Mutex::new(None)),
+            subs_counter: AtomicU64::new(0),
+            timeline_subs: Mutex::new(HashMap::new()),
+            typing_subs: Mutex::new(HashMap::new()),
         };
 
         // Initialize caches early - fail fast if there's a problem
@@ -668,13 +678,14 @@ impl Client {
         &self,
         room_id: String,
         observer: Box<dyn TimelineDiffObserver>,
-    ) {
+    ) -> u64 {
         let client = self.inner.clone();
         let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
-            return;
+            return 0;
         };
         let obs: Arc<dyn TimelineDiffObserver> = Arc::from(observer);
 
+        let id = self.next_sub_id();
         let h = RT.spawn(async move {
             let Some(room) = client.get_room(&room_id) else {
                 return;
@@ -684,7 +695,7 @@ impl Client {
             };
             let (items, mut stream) = tl.subscribe().await;
 
-            // First snapshot as a reset
+            // Initial snapshot
             let initial: Vec<_> = items
                 .iter()
                 .filter_map(|it| it.as_event().and_then(|ei| map_event(ei, room_id.as_str())))
@@ -729,15 +740,23 @@ impl Client {
                                 .collect();
                             obs.on_reset(events);
                         }
-                        VectorDiff::PopBack {}
-                        | VectorDiff::PopFront {}
-                        | VectorDiff::Truncate { .. }
-                        | VectorDiff::Append { .. } => {}
+                        _ => {}
                     }
                 }
             }
         });
-        self.guards.lock().unwrap().push(h);
+
+        self.timeline_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn unobserve_room_timeline(&self, sub_id: u64) -> bool {
+        if let Some(h) = self.timeline_subs.lock().unwrap().remove(&sub_id) {
+            h.abort();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn start_verification_inbox(&self, observer: Box<dyn VerificationInboxObserver>) {
@@ -835,24 +854,31 @@ impl Client {
         self.guards.lock().unwrap().push(h);
     }
 
-    pub fn send_message(&self, room_id: String, body: String) {
+    pub fn send_message(&self, room_id: String, body: String) -> bool {
         RT.block_on(async {
             use matrix_sdk::ruma::events::room::message::RoomMessageEventContent as Msg;
 
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
-                return;
+                return false;
             };
-            if let Some(timeline) = get_timeline_for(&self.inner, &room_id).await {
-                // Local echo + auto encryption if needed.
-                let _ = timeline.send(Msg::text_plain(body).into()).await;
-            }
-        });
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
+                return false;
+            };
+
+            timeline.send(Msg::text_plain(body).into()).await.is_ok()
+        })
     }
 
     pub fn shutdown(&self) {
         if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
             // Best-effort stop; ignore errors.
             let _ = RT.block_on(async { svc.stop().await });
+        }
+        for (_, h) in self.timeline_subs.lock().unwrap().drain() {
+            h.abort();
+        }
+        for (_, h) in self.typing_subs.lock().unwrap().drain() {
+            h.abort();
         }
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();
@@ -1111,12 +1137,13 @@ impl Client {
         })
     }
 
-    pub fn observe_typing(&self, room_id: String, observer: Box<dyn TypingObserver>) {
+    pub fn observe_typing(&self, room_id: String, observer: Box<dyn TypingObserver>) -> u64 {
         let client = self.inner.clone();
         let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
-            return;
+            return 0;
         };
         let obs: Arc<dyn TypingObserver> = Arc::from(observer);
+        let id = self.next_sub_id();
 
         let h = RT.spawn(async move {
             let stream = client.observe_room_events::<SyncTypingEvent, Room>(&room_id);
@@ -1150,7 +1177,18 @@ impl Client {
                 }
             }
         });
-        self.guards.lock().unwrap().push(h);
+
+        self.typing_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn unobserve_typing(&self, sub_id: u64) -> bool {
+        if let Some(h) = self.typing_subs.lock().unwrap().remove(&sub_id) {
+            h.abort();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn send_attachment_bytes(
@@ -1314,6 +1352,12 @@ impl Client {
         self.guards.lock().unwrap().push(h);
     }
 
+    fn next_sub_id(&self) -> u64 {
+        self.subs_counter
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+    }
+
     pub fn recover_with_key(&self, recovery_key: String) -> bool {
         RT.block_on(async {
             let rec = self.inner.encryption().recovery();
@@ -1445,33 +1489,31 @@ impl Client {
     ) -> bool {
         let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
-            // If we already have a SAS flow, accept it.
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
                 return f.sas.accept().await.is_ok();
             }
 
-            // Otherwise, this should be an incoming request we saw earlier.
             let (user, _device) = match self.inbox.lock().unwrap().get(&flow_id).cloned() {
                 Some(x) => x,
                 None => return false,
             };
 
-            // Find the request from the verification machine.
-            match self
+            if let Some(req) = self
                 .inner
                 .encryption()
                 .get_verification_request(&user, &flow_id)
                 .await
             {
-                Some(req) => {
-                    // Accept and then transition to SAS
-                    if req.accept().await.is_err() {
-                        return false;
-                    }
-                    self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
-                    true
+                if req.accept().await.is_err() {
+                    return false;
                 }
-                None => false,
+                // Remove from inbox once it’s accepted
+                self.inbox.lock().unwrap().remove(&flow_id);
+
+                self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
+                true
+            } else {
+                false
             }
         })
     }
@@ -1493,6 +1535,46 @@ impl Client {
             } else {
                 false
             }
+        })
+    }
+
+    pub fn cancel_verification_request(&self, flow_id: String) -> bool {
+        RT.block_on(async {
+            // Try known inbox first
+            if let Some((user, _device)) = self.inbox.lock().unwrap().get(&flow_id).cloned() {
+                if let Some(req) = self
+                    .inner
+                    .encryption()
+                    .get_verification_request(&user, &flow_id)
+                    .await
+                {
+                    let ok = req.cancel().await.is_ok();
+                    if ok {
+                        // remove from inbox on success
+                        self.inbox.lock().unwrap().remove(&flow_id);
+                    }
+                    return ok;
+                }
+            }
+
+            // Fallback: we didn't have it in inbox (or raced); try to locate by scanning
+            // Note: This is best‑effort. for stronger guarantees, persist a map user->req ids.
+            if let Some(me) = self.inner.user_id() {
+                if let Ok(devs) = self.inner.encryption().get_user_devices(me).await {
+                    // We only know our own user id here; use it to query the request
+                    if let Some(req) = self
+                        .inner
+                        .encryption()
+                        .get_verification_request(me, &flow_id)
+                        .await
+                    {
+                        return req.cancel().await.is_ok();
+                    }
+                    // Optionally: iterate other known users if you track them elsewhere
+                    let _ = devs; // keep var used
+                }
+            }
+            false
         })
     }
 
@@ -1623,8 +1705,10 @@ impl Client {
 
             let messages = stmt
                 .query_map([&room_id, &limit.to_string()], |row| {
+                    let eid: String = row.get(0)?;
                     Ok(MessageEvent {
-                        event_id: row.get(0)?,
+                        item_id: eid.clone(),
+                        event_id: eid,
                         room_id: row.get(1)?,
                         sender: row.get(2)?,
                         body: row.get(3)?,
@@ -1908,12 +1992,11 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<T
 fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let msg = ev.content().as_message()?;
     let ts: u64 = ev.timestamp().0.into();
-    let event_id = ev
-        .event_id()
-        .map(|e| e.to_string())
-        .unwrap_or_else(|| format!("local-{ts}"));
+    let item_id = format!("{:?}", ev.identifier());
+    let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
 
     Some(MessageEvent {
+        item_id,
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),

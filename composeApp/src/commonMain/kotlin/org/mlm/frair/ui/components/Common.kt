@@ -38,6 +38,7 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -566,7 +567,7 @@ fun PrivacyTab(state: AppState, onIntent: (Intent) -> Unit) {
         }
 
         // Privacy settings
-        Card(modifier = Modifier.fillMaxWidth()) {
+        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     "Privacy Settings",

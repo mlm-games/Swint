@@ -65,9 +65,11 @@ interface MatrixPort {
     suspend fun listRooms(): List<RoomSummary>
     suspend fun recent(roomId: String, limit: Int = 50): List<MessageEvent>
     fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>>
-    suspend fun send(roomId: String, body: String)
+    suspend fun send(roomId: String, body: String): Boolean
     fun isLoggedIn(): Boolean
     fun close()
+
+    suspend fun cancelVerificationRequest(flowId: String): Boolean
 
     suspend fun setTyping(roomId: String, typing: Boolean): Boolean
     fun whoami(): String?  // "@user:server" or null if not logged in
@@ -98,6 +100,8 @@ interface MatrixPort {
         fun onConnectionChange(state: ConnectionState)
     }
 
+    fun stopTypingObserver(token: ULong)
+
     suspend fun paginateBack(roomId: String, count: Int): Boolean
     suspend fun paginateForward(roomId: String, count: Int): Boolean
     suspend fun markRead(roomId: String): Boolean
@@ -106,7 +110,7 @@ interface MatrixPort {
     suspend fun reply(roomId: String, inReplyToEventId: String, body: String): Boolean
     suspend fun edit(roomId: String, targetEventId: String, newBody: String): Boolean
     suspend fun redact(roomId: String, eventId: String, reason: String? = null): Boolean
-    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit)
+    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit): ULong
 
     fun startSupervisedSync(observer: SyncObserver)
 

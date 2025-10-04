@@ -10,6 +10,7 @@ data class RoomSummary(
 
 @Serializable
 data class MessageEvent(
+    val itemId: String,
     val eventId: String,
     val roomId: String,
     val sender: String,

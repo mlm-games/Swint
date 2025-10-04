@@ -23,30 +23,24 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
         val obs = object : frair.TimelineDiffObserver {
-            override fun onInsert(event: frair.MessageEvent) {
-                trySend(TimelineDiff.Insert(event.toModel()))
-            }
-            override fun onUpdate(event: frair.MessageEvent) {
-                trySend(TimelineDiff.Update(event.toModel()))
-            }
-            override fun onRemove(eventId: String) {
-                trySend(TimelineDiff.Remove(eventId))
-            }
-            override fun onClear() {
-                trySend(TimelineDiff.Clear)
-            }
+            override fun onInsert(event: frair.MessageEvent) { trySend(TimelineDiff.Insert(event.toModel())) }
+            override fun onUpdate(event: frair.MessageEvent) { trySend(TimelineDiff.Update(event.toModel())) }
+            override fun onRemove(eventId: String) { trySend(TimelineDiff.Remove(eventId)) }
+            override fun onClear() { trySend(TimelineDiff.Clear) }
             override fun onReset(events: List<frair.MessageEvent>) {
                 trySend(TimelineDiff.Reset(events.map { it.toModel() }))
             }
         }
-        client.observeRoomTimelineDiffs(roomId, obs)
-        awaitClose { /* TODO: unsubscribe from Rust side */ }
+        val subId: ULong = client.observeRoomTimelineDiffs(roomId, obs)
+        awaitClose { client.unobserveRoomTimeline(subId) }
     }
+
     override suspend fun initCaches(): Boolean = client.initCaches()
 
     override suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean {
         val ffiMessages = messages.map { msg ->
             frair.MessageEvent(
+                itemId = msg.itemId,
                 eventId = msg.eventId,
                 roomId = msg.roomId,
                 sender = msg.sender,
@@ -100,7 +94,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
 
-    override suspend fun send(roomId: String, body: String) { client.sendMessage(roomId, body) }
+    override suspend fun send(roomId: String, body: String): Boolean = client.sendMessage(roomId, body)
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
         client.enqueueText(roomId, body, txnId)
     override fun startSendWorker() = client.startSendWorker()
@@ -161,9 +155,15 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun redact(roomId: String, eventId: String, reason: String?) =
         client.redact(roomId, eventId, reason)
 
-    override fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit) {
-        val obs = object : frair.TypingObserver { override fun onUpdate(names: List<String>) { onUpdate(names) } }
-        client.observeTyping(roomId, obs)
+    override fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit): ULong {
+        val obs = object : frair.TypingObserver {
+            override fun onUpdate(names: List<String>) { onUpdate(names) }
+        }
+        return client.observeTyping(roomId, obs)
+    }
+
+    override fun stopTypingObserver(token: ULong) {
+        client.unobserveTyping(token)
     }
 
     override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
@@ -259,6 +259,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
     override suspend fun confirmVerification(flowId: String): Boolean = client.confirmVerification(flowId)
     override suspend fun cancelVerification(flowId: String): Boolean = client.cancelVerification(flowId)
+    override suspend fun cancelVerificationRequest(flowId: String): Boolean =
+        client.cancelVerificationRequest(flowId)
     override fun enterForeground() {
         client.enterForeground()
     }
@@ -302,7 +304,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
 private fun FfiEvent.toModel() = MessageEvent(
-    eventId = eventId, roomId = roomId, sender = sender, body = body, timestamp = timestampMs.toLong()
+   itemId = itemId, eventId = eventId, roomId = roomId, sender = sender, body = body, timestamp = timestampMs.toLong()
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)
