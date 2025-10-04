@@ -330,7 +330,7 @@ fun RoomScreen(
                     var lastDate: String? = null
                     itemsIndexed(
                         items = events,
-                        key = { _, event -> event.eventId }
+                        key = { _, event -> event.itemId }
                     ) { index, event ->
                         val eventDate = formatDate(event.timestamp)
 

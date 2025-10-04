@@ -577,9 +577,13 @@ class AppStore(
             st.editing != null -> matrix.edit(room.id, st.editing.eventId, text)
             st.replyingTo != null -> matrix.reply(room.id, st.replyingTo.eventId, text)
             else -> {
-                val txnId = "frair-${matrix.nowMs()}"
-                matrix.enqueueText(room.id, text, txnId)
-                true
+                if (state.value.isOffline) {
+                    val txnId = "frair-${matrix.nowMs()}"
+                    matrix.enqueueText(room.id, text, txnId)
+                    true
+                } else {
+                    matrix.sendMessage(room.id, text)
+                }
             }
         }
         if (!ok) return@launchBusy fail("Send failed")
@@ -606,46 +610,32 @@ class AppStore(
                 set {
                     val cap = 500
                     when (diff) {
-                        is TimelineDiff.Reset -> {
-                            copy(
-                                events = diff.items
-                                    .distinctBy { it.eventId }
-                                    .sortedBy { it.timestamp }
-                                    .takeLast(cap)
-                            )
-                        }
-                        is TimelineDiff.Clear -> {
-                            copy(events = emptyList())
-                        }
+                        is TimelineDiff.Reset -> copy(
+                            events = diff.items
+                                .distinctBy { it.itemId }
+                                .sortedBy { it.timestamp }
+                                .takeLast(cap)
+                        )
+                        is TimelineDiff.Clear -> copy(events = emptyList())
                         is TimelineDiff.Insert -> {
                             val e = diff.item
-                            val idx = events.indexOfFirst { it.eventId == e.eventId }
-                            val next = events.toMutableList().apply {
-                                if (idx >= 0) set(idx, e) else add(e)
-                                sortBy { it.timestamp }
-                                if (size > cap) repeat(size - cap) { removeAt(0) }
-                            }
-                            copy(events = next)
+                            val next = events
+                                .filterNot { it.itemId == e.itemId } + e
+                            copy(events = next.sortedBy { it.timestamp }.takeLast(cap))
                         }
                         is TimelineDiff.Update -> {
                             val e = diff.item
-                            val idx = events.indexOfFirst { it.eventId == e.eventId }
-                            if (idx < 0) {
-                                // fall back to insert semantics
-                                val next = (events + e).sortedBy { it.timestamp }.takeLast(cap)
-                                copy(events = next)
+                            val idx = events.indexOfFirst { it.itemId == e.itemId }
+                            val next = if (idx >= 0) {
+                                events.toMutableList().apply { set(idx, e) }
                             } else {
-                                val next = events.toMutableList().apply {
-                                    set(idx, e)
-                                    // keep sorted; if you trust monotonic timestamps you can skip
-                                    sortBy { it.timestamp }
-                                }
-                                copy(events = next)
+                                events + e
                             }
+                            copy(events = next.sortedBy { it.timestamp }.takeLast(cap))
                         }
                         is TimelineDiff.Remove -> {
-                            val next = events.filterNot { it.eventId == diff.eventId }
-                            copy(events = next)
+                            // Remove by server eventId (local echoes use Update/Reset path)
+                            copy(events = events.filterNot { it.eventId == diff.eventId })
                         }
                     }
                 }
@@ -658,11 +648,19 @@ class AppStore(
         timelineJob = null
     }
 
+    private var typingToken: ULong? = null
+
     private fun startTypingObserver(roomId: String) {
         typingObsJob?.cancel()
         typingObsJob = scope.launch {
-            matrix.observeTyping(roomId) { names ->
+            typingToken = matrix.observeTyping(roomId) { names ->
                 set { copy(typing = typing + (roomId to names.toSet())) }
+            }
+            try {
+                awaitCancellation()
+            } finally {
+                typingToken?.let { matrix.stopTypingObserver(it) }
+                typingToken = null
             }
         }
     }
@@ -819,9 +817,12 @@ class AppStore(
     private fun rejectIncomingVerification() = scope.launch {
         val request = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
         if (request != null) {
-            matrix.cancelVerification(request.flowId)
+            // Prefer cancelling the request (pre‑SAS). If that fails, try cancelling a SAS flow.
+            val ok = matrix.cancelVerificationRequest(request.flowId)
+            if (!ok) {
+                matrix.cancelVerification(request.flowId)
+            }
         }
-
         moveToNextVerification()
     }
 

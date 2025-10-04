@@ -46,8 +46,8 @@ class MatrixService(val port: MatrixPort) {
     suspend fun loadRecent(roomId: String, limit: Int = 50): List<MessageEvent> = port.recent(roomId, limit)
     fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = port.timelineDiffs(roomId)
 
-    suspend fun sendMessage(roomId: String, body: String) = runCatching { port.send(roomId, body) }.isSuccess
-
+    suspend fun sendMessage(roomId: String, body: String): Boolean =
+        port.send(roomId, body)
     suspend fun paginateBack(roomId: String, count: Int) = runCatching { port.paginateBack(roomId, count) }.getOrElse { false }
     suspend fun paginateForward(roomId: String, count: Int) = runCatching { port.paginateForward(roomId, count) }.getOrElse { false }
 
@@ -61,7 +61,10 @@ class MatrixService(val port: MatrixPort) {
     suspend fun redact(roomId: String, eventId: String, reason: String? = null) =
         runCatching { port.redact(roomId, eventId, reason) }.getOrElse { false }
 
-    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit) = port.observeTyping(roomId, onUpdate)
+    fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit): ULong =
+        port.observeTyping(roomId, onUpdate)
+
+    fun stopTypingObserver(token: ULong) = port.stopTypingObserver(token)
 
     suspend fun enqueueText(roomId: String, body: String, txnId: String? = null) = port.enqueueText(roomId, body, txnId)
     fun startSendWorker() = port.startSendWorker()
@@ -74,6 +77,7 @@ class MatrixService(val port: MatrixPort) {
         port.acceptVerification(flowId, observer)
     suspend fun confirmVerification(flowId: String) = port.confirmVerification(flowId)
     suspend fun cancelVerification(flowId: String) = port.cancelVerification(flowId)
+    suspend fun cancelVerificationRequest(flowId: String) = port.cancelVerificationRequest(flowId)
 
     suspend fun logout(): Boolean = port.logout()
 
