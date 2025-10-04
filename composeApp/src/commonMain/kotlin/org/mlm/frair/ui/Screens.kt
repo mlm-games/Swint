@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import org.mlm.frair.AppState
 import org.mlm.frair.Intent
 import org.mlm.frair.Screen
+import org.mlm.frair.ui.components.SasDialog
 import org.mlm.frair.ui.screens.LoginScreen
 import org.mlm.frair.ui.screens.RoomScreen
 import org.mlm.frair.ui.screens.RoomsScreen
@@ -114,5 +115,18 @@ fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
             is Screen.Room -> RoomScreen(state, padding, onIntent)
             is Screen.Security -> SecurityScreen(state, padding, onIntent)
         }
+    }
+
+    if (state.sasFlowId != null) {
+        SasDialog(
+            phase = state.sasPhase,
+            emojis = state.sasEmojis,
+            otherUser = state.sasOtherUser.orEmpty(),
+            otherDevice = state.sasOtherDevice.orEmpty(),
+            error = state.sasError,
+            onAccept = { onIntent(Intent.AcceptSas) },
+            onConfirm = { onIntent(Intent.ConfirmSas) },
+            onCancel = { onIntent(Intent.CancelSas) }
+        )
     }
 }

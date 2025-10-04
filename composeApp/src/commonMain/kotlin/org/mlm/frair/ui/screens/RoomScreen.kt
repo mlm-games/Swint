@@ -41,10 +41,10 @@ fun RoomScreen(
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
     val outbox = state.pendingByRoom[room.id].orEmpty()
 
-    val isNearBottom by remember {
+    val isNearBottom by remember(listState, events) {
         derivedStateOf {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            events.size - lastVisible <= 3
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            events.isNotEmpty() && lastVisible >= events.lastIndex - 3
         }
     }
 

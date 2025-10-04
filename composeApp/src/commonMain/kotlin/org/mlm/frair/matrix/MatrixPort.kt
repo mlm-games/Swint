@@ -15,7 +15,7 @@ data class DeviceSummary(
 sealed class TimelineDiff<out T> {
     data class Insert<T>(val item: T) : TimelineDiff<T>()
     data class Update<T>(val item: T) : TimelineDiff<T>()
-    data class Remove(val eventId: String) : TimelineDiff<Nothing>()
+    data class Remove(val itemId: String) : TimelineDiff<Nothing>()
     data object Clear : TimelineDiff<Nothing>()
     data class Reset<T>(val items: List<T>) : TimelineDiff<T>()
 }
@@ -86,16 +86,17 @@ interface MatrixPort {
         fun onRequest(flowId: String, fromUser: String, fromDevice: String)
         fun onError(message: String)
     }
-    fun startVerificationInbox(observer: VerificationInboxObserver)
-
     suspend fun initCaches(): Boolean
     suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean
     suspend fun getCachedMessages(roomId: String, limit: Int): List<MessageEvent>
     suspend fun savePaginationState(state: PaginationState): Boolean
     suspend fun getPaginationState(roomId: String): PaginationState?
 
-    fun observeConnection(observer: ConnectionObserver)
+    fun observeConnection(observer: ConnectionObserver): ULong
+    fun stopConnectionObserver(token: ULong)
 
+    fun startVerificationInbox(observer: VerificationInboxObserver): ULong
+    fun stopVerificationInbox(token: ULong)
     interface ConnectionObserver {
         fun onConnectionChange(state: ConnectionState)
     }

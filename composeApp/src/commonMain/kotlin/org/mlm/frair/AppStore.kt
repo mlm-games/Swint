@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
 import org.mlm.frair.matrix.MatrixPort
 import org.mlm.frair.matrix.SasPhase
 import org.mlm.frair.matrix.SendState
@@ -180,13 +181,17 @@ class AppStore(
     private var typingJob: Job? = null
     private var typingObsJob: Job? = null
 
+    private var connectionToken: ULong? = null
+    private var verificationInboxToken: ULong? = null
+
     init {
         bootstrap()
         setupConnectionMonitoring()
     }
 
     private fun setupConnectionMonitoring() {
-        matrix.observeConnection(object : MatrixPort.ConnectionObserver {
+        connectionToken?.let { matrix.stopConnectionObserver(it) } // safety if re-called
+        connectionToken = matrix.observeConnection(object : MatrixPort.ConnectionObserver {
             override fun onConnectionChange(state: MatrixPort.ConnectionState) {
                 set {
                     val isOffline = state == MatrixPort.ConnectionState.Disconnected
@@ -196,13 +201,8 @@ class AppStore(
                         MatrixPort.ConnectionState.Connecting -> "Connecting..."
                         else -> null
                     }
-                    copy(
-                        connectionState = state,
-                        isOffline = isOffline,
-                        offlineBanner = banner
-                    )
+                    copy(connectionState = state, isOffline = isOffline, offlineBanner = banner)
                 }
-
                 if (state == MatrixPort.ConnectionState.Connected) {
                     scope.launch {
                         refreshRoomsQuietly()
@@ -233,26 +233,39 @@ class AppStore(
                 set { copy(screen = Screen.Rooms, rooms = rooms, error = null) }
 
                 saveCachedRoomList(rooms)
-            }
 
-            matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
-                override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
-                    set {
-                        copy(
-                            screen = screen as? Screen.Security ?: Screen.Rooms,
-                            pendingVerifications = pendingVerifications + VerificationRequest(flowId, fromUser, fromDevice),
-                            showVerificationDialog = true,
-                            currentVerificationIndex = 0,
-                            sasFlowId = flowId,
-                            sasPhase = SasPhase.Requested,
-                            sasOtherUser = fromUser,
-                            sasOtherDevice = fromDevice,
-                            sasError = null
-                        )
-                    }
-                }
-                override fun onError(message: String) { set { copy(error = "Verification inbox: $message") } }
-            })
+                verificationInboxToken?.let { matrix.stopVerificationInbox(it) }
+                verificationInboxToken =
+                    matrix.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
+                        override fun onRequest(
+                            flowId: String,
+                            fromUser: String,
+                            fromDevice: String
+                        ) {
+                            set {
+                                copy(
+                                    screen = screen as? Screen.Security ?: Screen.Rooms,
+                                    pendingVerifications = pendingVerifications + VerificationRequest(
+                                        flowId,
+                                        fromUser,
+                                        fromDevice
+                                    ),
+                                    showVerificationDialog = true,
+                                    currentVerificationIndex = 0,
+                                    sasFlowId = flowId,
+                                    sasPhase = SasPhase.Requested,
+                                    sasOtherUser = fromUser,
+                                    sasOtherDevice = fromDevice,
+                                    sasError = null
+                                )
+                            }
+                        }
+
+                        override fun onError(message: String) {
+                            set { copy(error = "Verification inbox: $message") }
+                        }
+                    })
+            }
 
             scope.launch {
                 set { copy(myUserId = matrix.port.whoami()) }
@@ -275,11 +288,6 @@ class AppStore(
                     }
 
                     refreshPendingMessages()
-                    val current = (state.value.screen as? Screen.Room)?.room?.id
-                    if (upd.state == SendState.Sent && upd.roomId == current) {
-                        val recent = matrix.loadRecent(upd.roomId, limit = 60)
-                        set { copy(events = recent) }
-                    }
                 }
             }
         } catch (t: Throwable) {
@@ -634,8 +642,7 @@ class AppStore(
                             copy(events = next.sortedBy { it.timestamp }.takeLast(cap))
                         }
                         is TimelineDiff.Remove -> {
-                            // Remove by server eventId (local echoes use Update/Reset path)
-                            copy(events = events.filterNot { it.eventId == diff.eventId })
+                            copy(events = events.filterNot { it.itemId == diff.itemId })
                         }
                     }
                 }
@@ -787,7 +794,21 @@ class AppStore(
 
     private fun commonVerifObserver() = object : VerificationObserver {
         override fun onPhase(flowId: String, phase: SasPhase) {
-            set { copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
+            set {
+                var st = copy(sasFlowId = flowId, sasPhase = phase, sasError = null)
+                if (phase == SasPhase.Done || phase == SasPhase.Cancelled) {
+                    val remaining = st.pendingVerifications.filterNot { it.flowId == flowId }
+                    st = st.copy(
+                        pendingVerifications = remaining,
+                        showVerificationDialog = remaining.isNotEmpty(),
+                        sasFlowId = remaining.firstOrNull()?.flowId,
+                        sasPhase = if (remaining.isNotEmpty()) SasPhase.Requested else null,
+                        sasOtherUser = remaining.firstOrNull()?.fromUser,
+                        sasOtherDevice = remaining.firstOrNull()?.fromDevice
+                    )
+                }
+                st
+            }
         }
 
         override fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>) {
@@ -863,6 +884,11 @@ class AppStore(
     }
 
     private fun logout() = launchBusy {
+        connectionToken?.let { matrix.stopConnectionObserver(it) }
+        connectionToken = null
+        verificationInboxToken?.let { matrix.stopVerificationInbox(it) }
+        verificationInboxToken = null
+
         matrix.logout()
         set { AppState() }
     }
@@ -980,11 +1006,11 @@ class AppStore(
         val ok = matrix.recoverWithKey(key)
         if (!ok) return@launchBusy fail("Recovery failed")
 
-        set { copy(showRecoveryDialog = false, recoveryKeyInput = "", error = "Recovery successful") }
+        set { copy(showRecoveryDialog = false, recoveryKeyInput = "", error = null) }
     }
 
     private fun set(mutator: AppState.() -> AppState) {
-        _state.value = _state.value.mutator()
+        _state.update { it.mutator() }
     }
 
     private fun fail(msg: String) {
