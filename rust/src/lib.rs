@@ -15,7 +15,14 @@ use futures_util::{StreamExt, pin_mut};
 use thiserror::Error;
 
 use matrix_sdk::{
-    executor::spawn, ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent,
+    executor::spawn,
+    ruma::{
+        events::{
+            key::verification::request::ToDeviceKeyVerificationRequestEvent,
+            room::message::{MessageType, SyncRoomMessageEvent},
+        },
+        owned_device_id,
+    },
 };
 // Matrix SDK core and UI
 use matrix_sdk::ruma::{
@@ -505,15 +512,17 @@ impl Client {
         self.inner.user_id().map(|u| u.to_string())
     }
 
-    pub fn login(&self, username: String, password: String) {
+    pub fn login(&self, username: String, password: String, device_display_name: Option<String>) {
         RT.block_on(async {
-            let res = self
+            let mut req = self
                 .inner
                 .matrix_auth()
-                .login_username(username.as_str(), &password)
-                .send()
-                .await
-                .expect("login");
+                .login_username(username.as_str(), &password);
+            if let Some(name) = device_display_name.as_ref() {
+                req = req.initial_device_display_name(name);
+            }
+
+            let res = req.send().await.expect("login");
 
             let info = SessionInfo {
                 user_id: res.user_id.to_string(),
@@ -703,7 +712,11 @@ impl Client {
             // Initial snapshot
             let initial: Vec<_> = items
                 .iter()
-                .filter_map(|it| it.as_event().and_then(|ei| map_event(ei, room_id.as_str())))
+                .filter_map(|it| {
+                    let uid = it.unique_id().0.to_string();
+                    it.as_event()
+                        .and_then(|ei| map_event_with_uid(ei, room_id.as_str(), &uid))
+                })
                 .collect();
             obs.on_reset(initial);
 
@@ -712,32 +725,36 @@ impl Client {
                     match diff {
                         VectorDiff::PushBack { value } => {
                             // BEFORE updating mirror, emit insert if event
+                            let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
-                                if let Some(ev) = map_event(ei, room_id.as_str()) {
+                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
                             }
                             mirror.push_back(value);
                         }
                         VectorDiff::PushFront { value } => {
+                            let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
-                                if let Some(ev) = map_event(ei, room_id.as_str()) {
+                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
                             }
                             mirror.insert(0, value);
                         }
                         VectorDiff::Insert { index, value } => {
+                            let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
-                                if let Some(ev) = map_event(ei, room_id.as_str()) {
+                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
                             }
                             mirror.insert(index, value);
                         }
                         VectorDiff::Set { index, value } => {
+                            let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
-                                if let Some(ev) = map_event(ei, room_id.as_str()) {
+                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_update(ev);
                                 }
                             }
@@ -746,10 +763,10 @@ impl Client {
                             }
                         }
                         VectorDiff::Remove { index } => {
-                            // Get the removed item_id from mirror BEFORE removal
-                            if let Some(old) = mirror.get(index).and_then(|it| it.as_event()) {
-                                let item_id = format!("{:?}", old.identifier());
-                                obs.on_remove(item_id);
+                            // Get the removed unique_id from mirror BEFORE removal
+                            if let Some(item) = mirror.get(index) {
+                                let uid = item.unique_id().0.to_string();
+                                obs.on_remove(uid);
                             }
                             if index < mirror.len() {
                                 mirror.remove(index);
@@ -763,7 +780,10 @@ impl Client {
                             let events = values
                                 .iter()
                                 .filter_map(|it| {
-                                    it.as_event().and_then(|ei| map_event(ei, room_id.as_str()))
+                                    let uid = it.unique_id().0.to_string();
+                                    it.as_event().and_then(|ei| {
+                                        map_event_with_uid(ei, room_id.as_str(), &uid)
+                                    })
                                 })
                                 .collect::<Vec<_>>();
                             obs.on_reset(events);
@@ -795,22 +815,55 @@ impl Client {
 
         let id = self.next_sub_id();
         let h = RT.spawn(async move {
-            let handler = client.observe_events::<ToDeviceKeyVerificationRequestEvent, ()>();
-            let mut sub = handler.subscribe();
+            let td_handler = client.observe_events::<ToDeviceKeyVerificationRequestEvent, ()>();
+            let mut td_sub = td_handler.subscribe();
 
-            while let Some((ev, ())) = sub.next().await {
-                let flow_id = ev.content.transaction_id.to_string();
-                let from_user = ev.sender.to_string();
-                let from_device = ev.content.from_device.to_string();
+            // in‑room verification requests arrive as m.room.message with msgtype=m.key.verification.request
+            let ir_handler = client.observe_events::<SyncRoomMessageEvent, Room>();
+            let mut ir_sub = ir_handler.subscribe();
 
-                inbox
-                    .lock()
-                    .unwrap()
-                    .insert(flow_id.clone(), (ev.sender, ev.content.from_device.clone()));
+            loop {
+                tokio::select! {
+                    maybe = td_sub.next() => {
+                        if let Some((ev, ())) = maybe {
+                            let flow_id = ev.content.transaction_id.to_string();   // to‑device uses txn id
+                            let from_user = ev.sender.to_string();
+                            let from_device = ev.content.from_device.to_string();
 
-                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    obs.on_request(flow_id.clone(), from_user.clone(), from_device.clone());
-                }));
+                            inbox.lock().unwrap().insert(
+                                flow_id.clone(),
+                                (ev.sender, ev.content.from_device.clone()),
+                            );
+
+                            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                obs.on_request(flow_id, from_user, from_device);
+                            }));
+                        } else { break; }
+                    }
+
+                    // in‑room
+                    maybe = ir_sub.next() => {
+                        if let Some((ev, _room)) = maybe {
+                            if let SyncRoomMessageEvent::Original(o) = ev {
+                                if let MessageType::VerificationRequest(_c) = &o.content.msgtype {
+                                    // in‑room flow_id is the event_id
+                                    let flow_id = o.event_id.to_string();
+                                    let from_user = o.sender.to_string();
+
+                                    // We only need the user later; device can be a placeholder
+                                    inbox.lock().unwrap().insert(
+                                        flow_id.clone(),
+                                        (o.sender.clone(), owned_device_id!("inroom")),
+                                    );
+
+                                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                        obs.on_request(flow_id, from_user, String::new());
+                                    }));
+                                }
+                            }
+                        } else { break; }
+                    }
+                }
             }
         });
 
@@ -1533,15 +1586,27 @@ impl Client {
     ) -> bool {
         let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
+            // Case 1: The flow is already a running SAS verification (e.g. we started it)
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
                 return f.sas.accept().await.is_ok();
             }
 
-            let (user, _device) = match self.inbox.lock().unwrap().get(&flow_id).cloned() {
-                Some(x) => x,
-                None => return false,
+            // Resolve user for this flow (from inbox if present, else fall back to our own user)
+            let user = match self
+                .inbox
+                .lock()
+                .unwrap()
+                .get(&flow_id)
+                .map(|p| p.0.clone())
+            {
+                Some(u) => u,
+                None => match self.inner.user_id() {
+                    Some(me) => me.to_owned(),
+                    None => return false,
+                },
             };
 
+            // Case 2: Accept a pending VerificationRequest
             if let Some(req) = self
                 .inner
                 .encryption()
@@ -1551,14 +1616,24 @@ impl Client {
                 if req.accept().await.is_err() {
                     return false;
                 }
-                // Remove from inbox once it’s accepted
+                // Remove from inbox once accepted
                 self.inbox.lock().unwrap().remove(&flow_id);
-
                 self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
-                true
-            } else {
-                false
+                return true;
             }
+
+            // Case 3: Flow may already have transitioned to a verification; accept SAS if present
+            if let Some(verification) = self
+                .inner
+                .encryption()
+                .get_verification(&user, &flow_id)
+                .await
+            {
+                if let Some(sas) = verification.sas() {
+                    return sas.accept().await.is_ok();
+                }
+            }
+            false
         })
     }
 
@@ -1574,11 +1649,35 @@ impl Client {
 
     pub fn cancel_verification(&self, flow_id: String) -> bool {
         RT.block_on(async {
+            // Cancel an active SAS if we have it cached
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
-                f.sas.cancel().await.is_ok()
-            } else {
-                false
+                return f.sas.cancel().await.is_ok();
             }
+            // Else try to resolve via crypto and cancel there as a best‑effort
+            let user = match self
+                .inbox
+                .lock()
+                .unwrap()
+                .get(&flow_id)
+                .map(|p| p.0.clone())
+            {
+                Some(u) => u,
+                None => match self.inner.user_id() {
+                    Some(me) => me.to_owned(),
+                    None => return false,
+                },
+            };
+            if let Some(verification) = self
+                .inner
+                .encryption()
+                .get_verification(&user, &flow_id)
+                .await
+            {
+                if let Some(sas) = verification.sas() {
+                    return sas.cancel().await.is_ok();
+                }
+            }
+            false
         })
     }
 
@@ -1594,28 +1693,34 @@ impl Client {
                 {
                     let ok = req.cancel().await.is_ok();
                     if ok {
-                        // remove from inbox on success
                         self.inbox.lock().unwrap().remove(&flow_id);
                     }
                     return ok;
                 }
             }
-
-            // Fallback: we didn't have it in inbox (or raced); try to locate by scanning
-            // Note: This is best‑effort. for stronger guarantees, persist a map user->req ids.
-            if let Some(me) = self.inner.user_id() {
-                if let Ok(devs) = self.inner.encryption().get_user_devices(me).await {
-                    // We only know our own user id here; use it to query the request
-                    if let Some(req) = self
-                        .inner
-                        .encryption()
-                        .get_verification_request(me, &flow_id)
-                        .await
-                    {
-                        return req.cancel().await.is_ok();
-                    }
-                    // Optionally: iterate other known users if you track them elsewhere
-                    let _ = devs; // keep var used
+            // Fallbacks
+            let user = match self.inner.user_id() {
+                Some(me) => me.to_owned(),
+                None => return false,
+            };
+            // Cancel a still‑pending request
+            if let Some(req) = self
+                .inner
+                .encryption()
+                .get_verification_request(&user, &flow_id)
+                .await
+            {
+                return req.cancel().await.is_ok();
+            }
+            // Or cancel a verification that already started
+            if let Some(verification) = self
+                .inner
+                .encryption()
+                .get_verification(&user, &flow_id)
+                .await
+            {
+                if let Some(sas) = verification.sas() {
+                    return sas.cancel().await.is_ok();
                 }
             }
             false
@@ -2041,6 +2146,20 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
 
     Some(MessageEvent {
         item_id,
+        event_id,
+        room_id: room_id.to_string(),
+        sender: ev.sender().to_string(),
+        body: render_message_text(msg),
+        timestamp_ms: ts,
+    })
+}
+
+fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Option<MessageEvent> {
+    let msg = ev.content().as_message()?;
+    let ts: u64 = ev.timestamp().0.into();
+    let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
+    Some(MessageEvent {
+        item_id: uid.to_string(),
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),

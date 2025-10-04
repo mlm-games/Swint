@@ -22,7 +22,9 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
     }
 
-    override suspend fun login(user: String, pass: String) { client.login(user, pass) }
+    override suspend fun login(user: String, password: String, deviceDisplayName: String?): Unit {
+        client.login(user, password, deviceDisplayName)
+    }
     override fun isLoggedIn(): Boolean = client.isLoggedIn()
 
     override suspend fun listRooms(): List<RoomSummary> = client.rooms().map { it.toModel() }
