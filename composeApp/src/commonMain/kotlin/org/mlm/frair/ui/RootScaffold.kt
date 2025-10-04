@@ -27,6 +27,7 @@ import org.mlm.frair.Intent
 import org.mlm.frair.Screen
 import org.mlm.frair.ui.components.SasDialog
 import org.mlm.frair.ui.screens.LoginScreen
+import org.mlm.frair.ui.screens.MediaCacheScreen
 import org.mlm.frair.ui.screens.RoomScreen
 import org.mlm.frair.ui.screens.RoomsScreen
 import org.mlm.frair.ui.screens.SecurityScreen
@@ -50,6 +51,7 @@ fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
                                 is Screen.Rooms -> "Rooms"
                                 is Screen.Room -> s.room.name
                                 is Screen.Security -> "Security"
+                                Screen.MediaCache -> "Media Cache"
                             },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -109,11 +111,12 @@ fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
         },
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
-        when (val s = state.screen) {
+        when (state.screen) {
             is Screen.Login -> LoginScreen(state, padding, onIntent)
             is Screen.Rooms -> RoomsScreen(state, padding, onIntent)
             is Screen.Room -> RoomScreen(state, padding, onIntent)
             is Screen.Security -> SecurityScreen(state, padding, onIntent)
+            is Screen.MediaCache -> MediaCacheScreen(state, onIntent)
         }
     }
 

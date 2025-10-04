@@ -22,6 +22,7 @@ sealed class Screen {
     object Rooms : Screen()
     data class Room(val room: RoomSummary) : Screen()
     object Security : Screen()
+    object MediaCache : Screen()
 }
 
 sealed class Intent {
@@ -244,7 +245,6 @@ class AppStore(
                         ) {
                             set {
                                 copy(
-                                    screen = screen as? Screen.Security ?: Screen.Rooms,
                                     pendingVerifications = pendingVerifications + VerificationRequest(
                                         flowId,
                                         fromUser,
@@ -492,9 +492,12 @@ class AppStore(
 
     private fun login() = launchBusy {
         val s = _state.value
+        val friendly = let { manu ->
+            "Frair Android ($manu)"
+        }
         try {
             matrix.init(s.homeserver)
-            matrix.login(s.user, s.pass).getOrThrow()
+            matrix.login(s.user, s.pass, friendly).getOrThrow()
         } catch (t: Throwable) {
             val msg = t.message?.let(::humanizeLoginError)
                 ?: "Could not sign in. Check your homeserver, username and password."
@@ -549,6 +552,7 @@ class AppStore(
             is Screen.Rooms -> set { copy(screen = Screen.Login) }
             is Screen.Login -> Unit
             is Screen.Security -> set { copy(screen = Screen.Rooms) }
+            is Screen.MediaCache -> set { copy(screen = Screen.MediaCache)}
         }
     }
 
@@ -801,6 +805,7 @@ class AppStore(
                     st = st.copy(
                         pendingVerifications = remaining,
                         showVerificationDialog = remaining.isNotEmpty(),
+                        currentVerificationIndex = 0,
                         sasFlowId = remaining.firstOrNull()?.flowId,
                         sasPhase = if (remaining.isNotEmpty()) SasPhase.Requested else null,
                         sasOtherUser = remaining.firstOrNull()?.fromUser,
@@ -810,18 +815,9 @@ class AppStore(
                 st
             }
         }
-
         override fun onEmojis(flowId: String, otherUser: String, otherDevice: String, emojis: List<String>) {
-            set {
-                copy(
-                    sasFlowId = flowId,
-                    sasOtherUser = otherUser,
-                    sasOtherDevice = otherDevice,
-                    sasEmojis = emojis
-                )
-            }
+            set { copy(sasFlowId = flowId, sasOtherUser = otherUser, sasOtherDevice = otherDevice, sasEmojis = emojis) }
         }
-
         override fun onError(flowId: String, message: String) {
             set { copy(sasFlowId = flowId, sasError = message) }
         }
