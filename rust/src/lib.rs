@@ -37,6 +37,7 @@ use matrix_sdk::{
 };
 use matrix_sdk_ui::{
     eyeball_im::VectorDiff,
+    sync_service::SyncService,
     timeline::{EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem},
 };
 
@@ -297,6 +298,8 @@ pub struct Client {
     subs_counter: AtomicU64,
     timeline_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     typing_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    connection_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    inbox_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone, uniffi::Enum)]
@@ -327,7 +330,7 @@ pub trait SendObserver: Send + Sync {
 pub trait TimelineDiffObserver: Send + Sync {
     fn on_insert(&self, event: MessageEvent);
     fn on_update(&self, event: MessageEvent);
-    fn on_remove(&self, event_id: String);
+    fn on_remove(&self, item_id: String);
     fn on_clear(&self);
     fn on_reset(&self, events: Vec<MessageEvent>);
 }
@@ -369,6 +372,8 @@ impl Client {
             subs_counter: AtomicU64::new(0),
             timeline_subs: Mutex::new(HashMap::new()),
             typing_subs: Mutex::new(HashMap::new()),
+            connection_subs: Mutex::new(HashMap::new()),
+            inbox_subs: Mutex::new(HashMap::new()),
         };
 
         // Initialize caches early - fail fast if there's a problem
@@ -608,6 +613,7 @@ impl Client {
                 return;
             };
             let (items, mut stream) = tl.subscribe().await;
+            let mut mirror = items.clone();
 
             // Initial snapshot
             let initial: Vec<_> = items
@@ -619,40 +625,64 @@ impl Client {
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
                     match diff {
-                        VectorDiff::PushBack { value }
-                        | VectorDiff::PushFront { value }
-                        | VectorDiff::Insert { value, .. } => {
+                        VectorDiff::PushBack { value } => {
+                            // BEFORE updating mirror, emit insert if event
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event(ei, room_id.as_str()) {
                                     obs.on_insert(ev);
                                 }
                             }
+                            mirror.push_back(value);
                         }
-                        VectorDiff::Set { value, .. } => {
+                        VectorDiff::PushFront { value } => {
+                            if let Some(ei) = value.as_event() {
+                                if let Some(ev) = map_event(ei, room_id.as_str()) {
+                                    obs.on_insert(ev);
+                                }
+                            }
+                            mirror.insert(0, value);
+                        }
+                        VectorDiff::Insert { index, value } => {
+                            if let Some(ei) = value.as_event() {
+                                if let Some(ev) = map_event(ei, room_id.as_str()) {
+                                    obs.on_insert(ev);
+                                }
+                            }
+                            mirror.insert(index, value);
+                        }
+                        VectorDiff::Set { index, value } => {
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event(ei, room_id.as_str()) {
                                     obs.on_update(ev);
                                 }
                             }
-                        }
-                        VectorDiff::Remove { index, .. } => {
-                            if let Some(item) = tl.items().await.get(index) {
-                                if let Some(ev) = item.as_event() {
-                                    if let Some(eid) = ev.event_id().map(|e| e.to_string()) {
-                                        obs.on_remove(eid);
-                                    }
-                                }
+                            if index < mirror.len() {
+                                mirror[index] = value;
                             }
                         }
-                        VectorDiff::Clear {} => obs.on_clear(),
+                        VectorDiff::Remove { index } => {
+                            // Get the removed item_id from mirror BEFORE removal
+                            if let Some(old) = mirror.get(index).and_then(|it| it.as_event()) {
+                                let item_id = format!("{:?}", old.identifier());
+                                obs.on_remove(item_id);
+                            }
+                            if index < mirror.len() {
+                                mirror.remove(index);
+                            }
+                        }
+                        VectorDiff::Clear {} => {
+                            obs.on_clear();
+                            mirror.clear();
+                        }
                         VectorDiff::Reset { values } => {
                             let events = values
-                                .into_iter()
+                                .iter()
                                 .filter_map(|it| {
                                     it.as_event().and_then(|ei| map_event(ei, room_id.as_str()))
                                 })
-                                .collect();
+                                .collect::<Vec<_>>();
                             obs.on_reset(events);
+                            mirror = values;
                         }
                         _ => {}
                     }
@@ -673,13 +703,13 @@ impl Client {
         }
     }
 
-    pub fn start_verification_inbox(&self, observer: Box<dyn VerificationInboxObserver>) {
+    pub fn start_verification_inbox(&self, observer: Box<dyn VerificationInboxObserver>) -> u64 {
         let client = self.inner.clone();
         let obs: Arc<dyn VerificationInboxObserver> = Arc::from(observer);
         let inbox = self.inbox.clone();
 
+        let id = self.next_sub_id();
         let h = RT.spawn(async move {
-            // Observe to-device verification requests and forward them
             let handler = client.observe_events::<ToDeviceKeyVerificationRequestEvent, ()>();
             let mut sub = handler.subscribe();
 
@@ -688,20 +718,28 @@ impl Client {
                 let from_user = ev.sender.to_string();
                 let from_device = ev.content.from_device.to_string();
 
-                // Remember for later acceptance
                 inbox
                     .lock()
                     .unwrap()
                     .insert(flow_id.clone(), (ev.sender, ev.content.from_device.clone()));
 
-                // Best-effort callback (shield UI from panics)
                 let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     obs.on_request(flow_id.clone(), from_user.clone(), from_device.clone());
                 }));
             }
         });
 
-        self.guards.lock().unwrap().push(h);
+        self.inbox_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn unobserve_verification_inbox(&self, sub_id: u64) -> bool {
+        if let Some(h) = self.inbox_subs.lock().unwrap().remove(&sub_id) {
+            h.abort();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn check_verification_request(&self, user_id: String, flow_id: String) -> bool {
@@ -718,10 +756,11 @@ impl Client {
         })
     }
 
-    pub fn monitor_connection(&self, observer: Box<dyn ConnectionObserver>) {
+    pub fn monitor_connection(&self, observer: Box<dyn ConnectionObserver>) -> u64 {
         let client = self.inner.clone();
         let obs: Arc<dyn ConnectionObserver> = Arc::from(observer);
 
+        let id = self.next_sub_id();
         let h = RT.spawn(async move {
             let mut last_state = ConnectionState::Disconnected;
             let mut session_rx = client.subscribe_to_session_changes();
@@ -731,12 +770,8 @@ impl Client {
                     Ok(change) = session_rx.recv() => {
                         let current = match change {
                             matrix_sdk::SessionChange::TokensRefreshed => ConnectionState::Connected,
-                            matrix_sdk::SessionChange::UnknownToken { .. } => ConnectionState::Reconnecting {
-                                attempt: 1,
-                                next_retry_secs: 5
-                            },
+                            matrix_sdk::SessionChange::UnknownToken { .. } => ConnectionState::Reconnecting { attempt: 1, next_retry_secs: 5 },
                         };
-
                         if !matches!((&current, &last_state),
                             (ConnectionState::Connected, ConnectionState::Connected) |
                             (ConnectionState::Disconnected, ConnectionState::Disconnected))
@@ -746,14 +781,8 @@ impl Client {
                         }
                     }
                     _ = tokio::time::sleep(Duration::from_secs(30)) => {
-                        // Periodic health check
                         let is_active = client.is_active();
-                        let current = if is_active {
-                            ConnectionState::Connected
-                        } else {
-                            ConnectionState::Disconnected
-                        };
-
+                        let current = if is_active { ConnectionState::Connected } else { ConnectionState::Disconnected };
                         if !matches!((&current, &last_state),
                             (ConnectionState::Connected, ConnectionState::Connected) |
                             (ConnectionState::Disconnected, ConnectionState::Disconnected))
@@ -765,7 +794,18 @@ impl Client {
                 }
             }
         });
-        self.guards.lock().unwrap().push(h);
+
+        self.connection_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn unobserve_connection(&self, sub_id: u64) -> bool {
+        if let Some(h) = self.connection_subs.lock().unwrap().remove(&sub_id) {
+            h.abort();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn send_message(&self, room_id: String, body: String) -> bool {
@@ -785,13 +825,18 @@ impl Client {
 
     pub fn shutdown(&self) {
         if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
-            // Best-effort stop; ignore errors.
             let _ = RT.block_on(async { svc.stop().await });
         }
         for (_, h) in self.timeline_subs.lock().unwrap().drain() {
             h.abort();
         }
         for (_, h) in self.typing_subs.lock().unwrap().drain() {
+            h.abort();
+        }
+        for (_, h) in self.connection_subs.lock().unwrap().drain() {
+            h.abort();
+        }
+        for (_, h) in self.inbox_subs.lock().unwrap().drain() {
             h.abort();
         }
         for h in self.guards.lock().unwrap().drain(..) {
@@ -1800,9 +1845,8 @@ fn delete_item(store_dir: &PathBuf, id: i64) -> Result<(), String> {
 }
 
 fn backoff_item(store_dir: &PathBuf, id: i64, attempts: i64, now: i64) -> Result<(), String> {
-    let backoff = (BACKOFF_BASE_MS
-        .saturating_mul(1u64.saturating_mul(attempts.min(10).try_into().unwrap())))
-    .min(BACKOFF_MAX_MS) as i64;
+    let attempts = attempts.clamp(1, 10) as u64;
+    let backoff = (BACKOFF_BASE_MS.saturating_mul(attempts)).min(BACKOFF_MAX_MS) as i64;
     let next = now.saturating_add(backoff);
 
     let path = queue_db_path(store_dir);
@@ -1909,6 +1953,7 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<T
 fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let msg = ev.content().as_message()?;
     let ts: u64 = ev.timestamp().0.into();
+
     let item_id = format!("{:?}", ev.identifier());
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
 
@@ -1987,59 +2032,6 @@ fn now_unix_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     dur.as_millis() as i64
-}
-
-async fn start_v2_fallback_loop(client: SdkClient, obs: Arc<dyn SyncObserver>) {
-    use rand::Rng;
-    let mut backoff_secs: u64 = 1;
-    let max_backoff: u64 = 60;
-    let mut consecutive_failures: u32 = 0;
-
-    loop {
-        obs.on_state(SyncStatus {
-            phase: SyncPhase::Running,
-            message: None,
-        });
-
-        match client.sync_once(SyncSettings::default()).await {
-            Ok(_) => {
-                consecutive_failures = 0;
-                backoff_secs = 1;
-            }
-            Err(e) => {
-                consecutive_failures += 1;
-
-                if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
-                    obs.on_state(SyncStatus {
-                        phase: SyncPhase::Error,
-                        message: Some(format!(
-                            "Connection lost after {} attempts. Restart app to retry.",
-                            consecutive_failures
-                        )),
-                    });
-                    break;
-                }
-
-                obs.on_state(SyncStatus {
-                    phase: SyncPhase::Error,
-                    message: Some(e.to_string()),
-                });
-
-                let jitter = rand::rng().random_range(0.8f64..1.2f64);
-                let wait = (backoff_secs as f64 * jitter).round() as u64;
-                obs.on_state(SyncStatus {
-                    phase: SyncPhase::BackingOff,
-                    message: Some(format!(
-                        "retrying in {}s (attempt {})",
-                        wait, consecutive_failures
-                    )),
-                });
-
-                tokio::time::sleep(Duration::from_secs(wait)).await;
-                backoff_secs = (backoff_secs * 2).min(max_backoff);
-            }
-        }
-    }
 }
 
 fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {

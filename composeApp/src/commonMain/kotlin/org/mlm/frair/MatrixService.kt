@@ -37,10 +37,13 @@ class MatrixService(val port: MatrixPort) {
         runCatching { port.getPaginationState(roomId) }.getOrNull()
 
     // Connection monitoring
-    fun observeConnection(observer: MatrixPort.ConnectionObserver) {
+    fun observeConnection(observer: MatrixPort.ConnectionObserver): ULong =
         port.observeConnection(observer)
-    }
-    fun startVerificationInbox(cb: MatrixPort.VerificationInboxObserver) = port.startVerificationInbox(cb)
+    fun stopConnectionObserver(token: ULong) = port.stopConnectionObserver(token)
+
+    fun startVerificationInbox(cb: MatrixPort.VerificationInboxObserver): ULong =
+        port.startVerificationInbox(cb)
+    fun stopVerificationInbox(token: ULong) = port.stopVerificationInbox(token)
 
     suspend fun listRooms(): List<RoomSummary> = port.listRooms()
     suspend fun loadRecent(roomId: String, limit: Int = 50): List<MessageEvent> = port.recent(roomId, limit)

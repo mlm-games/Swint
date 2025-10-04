@@ -25,7 +25,6 @@ import org.mlm.frair.matrix.*
 import org.mlm.frair.ui.components.EmptyStateView
 import org.mlm.frair.ui.components.PrivacyTab
 import org.mlm.frair.ui.components.RecoveryDialog
-import org.mlm.frair.ui.components.SasDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -106,20 +105,6 @@ fun SecurityScreen(
         }
     }
 
-    // Dialogs
-    if (state.sasFlowId != null) {
-        SasDialog(
-            phase = state.sasPhase,
-            emojis = state.sasEmojis,
-            otherUser = state.sasOtherUser.orEmpty(),
-            otherDevice = state.sasOtherDevice.orEmpty(),
-            error = state.sasError,
-            onAccept = { onIntent(Intent.AcceptSas) },
-            onConfirm = { onIntent(Intent.ConfirmSas) },
-            onCancel = { onIntent(Intent.CancelSas) }
-        )
-    }
-
     if (state.showRecoveryDialog) {
         RecoveryDialog(
             keyValue = state.recoveryKeyInput,
@@ -143,64 +128,6 @@ private fun DevicesTab(state: AppState, onIntent: (Intent) -> Unit) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        // Current device card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer
-            )
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primary,
-                    shape = CircleShape,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        Icon(
-                            Icons.Default.PhoneAndroid,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
-                }
-
-                Spacer(Modifier.width(16.dp))
-
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "This Device",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Text(
-                        "Currently signed in",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-
-                if (state.devices.find { it.isOwn }?.locallyTrusted == false) {
-                    FilledTonalButton(
-                        onClick = { /* Verify this device */ }
-                    ) {
-                        Text("Verify")
-                    }
-                }
-            }
-        }
-
         // Search bar
         OutlinedTextField(
             value = searchQuery,
