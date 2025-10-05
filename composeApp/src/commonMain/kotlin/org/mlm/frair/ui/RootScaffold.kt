@@ -2,6 +2,7 @@ package org.mlm.frair.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -36,100 +37,20 @@ import org.mlm.frair.ui.screens.SecurityScreen
 @Composable
 fun RootScaffold(state: AppState, onIntent: (Intent) -> Unit) {
     val snackbar = remember { SnackbarHostState() }
+
     LaunchedEffect(state.error) {
         state.error?.takeIf { it.isNotBlank() }?.let { snackbar.showSnackbar(it) }
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            when (val s = state.screen) {
-                                is Screen.Login -> "Frair"
-                                is Screen.Rooms -> "Rooms"
-                                is Screen.Room -> s.room.name
-                                is Screen.Security -> "Security"
-                                Screen.MediaCache -> "Media Cache"
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-
-                        // Show offline banner if offline
-                        if (state.offlineBanner != null) {
-                            Text(
-                                state.offlineBanner,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        } else if (state.syncBanner != null) {
-                            Text(
-                                state.syncBanner,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                },
-                navigationIcon = {
-                    if (state.screen is Screen.Room || state.screen is Screen.Security) {
-                        TextButton(onClick = { onIntent(Intent.Back) }) { Text("Back") }
-                    }
-                },
-                actions = {
-                    when (state.screen) {
-                        is Screen.Rooms -> Row {
-                            TextButton(
-                                enabled = !state.isBusy,
-                                onClick = { onIntent(Intent.RefreshRooms) }
-                            ) {
-                                Text(if (state.isBusy) "…" else "Refresh")
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            TextButton(onClick = { onIntent(Intent.OpenSecurity) }) { Text("Security") }
-                            Spacer(Modifier.width(8.dp))
-                            TextButton(onClick = { onIntent(Intent.Logout) }) { Text("Log out") }
-                        }
-                        is Screen.Room -> TextButton(
-                            enabled = !state.isBusy,
-                            onClick = { onIntent(Intent.SyncNow) }
-                        ) {
-                            Text(if (state.isBusy) "…" else "Sync")
-                        }
-                        else -> {}
-                    }
-                }
-            )
-            if (state.isOffline) {
-                Surface(
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.fillMaxWidth().height(2.dp)
-                ) {}
-            }
-        },
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         when (state.screen) {
             is Screen.Login -> LoginScreen(state, padding, onIntent)
-            is Screen.Rooms -> RoomsScreen(state, padding, onIntent)
+            is Screen.Rooms -> RoomsScreen(state, PaddingValues.Zero, onIntent)
             is Screen.Room -> RoomScreen(state, padding, onIntent)
             is Screen.Security -> SecurityScreen(state, padding, onIntent)
-            is Screen.MediaCache -> MediaCacheScreen(state, onIntent)
+            is Screen.MediaCache -> MediaCacheScreen(state, padding, onIntent)
         }
-    }
-
-    if (state.sasFlowId != null) {
-        SasDialog(
-            phase = state.sasPhase,
-            emojis = state.sasEmojis,
-            otherUser = state.sasOtherUser.orEmpty(),
-            otherDevice = state.sasOtherDevice.orEmpty(),
-            error = state.sasError,
-            onAccept = { onIntent(Intent.AcceptSas) },
-            onConfirm = { onIntent(Intent.ConfirmSas) },
-            onCancel = { onIntent(Intent.CancelSas) }
-        )
     }
 }

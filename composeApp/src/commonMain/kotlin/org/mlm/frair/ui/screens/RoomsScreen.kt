@@ -15,17 +15,25 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.MeetingRoom
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SearchBar
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -62,19 +70,68 @@ fun RoomsScreen(
     Scaffold(
         modifier = Modifier.padding(padding),
         topBar = {
-            // Floating search bar
-            SearchBar(
-                query = state.roomSearchQuery,
-                onQueryChange = { onIntent(Intent.SetRoomSearch(it)) },
-                onSearch = { /* Handle search */ },
-                active = false,
-                onActiveChange = { },
-                placeholder = { Text("Search rooms...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-            ) { }
+            Column {
+                TopAppBar(
+                    title = { Text("Rooms", fontWeight = FontWeight.SemiBold) },
+                    actions = {
+                        IconButton(
+                            enabled = !state.isBusy,
+                            onClick = { onIntent(Intent.RefreshRooms) }
+                        ) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Refresh"
+                            )
+                        }
+                        IconButton(onClick = { onIntent(Intent.OpenSecurity) }) {
+                            Icon(Icons.Default.Security, "Security")
+                        }
+                        IconButton(onClick = { onIntent(Intent.Logout) }) {
+                            Icon(Icons.Default.Logout, "Logout")
+                        }
+                    }
+                )
+
+                // Offline banner
+                if (state.offlineBanner != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            state.offlineBanner,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(vertical = 4.dp, horizontal = 16.dp)
+                        )
+                    }
+                } else if (state.syncBanner != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            state.syncBanner,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(vertical = 4.dp, horizontal = 16.dp)
+                        )
+                    }
+                }
+
+                // Search bar
+                OutlinedTextField(
+                    value = state.roomSearchQuery,
+                    onValueChange = { onIntent(Intent.SetRoomSearch(it)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    placeholder = { Text("Search rooms...") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.large
+                )
+            }
         }
     ) { innerPadding ->
         if (state.isBusy && state.rooms.isEmpty()) {
@@ -83,7 +140,10 @@ fun RoomsScreen(
             EmptyStateView(
                 icon = Icons.Default.MeetingRoom,
                 title = "No rooms found",
-                subtitle = "Join a room to start chatting",
+                subtitle = if (state.roomSearchQuery.isBlank())
+                    "Join a room to start chatting"
+                else
+                    "No rooms match \"${state.roomSearchQuery}\"",
                 modifier = Modifier.padding(innerPadding)
             )
         } else {

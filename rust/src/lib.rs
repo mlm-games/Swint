@@ -1616,8 +1616,6 @@ impl Client {
                 if req.accept().await.is_err() {
                     return false;
                 }
-                // Remove from inbox once accepted
-                self.inbox.lock().unwrap().remove(&flow_id);
                 self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
                 return true;
             }
@@ -2212,12 +2210,16 @@ async fn attach_sas_stream(
                 obs.on_phase(flow_id.clone(), SasPhase::Cancelled);
                 // Clean up after cancellation
                 verifs.lock().unwrap().remove(&flow_id);
+                //TODO: inbox.lock().unwrap().remove(&flow_id);
+
                 break;
             }
             SdkSasState::Done { .. } => {
                 obs.on_phase(flow_id.clone(), SasPhase::Done);
                 // Clean up after completion
                 verifs.lock().unwrap().remove(&flow_id);
+                //TODO: inbox.lock().unwrap().remove(&flow_id);
+
                 break;
             }
             _ => {}

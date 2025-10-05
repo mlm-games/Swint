@@ -104,9 +104,17 @@ fun SasDialog(
                     targetState = phase,
                     transitionSpec = {
                         fadeIn(tween(300)) togetherWith fadeOut(tween(300))
-                    }
+                    },
+                    label = "SasPhaseAnimation"
                 ) { currentPhase ->
                     when (currentPhase) {
+                        SasPhase.Ready -> {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator()
+                                Spacer(Modifier.height(8.dp))
+                                Text("Preparing emoji comparison…")
+                            }
+                        }
                         SasPhase.Requested -> {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(

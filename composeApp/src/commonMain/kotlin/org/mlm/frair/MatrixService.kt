@@ -76,11 +76,16 @@ class MatrixService(val port: MatrixPort) {
     suspend fun setLocalTrust(deviceId: String, verified: Boolean) = runCatching { port.setLocalTrust(deviceId, verified) }.getOrElse { false }
 
     suspend fun startSelfSas(deviceId: String, observer: VerificationObserver) = port.startSelfSas(deviceId, observer)
-    suspend fun acceptVerification(flowId: String, observer: VerificationObserver) =
-        port.acceptVerification(flowId, observer)
+
+//    suspend fun startVerification(targetUser: String, targetDevice: String, observer: VerificationObserver) =
+//        port.startVerification(targetUser, targetDevice, observer)
+
+    suspend fun acceptVerification(flowId: String, otherUserId: String?, observer: VerificationObserver) =
+        port.acceptVerification(flowId, otherUserId, observer)
     suspend fun confirmVerification(flowId: String) = port.confirmVerification(flowId)
     suspend fun cancelVerification(flowId: String) = port.cancelVerification(flowId)
-    suspend fun cancelVerificationRequest(flowId: String) = port.cancelVerificationRequest(flowId)
+    suspend fun cancelVerificationRequest(flowId: String, otherUserId: String?) =
+        port.cancelVerificationRequest(flowId, otherUserId)
 
     fun enterForeground() = port.enterForeground()
     fun enterBackground() = port.enterBackground()

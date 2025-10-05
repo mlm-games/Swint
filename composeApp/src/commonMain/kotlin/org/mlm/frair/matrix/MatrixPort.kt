@@ -69,8 +69,6 @@ interface MatrixPort {
     fun isLoggedIn(): Boolean
     fun close()
 
-    suspend fun cancelVerificationRequest(flowId: String): Boolean
-
     suspend fun setTyping(roomId: String, typing: Boolean): Boolean
     fun whoami(): String?  // "@user:server" or null if not logged in
 
@@ -121,9 +119,12 @@ interface MatrixPort {
     suspend fun startSelfSas(targetDeviceId: String, observer: VerificationObserver): String
     suspend fun startUserSas(userId: String, observer: VerificationObserver): String
 
-    suspend fun acceptVerification(flowId: String, observer: VerificationObserver): Boolean
+//    suspend fun startVerification(targetUser: String, targetDevice: String, observer: VerificationObserver): Boolean
+    suspend fun acceptVerification(flowId: String, otherUserId: String?, observer: VerificationObserver): Boolean
     suspend fun confirmVerification(flowId: String): Boolean
     suspend fun cancelVerification(flowId: String): Boolean
+
+    suspend fun cancelVerificationRequest(flowId: String, otherUserId: String?): Boolean
 
     fun enterForeground()
     fun enterBackground()
