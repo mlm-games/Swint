@@ -75,6 +75,7 @@ import org.mlm.frair.matrix.DeviceSummary
 import org.mlm.frair.ui.components.EmptyStateView
 import org.mlm.frair.ui.components.PrivacyTab
 import org.mlm.frair.ui.components.RecoveryDialog
+import org.mlm.frair.ui.components.SasDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -161,6 +162,19 @@ fun SecurityScreen(
             onChange = { onIntent(Intent.SetRecoveryKey(it)) },
             onCancel = { onIntent(Intent.CloseRecoveryDialog) },
             onConfirm = { onIntent(Intent.SubmitRecoveryKey) }
+        )
+    }
+
+    if (state.sasFlowId != null) {
+        SasDialog(
+            phase = state.sasPhase,
+            emojis = state.sasEmojis,
+            otherUser = state.sasOtherUser.orEmpty(),
+            otherDevice = state.sasOtherDevice.orEmpty(),
+            error = state.sasError,
+            onAccept = { onIntent(Intent.AcceptSas) },
+            onConfirm = { onIntent(Intent.ConfirmSas) },
+            onCancel = { } //TODO: Broken for now -> onIntent(Intent.CancelSas) }
         )
     }
 }

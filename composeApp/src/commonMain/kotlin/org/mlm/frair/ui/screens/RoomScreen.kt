@@ -340,17 +340,12 @@ fun RoomScreen(
                             lastDate = eventDate
                         }
 
-                        // Message bubble
-                        val previousEvent = if (index > 0) events[index - 1] else null
-                        val grouped = previousEvent?.sender == event.sender &&
-                                (event.timestamp - (previousEvent?.timestamp ?: 0)) < 60000
-
                         MessageBubble(
                             isMine = (event.sender == state.myUserId),
                             body = event.body,
                             sender = event.sender,
                             timestamp = event.timestamp,
-                            grouped = grouped,
+                            grouped = false,
                             reactions = state.myReactions[event.eventId].orEmpty(),
                             onLongPress = { actionTarget = event },
                             onReact = { emoji ->
@@ -358,7 +353,7 @@ fun RoomScreen(
                             }
                         )
 
-                        if (!grouped || index == events.lastIndex) {
+                        if (index == events.lastIndex) {
                             Spacer(modifier = Modifier.height(8.dp))
                         } else {
                             Spacer(modifier = Modifier.height(2.dp))
@@ -406,7 +401,7 @@ fun RoomScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     CircularProgressIndicator(
-                                        progress = progress,
+                                        progress = { progress },
                                         modifier = Modifier.size(24.dp)
                                     )
                                     Spacer(Modifier.width(12.dp))
@@ -499,8 +494,8 @@ fun RoomScreen(
             text = { Text("Clear cache") },
             onClick = {
                 showActions = false
-                onIntent(Intent.ShowMediaCacheInfo)
-            },
+                onIntent(Intent.OpenMediaCache)
+                      },
             leadingIcon = { Icon(Icons.Default.CleaningServices, null) }
         )
     }

@@ -87,6 +87,9 @@ sealed class Intent {
     // Media cache
     data object ShowMediaCacheInfo : Intent()
     data class ClearMediaCache(val maxBytes: Long) : Intent()
+    data object CloseMediaCache: Intent()
+    data object OpenMediaCache: Intent()
+
 }
 
 data class SendIndicator(
@@ -444,6 +447,9 @@ class AppStore(
             is Intent.CancelQueuedMessage -> cancelQueuedMessage(intent.txnId)
             is Intent.RetryQueuedMessage -> retryQueuedMessage(intent.txnId)
             Intent.ClearFailedMessages -> clearFailedMessages()
+
+            Intent.OpenMediaCache -> set { copy(screen = Screen.MediaCache) }
+            Intent.CloseMediaCache -> set { copy(screen = Screen.Rooms) }
 
             Intent.ShowMediaCacheInfo -> updateMediaCacheInfo()
             is Intent.ClearMediaCache -> clearMediaCache(intent.maxBytes)
@@ -827,17 +833,22 @@ class AppStore(
         val current = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
         val flowId = current?.flowId ?: state.value.sasFlowId
         if (flowId == null) { set { copy(showVerificationDialog = false) }; return@launch }
+        val otherUser = state.value.sasOtherUser
         val obs = commonVerifObserver()
-        if (!matrix.acceptVerification(flowId, obs)) set { copy(sasError = "Accept failed") }
+        if (!matrix.acceptVerification(flowId, otherUser, obs)) {
+            set { copy(sasError = "Accept failed") }
+        }
     }
 
     private fun rejectIncomingVerification() = scope.launch {
-        val request = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
-        if (request != null) {
-            // Prefer cancelling the request (pre‑SAS). If that fails, try cancelling a SAS flow.
-            val ok = matrix.cancelVerificationRequest(request.flowId)
+        val current = state.value.pendingVerifications.getOrNull(state.value.currentVerificationIndex)
+        val flowId = current?.flowId ?: state.value.sasFlowId
+        val otherUser = state.value.sasOtherUser
+        if (flowId != null) {
+            val ok = matrix.cancelVerificationRequest(flowId, otherUser)
             if (!ok) {
-                matrix.cancelVerification(request.flowId)
+                // Fallback: try cancel a SAS flow if it already started
+                matrix.cancelVerification(flowId)
             }
         }
         moveToNextVerification()
@@ -866,7 +877,7 @@ class AppStore(
     private fun acceptSas() = scope.launch {
         val id = state.value.sasFlowId ?: return@launch
         val obs = commonVerifObserver()
-        if (!matrix.acceptVerification(id, obs)) set { copy(sasError = "Accept failed") }
+        if (!matrix.acceptVerification(id, state.value.sasOtherUser, obs)) set { copy(sasError = "Accept failed") }
     }
 
     private fun confirmSas() = scope.launch {

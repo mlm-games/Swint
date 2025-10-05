@@ -22,7 +22,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
     }
 
-    override suspend fun login(user: String, password: String, deviceDisplayName: String?): Unit {
+    override suspend fun login(user: String, password: String, deviceDisplayName: String?) {
         client.login(user, password, deviceDisplayName)
     }
     override fun isLoggedIn(): Boolean = client.isLoggedIn()
@@ -158,6 +158,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
 
     override fun close() = client.shutdown()
+
     override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
         return client.setTyping(roomId, typing)
     }
@@ -258,24 +259,69 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.startUserSas(userId, obs)
     }
 
-    override suspend fun acceptVerification(flowId: String, observer: VerificationObserver): Boolean {
-        val obs = object : frair.VerificationObserver {
+//    override suspend fun startVerification(
+//        targetUser: String,
+//        targetDevice: String,
+//        observer: VerificationObserver
+//    ): Boolean {
+//        val cb = object : frair.VerificationObserver {
+//            override fun onPhase(flowId: String, phase: frair.SasPhase) {
+//                observer.onPhase(flowId, when (phase) {
+//                    frair.SasPhase.REQUESTED -> SasPhase.Requested
+//                    frair.SasPhase.READY -> SasPhase.Ready
+//                    frair.SasPhase.EMOJIS -> SasPhase.Emojis
+//                    frair.SasPhase.CONFIRMED -> SasPhase.Confirmed
+//                    frair.SasPhase.CANCELLED -> SasPhase.Cancelled
+//                    frair.SasPhase.FAILED -> SasPhase.Failed
+//                    frair.SasPhase.DONE -> SasPhase.Done
+//                })
+//            }
+//            override fun onEmojis(payload: SasEmojis) {
+//                observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
+//            }
+//            override fun onError(flowId: String, message: String) {
+//                observer.onError(flowId, message)
+//            }
+//        }
+//        return client.startVerification(targetUser, targetDevice, cb)
+//    }
+
+    override suspend fun acceptVerification(
+        flowId: String,
+        otherUserId: String?,
+        observer: VerificationObserver
+    ): Boolean {
+        val cb = object : frair.VerificationObserver {
             override fun onPhase(flowId: String, phase: frair.SasPhase) {
-                observer.onPhase(flowId, phase.toCommon())
+                observer.onPhase(flowId, when (phase) {
+                    frair.SasPhase.REQUESTED -> SasPhase.Requested
+                    frair.SasPhase.READY -> SasPhase.Ready
+                    frair.SasPhase.EMOJIS -> SasPhase.Emojis
+                    frair.SasPhase.CONFIRMED -> SasPhase.Confirmed
+                    frair.SasPhase.CANCELLED -> SasPhase.Cancelled
+                    frair.SasPhase.FAILED -> SasPhase.Failed
+                    frair.SasPhase.DONE -> SasPhase.Done
+                })
             }
-            override fun onEmojis(payload: frair.SasEmojis) {
+            override fun onEmojis(payload: SasEmojis) {
                 observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
             }
             override fun onError(flowId: String, message: String) {
                 observer.onError(flowId, message)
             }
         }
-        return client.acceptVerification(flowId, obs)
+        return client.acceptVerification(flowId, otherUserId, cb)
     }
-    override suspend fun confirmVerification(flowId: String): Boolean = client.confirmVerification(flowId)
-    override suspend fun cancelVerification(flowId: String): Boolean = client.cancelVerification(flowId)
-    override suspend fun cancelVerificationRequest(flowId: String): Boolean =
-        client.cancelVerificationRequest(flowId)
+
+    override suspend fun confirmVerification(flowId: String): Boolean =
+        client.confirmVerification(flowId)
+
+    override suspend fun cancelVerification(flowId: String): Boolean =
+        client.cancelVerification(flowId)
+
+    override suspend fun cancelVerificationRequest(flowId: String, otherUserId: String?): Boolean =
+        client.cancelVerificationRequest(flowId, otherUserId)
+
     override fun enterForeground() {
         client.enterForeground()
     }
