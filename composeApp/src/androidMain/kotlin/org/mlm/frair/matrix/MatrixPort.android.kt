@@ -1,5 +1,6 @@
 package org.mlm.frair.matrix
 
+import frair.SasEmojis
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
@@ -7,7 +8,6 @@ import kotlinx.coroutines.flow.callbackFlow
 import frair.Client as FfiClient
 import frair.RoomSummary as FfiRoom
 import frair.MessageEvent as FfiEvent
-import frair.TimelineObserver
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
 
@@ -310,7 +310,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 observer.onError(flowId, message)
             }
         }
-        return client.acceptVerification(flowId, otherUserId, cb)
+        return client.acceptVerification(flowId, cb)
     }
 
     override suspend fun confirmVerification(flowId: String): Boolean =
@@ -320,7 +320,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.cancelVerification(flowId)
 
     override suspend fun cancelVerificationRequest(flowId: String, otherUserId: String?): Boolean =
-        client.cancelVerificationRequest(flowId, otherUserId)
+        client.cancelVerificationRequest(flowId)
 
     override fun enterForeground() {
         client.enterForeground()
