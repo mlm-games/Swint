@@ -6,6 +6,7 @@ import org.mlm.frair.MatrixService
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.matrix.TimelineDiff
 import org.mlm.frair.ui.RoomUiState
+import org.mlm.frair.ui.components.AttachmentData
 
 class RoomController(
     private val service: MatrixService,
@@ -18,6 +19,7 @@ class RoomController(
     val state: StateFlow<RoomUiState> = _state
 
     private var typingToken: ULong? = null
+    private var uploadJob: Job? = null
 
     init {
         loadInitial()
@@ -91,6 +93,51 @@ class RoomController(
             } else {
                 _state.update { it.copy(error = "Send failed") }
             }
+        }
+    }
+
+    fun sendAttachment(data: AttachmentData) {
+        // prevent overlapping uploads
+        if (_state.value.isUploadingAttachment) return
+        _state.update {
+            it.copy(
+                currentAttachment = data,
+                isUploadingAttachment = true,
+                attachmentProgress = 0f
+            )
+        }
+        val roomId = _state.value.roomId
+        uploadJob = scope.launch {
+            val ok = service.sendAttachmentFromPath(
+                roomId = roomId,
+                path = data.path,
+                mime = data.mimeType,
+                filename = data.fileName
+            ) { sent, total ->
+                val denom = (total ?: data.sizeBytes).coerceAtLeast(1L).toFloat()
+                val p = (sent.toFloat() / denom).coerceIn(0f, 1f)
+                _state.update { it.copy(attachmentProgress = p) }
+            }
+            _state.update {
+                it.copy(
+                    isUploadingAttachment = false,
+                    attachmentProgress = 0f,
+                    currentAttachment = null,
+                    error = if (!ok) "Attachment upload failed" else it.error
+                )
+            }
+        }
+    }
+
+    fun cancelAttachmentUpload() {
+        uploadJob?.cancel()
+        uploadJob = null
+        _state.update {
+            it.copy(
+                isUploadingAttachment = false,
+                attachmentProgress = 0f,
+                currentAttachment = null
+            )
         }
     }
 

@@ -14,11 +14,28 @@ import org.mlm.frair.RoomSummary
 class RustMatrixPort(hs: String) : MatrixPort {
     @Volatile private var client: FfiClient = FfiClient(hs)
     private val clientLock = Any()
+    private var currentHs = hs
 
     override suspend fun init(hs: String) {
         synchronized(clientLock) {
-            runCatching { client.shutdown() }
-            client = FfiClient(hs)
+            if (hs != currentHs) {
+                // Graceful stop then deterministic free of previous instance
+                client.let { c ->
+                    runCatching { c.shutdown() }       // your Rust method
+                    runCatching { c.close() }          // UniFFI-generated: AutoCloseable
+                }
+                client = frair.Client(hs)
+                currentHs = hs
+            }
+        }
+    }
+
+    override fun close() {
+        synchronized(clientLock) {
+            client.let { c ->
+                runCatching { c.shutdown() }
+                runCatching { c.close() }              // key: avoid Cleaner path
+            }
         }
     }
 
@@ -157,7 +174,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String> =
         runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
 
-    override fun close() = client.shutdown()
 
     override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
         return client.setTyping(roomId, typing)

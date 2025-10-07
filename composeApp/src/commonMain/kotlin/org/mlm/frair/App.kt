@@ -69,7 +69,9 @@ fun App(
                     onConfirmEdit = controller::confirmEdit,
                     onReact = controller::react,
                     onPaginateBack = controller::paginateBack,
-                    onMarkReadHere = controller::markReadHere
+                    onMarkReadHere = controller::markReadHere,
+                    onSendAttachment = controller::sendAttachment,
+                    onCancelUpload = controller::cancelAttachmentUpload
                 )
             }
             Route.Security -> {

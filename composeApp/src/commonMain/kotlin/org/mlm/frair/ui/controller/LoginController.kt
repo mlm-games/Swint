@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.mlm.frair.MatrixService
 import org.mlm.frair.ui.LoginUiState
 
@@ -21,6 +22,15 @@ class LoginController(
 
     private val _state = MutableStateFlow(LoginUiState())
     val state: StateFlow<LoginUiState> = _state
+
+    init {
+        scope.launch {
+            runCatching { service.init(_state.value.homeserver) }
+            if (service.isLoggedIn()) {
+                withContext(Dispatchers.Main) { onLoggedIn() }
+            }
+        }
+    }
 
     fun setHomeserver(v: String) { _state.update { it.copy(homeserver = v) } }
     fun setUser(v: String) { _state.update { it.copy(user = v) } }
@@ -36,7 +46,7 @@ class LoginController(
                 service.login(s.user, s.pass, "Frair")
             }.onSuccess {
                 _state.update { it.copy(isBusy = false) }
-                onLoggedIn()
+                withContext(Dispatchers.Main) { onLoggedIn() }
             }.onFailure { t ->
                 _state.update { it.copy(isBusy = false, error = t.message ?: "Login failed") }
             }

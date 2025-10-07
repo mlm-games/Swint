@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.frair.MessageEvent
+import org.mlm.frair.platform.rememberFilePicker
 import org.mlm.frair.ui.RoomUiState
 import org.mlm.frair.ui.components.*
 
@@ -33,7 +34,9 @@ fun RoomScreen(
     onConfirmEdit: () -> Unit,
     onReact: (MessageEvent, String) -> Unit,
     onPaginateBack: () -> Unit,
-    onMarkReadHere: (MessageEvent) -> Unit
+    onMarkReadHere: (MessageEvent) -> Unit,
+    onSendAttachment: (AttachmentData) -> Unit,
+    onCancelUpload: () -> Unit
 ) {
     val listState = rememberLazyListState()
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
@@ -44,6 +47,14 @@ fun RoomScreen(
         }
     }
     val scope = rememberCoroutineScope()
+    var showAttachmentPicker by remember { mutableStateOf(false) }
+
+    val picker = rememberFilePicker { data ->
+        if (data != null) {
+            onSendAttachment(data)
+        }
+        showAttachmentPicker = false
+    }
 
     Scaffold(
         topBar = {
@@ -100,6 +111,14 @@ fun RoomScreen(
                     onCancelReply = onCancelReply,
                     onCancelEdit = onCancelEdit
                 )
+                if (state.isUploadingAttachment && state.currentAttachment != null) {
+                    AttachmentProgress(
+                        fileName = state.currentAttachment.fileName,
+                        progress = state.attachmentProgress,
+                        totalSize = state.currentAttachment.sizeBytes,
+                        onCancel = onCancelUpload
+                    )
+                }
                 MessageComposer(
                     value = state.input,
                     enabled = true,
@@ -113,7 +132,9 @@ fun RoomScreen(
                         if (state.editing != null) onConfirmEdit() else onSend()
                     },
                     onCancelReply = onCancelReply,
-                    onCancelEdit = onCancelEdit
+                    onCancelEdit = onCancelEdit,
+                    onAttach = { showAttachmentPicker = true },
+                    onCancelUpload = onCancelUpload
                 )
             }
         },
@@ -185,6 +206,15 @@ fun RoomScreen(
                 }
             }
         }
+    }
+
+    if (showAttachmentPicker) {
+        AttachmentPicker(
+            onPickImage = { picker.pick("image/*") },
+            onPickVideo = { picker.pick("video/*") },
+            onPickDocument = { picker.pick("*/*") },
+            onDismiss = { showAttachmentPicker = false }
+        )
     }
 }
 

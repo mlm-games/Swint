@@ -50,17 +50,6 @@ fun MessageComposer(
     onCancelUpload: (() -> Unit)? = null
 ) {
     Column {
-        AnimatedVisibility(visible = currentAttachment != null && isUploadingAttachment) {
-            currentAttachment?.let { attachment ->
-                AttachmentProgress(
-                    fileName = attachment.fileName,
-                    progress = 0.5f, // Get from state
-                    totalSize = attachment.sizeBytes,
-                    onCancel = { onCancelUpload?.invoke() }
-                )
-            }
-        }
-
         // Context banner (reply/edit)
         AnimatedVisibility(visible = replyingTo != null || editing != null) {
             Surface(

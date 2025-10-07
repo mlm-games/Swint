@@ -18,7 +18,7 @@ class Navigator(initial: Route) {
     val current: Route get() = backStack.last()
 
     fun push(route: Route) { backStack += route }
-    fun replace(route: Route) { backStack[backStack.lastIndex] = route }
+    fun replace(route: Route) { if (backStack.isEmpty()) { backStack += route } else { backStack[backStack.lastIndex] = route } }
     fun pop(): Boolean = if (backStack.size > 1) { backStack.removeAt(backStack.lastIndex); true } else false
 }
 

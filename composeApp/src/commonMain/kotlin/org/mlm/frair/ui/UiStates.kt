@@ -4,6 +4,7 @@ import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
 import org.mlm.frair.matrix.DeviceSummary
 import org.mlm.frair.matrix.SasPhase
+import org.mlm.frair.ui.components.AttachmentData
 
 
 data class LoginUiState(
@@ -35,6 +36,9 @@ data class RoomUiState(
     val hitStart: Boolean = false,
     val isOffline: Boolean = false,
     val pendingSendCount: Int = 0,
+    val currentAttachment: AttachmentData? = null,
+    val isUploadingAttachment: Boolean = false,
+    val attachmentProgress: Float = 0f,
     val error: String? = null
 )
 data class VerificationRequestUi(

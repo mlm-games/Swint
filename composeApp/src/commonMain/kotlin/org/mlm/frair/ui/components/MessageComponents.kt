@@ -180,10 +180,13 @@ data class AttachmentData(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+
 fun AttachmentPicker(
-    onAttachmentSelected: (AttachmentData) -> Unit,
-    onDismiss: () -> Unit
-) {
+        onPickImage: () -> Unit,
+        onPickVideo: () -> Unit,
+        onPickDocument: () -> Unit,
+        onDismiss: () -> Unit
+    ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -202,38 +205,31 @@ fun AttachmentPicker(
                 icon = Icons.Default.Image,
                 title = "Photo",
                 subtitle = "Send an image from gallery",
-                onClick = {
-                    // Platform-specific file picker
-                    onDismiss()
-                }
+                onClick = { onPickImage(); onDismiss() }
             )
 
             AttachmentOption(
                 icon = Icons.Default.VideoLibrary,
                 title = "Video",
                 subtitle = "Share a video",
-                onClick = {
-                    onDismiss()
-                }
+                onClick = { onPickVideo(); onDismiss() }
             )
 
             AttachmentOption(
                 icon = Icons.AutoMirrored.Filled.InsertDriveFile,
                 title = "Document",
                 subtitle = "Send a file",
-                onClick = {
-                    onDismiss()
-                }
+                onClick = { onPickDocument(); onDismiss() }
             )
 
-            AttachmentOption(
-                icon = Icons.Default.LocationOn,
-                title = "Location",
-                subtitle = "Share your location",
-                onClick = {
-                    onDismiss()
-                }
-            )
+//            AttachmentOption(
+//                icon = Icons.Default.LocationOn,
+//                title = "Location",
+//                subtitle = "Share your location",
+//                onClick = {
+//                    onDismiss()
+//                }
+//            )
         }
     }
 }
