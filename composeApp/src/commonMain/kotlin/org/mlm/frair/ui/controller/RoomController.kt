@@ -1,0 +1,133 @@
+package org.mlm.frair.ui.controller
+
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import org.mlm.frair.MatrixService
+import org.mlm.frair.MessageEvent
+import org.mlm.frair.matrix.TimelineDiff
+import org.mlm.frair.ui.RoomUiState
+
+class RoomController(
+    private val service: MatrixService,
+    roomId: String,
+    roomName: String
+) {
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    private val _state = MutableStateFlow(RoomUiState(roomId = roomId, roomName = roomName))
+    val state: StateFlow<RoomUiState> = _state
+
+    private var typingToken: ULong? = null
+
+    init {
+        loadInitial()
+        observeTimeline()
+        observeTyping()
+        updateMyUserId()
+    }
+
+    private fun updateMyUserId() {
+        _state.update { it.copy(myUserId = service.port.whoami()) }
+    }
+
+    private fun loadInitial() {
+        scope.launch {
+            val recent = runCatching { service.loadRecent(_state.value.roomId, 60) }.getOrDefault(emptyList())
+            _state.update { it.copy(events = recent.sortedBy { e -> e.timestamp }) }
+        }
+    }
+
+    private fun observeTimeline() {
+        scope.launch {
+            service.timelineDiffs(_state.value.roomId).collect { diff ->
+                when (diff) {
+                    is TimelineDiff.Reset -> _state.update { it.copy(events = diff.items.sortedBy { e -> e.timestamp }) }
+                    is TimelineDiff.Clear -> _state.update { it.copy(events = emptyList()) }
+                    is TimelineDiff.Insert -> _state.update { s ->
+                        val next = (s.events + diff.item).distinctBy { it.itemId }.sortedBy { e -> e.timestamp }
+                        s.copy(events = next)
+                    }
+                    is TimelineDiff.Update -> _state.update { s ->
+                        val idx = s.events.indexOfFirst { it.itemId == diff.item.itemId }
+                        val next = if (idx >= 0) s.events.toMutableList().apply { set(idx, diff.item) } else (s.events + diff.item)
+                        s.copy(events = next.sortedBy { e -> e.timestamp })
+                    }
+                    is TimelineDiff.Remove -> _state.update { s ->
+                        s.copy(events = s.events.filterNot { it.itemId == diff.itemId })
+                    }
+                }
+            }
+        }
+    }
+
+    private fun observeTyping() {
+        typingToken?.let { service.stopTypingObserver(it) }
+        typingToken = service.observeTyping(_state.value.roomId) { names ->
+            _state.update { it.copy(typingNames = names) }
+        }
+    }
+
+    fun setInput(v: String) {
+        _state.update { it.copy(input = v) }
+        scope.launch {
+            val text = v
+            if (text.isBlank()) {
+                service.port.setTyping(_state.value.roomId, false)
+            } else {
+                service.port.setTyping(_state.value.roomId, true)
+                delay(4000)
+                service.port.setTyping(_state.value.roomId, false)
+            }
+        }
+    }
+
+    fun send() {
+        val s = _state.value
+        if (s.input.isBlank()) return
+        scope.launch {
+            val ok = service.sendMessage(s.roomId, s.input.trim())
+            if (ok) {
+                _state.update { it.copy(input = "") }
+            } else {
+                _state.update { it.copy(error = "Send failed") }
+            }
+        }
+    }
+
+    fun startReply(ev: MessageEvent) { _state.update { it.copy(replyingTo = ev) } }
+    fun cancelReply() { _state.update { it.copy(replyingTo = null) } }
+    fun startEdit(ev: MessageEvent) { _state.update { it.copy(editing = ev, input = ev.body) } }
+    fun cancelEdit() { _state.update { it.copy(editing = null, input = "") } }
+    fun confirmEdit() {
+        val s = _state.value
+        val target = s.editing ?: return
+        scope.launch {
+            val ok = service.edit(s.roomId, target.eventId, s.input.trim())
+            if (ok) _state.update { it.copy(editing = null, input = "") }
+            else _state.update { it.copy(error = "Edit failed") }
+        }
+    }
+
+    fun react(ev: MessageEvent, emoji: String) {
+        scope.launch { service.react(_state.value.roomId, ev.eventId, emoji) }
+    }
+
+    fun paginateBack() {
+        val s = _state.value
+        if (s.isPaginatingBack || s.hitStart) return
+        scope.launch {
+            _state.update { it.copy(isPaginatingBack = true) }
+            try {
+                val hitStart = service.paginateBack(s.roomId, 50)
+                val recent = service.loadRecent(s.roomId, limit = state.value.events.size + 50)
+                _state.update { it.copy(events = recent.sortedBy { e -> e.timestamp }, hitStart = hitStart) }
+            } finally {
+                _state.update { it.copy(isPaginatingBack = false) }
+            }
+        }
+    }
+
+    fun markReadHere(ev: MessageEvent) {
+        scope.launch { service.markReadAt(ev.roomId, ev.eventId) }
+    }
+}

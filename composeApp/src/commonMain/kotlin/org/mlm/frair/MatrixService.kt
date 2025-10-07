@@ -36,6 +36,9 @@ class MatrixService(val port: MatrixPort) {
     suspend fun getPaginationState(roomId: String): MatrixPort.PaginationState? =
         runCatching { port.getPaginationState(roomId) }.getOrNull()
 
+    fun startSupervisedSync(obs: MatrixPort.SyncObserver) = runCatching { port.startSupervisedSync(obs) }
+
+
     // Connection monitoring
     fun observeConnection(observer: MatrixPort.ConnectionObserver): ULong =
         port.observeConnection(observer)

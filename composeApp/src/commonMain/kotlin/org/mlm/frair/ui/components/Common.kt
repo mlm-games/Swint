@@ -21,23 +21,18 @@ import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -65,17 +60,23 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
-import org.mlm.frair.AppState
-import org.mlm.frair.Intent
 import org.mlm.frair.MessageEvent
-import org.mlm.frair.SendIndicator
 import org.mlm.frair.matrix.SendState
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+
+data class SendIndicator(
+    val txnId: String,
+    val attempts: Int,
+    val state: SendState,
+    val error: String? = null
+)
+
 
 @Composable
 fun EmptyStateView(
@@ -322,7 +323,7 @@ fun formatDate(timestampMs: Long): String {
         yesterday -> "Yesterday"
         else -> {
             val month = localDateTime.month.name.lowercase().replaceFirstChar { it.uppercase() }.take(3)
-            "${localDateTime.dayOfMonth} $month ${localDateTime.year}"
+            "${localDateTime.day} $month ${localDateTime.year}"
         }
     }
 }
@@ -503,7 +504,7 @@ private fun MessageActionItem(
 
 // Privacy tab for security screen
 @Composable
-fun PrivacyTab(state: AppState, onIntent: (Intent) -> Unit) {
+fun PrivacyTab() {
     Column(
         modifier = Modifier
             .fillMaxSize()

@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.mlm.frair.MessageEvent
-import org.mlm.frair.SendIndicator
 import org.mlm.frair.matrix.SendState
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
