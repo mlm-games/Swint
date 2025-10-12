@@ -17,6 +17,7 @@ use thiserror::Error;
 use matrix_sdk::{
     executor::spawn,
     ruma::{
+        self,
         events::{
             key::verification::request::ToDeviceKeyVerificationRequestEvent,
             room::message::{MessageType, SyncRoomMessageEvent},
@@ -45,7 +46,10 @@ use matrix_sdk::{
 use matrix_sdk_ui::{
     eyeball_im::VectorDiff,
     sync_service::SyncService,
-    timeline::{EventTimelineItem, RoomExt as _, Timeline, TimelineEventItemId, TimelineItem},
+    timeline::{
+        EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
+        TimelineEventItemId, TimelineItem, TimelineItemContent,
+    },
 };
 
 use std::panic::AssertUnwindSafe;
@@ -2054,34 +2058,74 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<T
 }
 
 fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
-    let msg = ev.content().as_message()?;
     let ts: u64 = ev.timestamp().0.into();
-
-    let item_id = format!("{:?}", ev.identifier());
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-
+    // Use message body if present; otherwise emit a placeholder so we don’t hide history
+    let body = ev
+        .content()
+        .as_message()
+        .map(|m| render_message_text(m))
+        .unwrap_or_else(|| {
+            "Encrypted or unsupported message. Verify this session or restore keys to view."
+                .to_owned()
+        });
     Some(MessageEvent {
-        item_id,
+        item_id: format!("{:?}", ev.identifier()), // stable enough per run
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),
-        body: render_message_text(msg),
+        body,
         timestamp_ms: ts,
     })
 }
 
 fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Option<MessageEvent> {
-    let msg = ev.content().as_message()?;
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
+    let body = ev
+        .content()
+        .as_message()
+        .map(|m| render_message_text(m))
+        .unwrap_or_else(|| {
+            "Encrypted or unsupported message. Verify this session or restore keys to view."
+                .to_owned()
+        });
     Some(MessageEvent {
-        item_id: uid.to_string(),
+        item_id: uid.to_string(), // matches what the diff stream uses
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),
-        body: render_message_text(msg),
+        body,
         timestamp_ms: ts,
     })
+}
+
+fn render_timeline_text(ev: &EventTimelineItem) -> String {
+    match ev.content() {
+        TimelineItemContent::MsgLike(msg_like) => render_msg_like(ev, msg_like),
+        TimelineItemContent::MembershipChange(change) => render_membership_change(ev, change),
+        TimelineItemContent::ProfileChange(change) => render_profile_change(ev, change),
+        TimelineItemContent::OtherState(state) => render_other_state(ev, state),
+        TimelineItemContent::FailedToParseMessageLike { event_type, .. } => {
+            format!("Unsupported message-like event: {}", event_type)
+        }
+        TimelineItemContent::FailedToParseState { event_type, .. } => {
+            format!("Unsupported state event: {}", event_type)
+        }
+        TimelineItemContent::CallInvite => "Started a call".to_string(),
+        TimelineItemContent::CallNotify => "Call notification".to_string(),
+    }
+}
+
+fn render_msg_like(ev: &EventTimelineItem, ml: &MsgLikeContent) -> String {
+    use MsgLikeKind::*;
+    match &ml.kind {
+        Message(m) => render_message_text(m),
+        Sticker(_s) => "sent a sticker".to_string(),
+        Poll(_p) => "started a poll".to_string(),
+        Redacted => "Message deleted".to_string(),
+        UnableToDecrypt(_e) => "Unable to decrypt this message".to_string(),
+    }
 }
 
 fn reset_store_dir(dir: &PathBuf) {
@@ -2157,8 +2201,119 @@ fn now_unix_ms() -> i64 {
 
 fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
     let mut s = msg.body().to_owned();
+    if s.trim().is_empty() {
+        s = "Encrypted or unsupported message. Verify this session or restore keys to view."
+            .to_owned();
+    }
     if msg.is_edited() {
         s.push_str(" \n(edited)");
     }
     s
+}
+
+fn render_membership_change(
+    ev: &EventTimelineItem,
+    ch: &matrix_sdk_ui::timeline::RoomMembershipChange,
+) -> String {
+    use matrix_sdk_ui::timeline::MembershipChange as MC;
+
+    // Whose membership changed and who did the action
+    let actor = ev.sender().to_string();
+    let subject = ch.user_id().to_string();
+
+    // The UI helper computes the change enum for you.
+    let change = ch // There is a public enum MembershipChange used by RoomMembershipChange
+        // When the SDK can’t compute (e.g. redacted prev_content), treat as a generic change.
+        .clone();
+    // RoomMembershipChange holds an Option<MembershipChange>; docs show the enum, and the item exposes
+    // convenience accessors like display_name()/avatar_url() already used below.
+
+    // We can’t directly call a change() method; match via the exported enum when present.
+    // For a simple, Element-like string set, infer from content(). This keeps it stable.
+    let text = match change.content() {
+        _ => {
+            // If SDK computed a concrete change, prefer it
+            if let Some(kind) = change.change() {
+                match kind {
+                    MC::Joined => format!("{subject} joined the room"),
+                    MC::Left => format!("{subject} left the room"),
+                    MC::Invited => format!("{actor} invited {subject}"),
+                    MC::Kicked => format!("{actor} removed {subject}"),
+                    MC::Banned => format!("{actor} banned {subject}"),
+                    MC::Unbanned => format!("{actor} unbanned {subject}"),
+                    MC::InvitationAccepted => format!("{subject} accepted the invite"),
+                    MC::InvitationRejected => format!("{subject} rejected the invite"),
+                    MC::InvitationRevoked => format!("{actor} revoked the invite for {subject}"),
+                    MC::KickedAndBanned => format!("{actor} removed and banned {subject}"),
+                    MC::Knocked => format!("{subject} knocked"),
+                    MC::KnockAccepted => format!("{actor} accepted {subject}"),
+                    MC::KnockDenied => format!("{actor} denied {subject}"),
+                    _ => format!("{subject} updated membership"),
+                }
+            } else {
+                format!("{subject} updated membership")
+            }
+        }
+    };
+
+    text
+}
+
+fn render_profile_change(
+    _ev: &EventTimelineItem,
+    pc: &matrix_sdk_ui::timeline::MemberProfileChange,
+) -> String {
+    // displayname/ avatar change Element-style lines.
+    let subject = pc.user_id().to_string();
+
+    if let Some(ch) = pc.displayname_change() {
+        match (&ch.old, &ch.new) {
+            (None, Some(new)) => return format!("{subject} set their display name to “{new}”"),
+            (Some(old), Some(new)) if old != new => {
+                return format!("{subject} changed their display name from “{old}” to “{new}”");
+            }
+            (Some(_), None) => return format!("{subject} removed their display name"),
+            _ => {}
+        }
+    }
+
+    if pc.avatar_url_change().is_some() {
+        return format!("{subject} updated their avatar");
+    }
+
+    format!("{subject} updated their profile")
+}
+
+fn render_other_state(ev: &EventTimelineItem, s: &matrix_sdk_ui::timeline::OtherState) -> String {
+    use matrix_sdk_ui::timeline::AnyOtherFullStateEventContent as A;
+
+    let actor = ev.sender().to_string();
+    match s.content() {
+        A::RoomName(c) => {
+            if let ruma::events::FullStateEventContent::Original { content, .. } = c {
+                if let name = &content.name {
+                    return format!("{actor} set the room name to “{name}”");
+                }
+            }
+            format!("{actor} changed the room name")
+        }
+        A::RoomTopic(c) => {
+            if let ruma::events::FullStateEventContent::Original { content, .. } = c {
+                if let topic = &content.topic {
+                    return format!("{actor} set the topic: {topic}");
+                }
+            }
+            format!("{actor} changed the topic")
+        }
+        A::RoomAvatar(_) => format!("{actor} changed the room avatar"),
+        A::RoomEncryption(_) => "Encryption enabled for this room".to_string(),
+        A::RoomPinnedEvents(_) => format!("{actor} updated pinned events"),
+        A::RoomPowerLevels(_) => format!("{actor} changed power levels"),
+        A::RoomCanonicalAlias(_) => format!("{actor} changed the main address"),
+        _ => {
+            // Fallback for less common state
+            let ty = s.content().event_type().to_string();
+            format!("{actor} updated state: {ty}")
+        }
+    }
 }

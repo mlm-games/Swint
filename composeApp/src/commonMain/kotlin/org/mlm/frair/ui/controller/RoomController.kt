@@ -22,6 +22,9 @@ class RoomController(
     private var uploadJob: Job? = null
 
     init {
+        service.startSupervisedSync(object : org.mlm.frair.matrix.MatrixPort.SyncObserver {
+            override fun onState(status: org.mlm.frair.matrix.MatrixPort.SyncStatus) { /* no-op */ }
+        })
         loadInitial()
         observeTimeline()
         observeTyping()
@@ -34,8 +37,29 @@ class RoomController(
 
     private fun loadInitial() {
         scope.launch {
-            val recent = runCatching { service.loadRecent(_state.value.roomId, 60) }.getOrDefault(emptyList())
+            val recent = runCatching { service.loadRecent(_state.value.roomId, 60) }
+                .getOrDefault(emptyList())
             _state.update { it.copy(events = recent.sortedBy { e -> e.timestamp }) }
+
+            // If short, nudge one page, then briefly wait for diffs
+            if (_state.value.events.size < 40) {
+                val before = _state.value.events.size
+                val hitStart = service.paginateBack(_state.value.roomId, 50)
+                _state.update { it.copy(hitStart = hitStart || it.hitStart) }
+                withTimeoutOrNull(1200) {
+                    state.first { it.events.size > before || it.hitStart }
+                } ?: run {
+                    // fallback snapshot if diffs didn’t arrive in time
+                    val snap = service.loadRecent(_state.value.roomId, before + 50)
+                    _state.update {
+                        it.copy(
+                            events = snap
+                                .distinctBy { e -> e.itemId }
+                                .sortedBy { e -> e.timestamp }
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -43,7 +67,13 @@ class RoomController(
         scope.launch {
             service.timelineDiffs(_state.value.roomId).collect { diff ->
                 when (diff) {
-                    is TimelineDiff.Reset -> _state.update { it.copy(events = diff.items.sortedBy { e -> e.timestamp }) }
+                    is TimelineDiff.Reset -> _state.update {
+                        it.copy(
+                            events = diff.items
+                                .distinctBy { e -> e.itemId }
+                                .sortedBy { e -> e.timestamp }
+                        )
+                    }
                     is TimelineDiff.Clear -> _state.update { it.copy(events = emptyList()) }
                     is TimelineDiff.Insert -> _state.update { s ->
                         val next = (s.events + diff.item).distinctBy { it.itemId }.sortedBy { e -> e.timestamp }
@@ -165,9 +195,29 @@ class RoomController(
         scope.launch {
             _state.update { it.copy(isPaginatingBack = true) }
             try {
+                val before = _state.value.events.size
                 val hitStart = service.paginateBack(s.roomId, 50)
-                val recent = service.loadRecent(s.roomId, limit = state.value.events.size + 50)
-                _state.update { it.copy(events = recent.sortedBy { e -> e.timestamp }, hitStart = hitStart) }
+                _state.update { it.copy(hitStart = hitStart || it.hitStart) }
+
+                val arrived = withTimeoutOrNull(1500) {
+                    state.first { it.events.size > before || it.hitStart }
+                    true
+                } ?: false
+
+                // Fallback, take a snapshot if diffs didn’t land in time
+                if (!arrived) {
+                    val snap = service.loadRecent(
+                        s.roomId,
+                        limit = (_state.value.events.size + 50).coerceAtLeast(50)
+                    )
+                    _state.update {
+                        it.copy(
+                            events = snap
+                                .distinctBy { e -> e.itemId }
+                                .sortedBy { e -> e.timestamp }
+                        )
+                    }
+                }
             } finally {
                 _state.update { it.copy(isPaginatingBack = false) }
             }
