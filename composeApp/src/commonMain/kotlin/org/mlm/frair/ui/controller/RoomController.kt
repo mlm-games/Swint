@@ -4,9 +4,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.mlm.frair.MatrixService
 import org.mlm.frair.MessageEvent
+import org.mlm.frair.matrix.SendState
 import org.mlm.frair.matrix.TimelineDiff
 import org.mlm.frair.ui.RoomUiState
 import org.mlm.frair.ui.components.AttachmentData
+import org.mlm.frair.ui.components.SendIndicator
 
 class RoomController(
     private val service: MatrixService,
@@ -28,6 +30,7 @@ class RoomController(
         loadInitial()
         observeTimeline()
         observeTyping()
+        observeOutbox()
         updateMyUserId()
     }
 
@@ -92,6 +95,31 @@ class RoomController(
         }
     }
 
+    private fun observeOutbox() {
+        scope.launch {
+            val rid = _state.value.roomId
+            val byTxn = LinkedHashMap<String, SendIndicator>()
+            service.observeSends().collectLatest { upd ->
+                if (upd.roomId != rid) return@collectLatest
+                val indicator = SendIndicator(
+                    txnId = upd.txnId,
+                    attempts = upd.attempts,
+                    state = upd.state,
+                    error = upd.error
+                )
+                byTxn[upd.txnId] = indicator
+                // Drop Sent items from the visible chip list to keep it small
+                val visible = byTxn.values.filter { it.state != SendState.Sent }
+                _state.update {
+                    it.copy(
+                        outbox = visible,
+                        pendingSendCount = visible.size
+                    )
+                }
+            }
+        }
+    }
+
     private fun observeTyping() {
         typingToken?.let { service.stopTypingObserver(it) }
         typingToken = service.observeTyping(_state.value.roomId) { names ->
@@ -117,12 +145,9 @@ class RoomController(
         val s = _state.value
         if (s.input.isBlank()) return
         scope.launch {
-            val ok = service.sendMessage(s.roomId, s.input.trim())
-            if (ok) {
-                _state.update { it.copy(input = "") }
-            } else {
-                _state.update { it.copy(error = "Send failed") }
-            }
+            val text = s.input.trim()
+            runCatching { service.enqueueText(s.roomId, text, null) }
+            _state.update { it.copy(input = "") }
         }
     }
 
