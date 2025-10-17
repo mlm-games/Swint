@@ -606,7 +606,12 @@ impl Client {
         self.inner.user_id().map(|u| u.to_string())
     }
 
-    pub fn login(&self, username: String, password: String, device_display_name: Option<String>) {
+    pub fn login(
+        &self,
+        username: String,
+        password: String,
+        device_display_name: Option<String>,
+    ) -> Result<(), FfiError> {
         RT.block_on(async {
             let mut req = self
                 .inner
@@ -616,7 +621,7 @@ impl Client {
                 req = req.initial_device_display_name(name);
             }
 
-            let res = req.send().await.expect("login");
+            let res = req.send().await.map_err(|e| FfiError::Msg(e.to_string()))?;
 
             let info = SessionInfo {
                 user_id: res.user_id.to_string(),
@@ -625,15 +630,19 @@ impl Client {
                 refresh_token: res.refresh_token.clone(),
                 homeserver: self.inner.homeserver().to_string(),
             };
-            let _ = tokio::fs::create_dir_all(&self.store_dir).await;
-            let _ = tokio::fs::write(
+
+            tokio::fs::create_dir_all(&self.store_dir).await?;
+            tokio::fs::write(
                 session_file(&self.store_dir),
                 serde_json::to_string(&info).unwrap(),
             )
-            .await;
+            .await?;
 
+            // Warm caches once; ignore errors deliberately (don’t block login success)
             let _ = self.inner.sync_once(SyncSettings::default()).await;
-        });
+
+            Ok(())
+        })
     }
 
     pub fn rooms(&self) -> Vec<RoomSummary> {
