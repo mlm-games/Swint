@@ -1,0 +1,166 @@
+name: Android App Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_releases:
+        description: 'Upload GitHub release'
+        required: true
+        default: true
+        type: boolean
+      mark_prerelease:
+        description: 'Mark as prerelease'
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: '0 0 1 */2 *' # every other month
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: 'Mages'
+  APP_SLUG: 'mages'
+  APPLICATION_ID: 'org.mlm.mages'
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+  BUILD_GRADLE_PATH: 'composeApp/build.gradle.kts'
+  ANDROID_API: '36'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+  ANDROID_NDK_VERSION: '27.0.12077973'
+
+jobs:
+  prepare-version:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    outputs:
+      version_name: ${{ steps.ver.outputs.version_name }}
+      version_code: ${{ steps.ver.outputs.version_code }}
+      commit_sha:   ${{ steps.commit.outputs.commit_sha }}
+      release_notes: ${{ steps.notes.outputs.release-notes }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - id: ver
+        name: Bump versionCode/versionName in composeApp
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLD_CODE=$(grep -m1 "versionCode" $BUILD_GRADLE_PATH | grep -oE '[0-9]+')
+          OLD_NAME=$(grep -m1 "versionName" $BUILD_GRADLE_PATH | grep -oE '"([^"]+)"' | tr -d '"')
+          IFS='.' read -r MAJ MIN PAT <<<"${OLD_NAME:-0.1.0}"
+          NEW_CODE=$(( ${OLD_CODE:-1} + 1 ))
+          NEW_NAME="$MAJ.$MIN.$(( ${PAT:-0} + 1 ))"
+          sed -i "s/versionCode = $OLD_CODE/versionCode = $NEW_CODE/" $BUILD_GRADLE_PATH
+          sed -i "s/versionName = \"$OLD_NAME\"/versionName = \"$NEW_NAME\"/" $BUILD_GRADLE_PATH
+          echo "version_name=$NEW_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$NEW_CODE" >> $GITHUB_OUTPUT
+
+      - id: notes
+        name: Generate release notes (optional)
+        uses: mlm-games/release-notes-generator@main
+        with:
+          version: ${{ steps.ver.outputs.version_name }}
+          format: '- {{subject}}'
+          exclude-patterns: 'chore:,ci:,docs:,build:,Bump version,Merge pull request,[skip ci]'
+          auto-commit: 'false'
+
+      - id: commit
+        name: Commit and push version bump
+        shell: bash
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          git add $BUILD_GRADLE_PATH
+          git commit -m "chore: bump Android to ${{ steps.ver.outputs.version_name }} [skip ci]" || true
+          git push
+          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+  build:
+    needs: prepare-version
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v5
+        with: 
+          ref: ${{ needs.prepare-version.outputs.commit_sha }}
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: gradle
+
+      - name: Set up Android SDK/NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platforms + NDK
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-${{ env.ANDROID_API }}" \
+            "build-tools;${{ env.ANDROID_BUILD_TOOLS }}" \
+            "ndk;${{ env.ANDROID_NDK_VERSION }}"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
+
+      - name: Install Rust + cargo-ndk + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - run: cargo install cargo-ndk --locked
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Build AAB (preBuild triggers cargo ndk + UniFFI)
+      - name: Build AAB
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/release.keystore
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS:      ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:   ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :composeApp:bundleRelease --no-daemon
+
+      - name: Build APKs
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/release.keystore
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS:      ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:   ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :composeApp:assembleRelease --no-daemon
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          cp composeApp/build/outputs/bundle/release/*.aab artifacts/ || true
+          cp composeApp/build/outputs/apk/release/*.apk artifacts/ || true
+          ls -la artifacts
+
+      - name: Upload artifacts (CI only)
+        if: inputs.upload_releases == false || github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ needs.prepare-version.outputs.version_name }}
+          path: artifacts/*
+
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_releases == true
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          name: ${{ env.APP_NAME }} ${{ needs.prepare-version.outputs.version_name }}
+          tag_name: ${{ needs.prepare-version.outputs.version_name }}
+          target_commitish: ${{ needs.prepare-version.outputs.commit_sha }}
+          prerelease: ${{ inputs.mark_prerelease }}
+          body: ${{ needs.prepare-version.outputs.release_notes }}

@@ -6,6 +6,7 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.*
 import org.gradle.process.ExecOperations
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -44,6 +45,7 @@ kotlin {
             implementation(compose.desktop.currentOs)
             implementation(libs.net.jna)
             implementation(libs.okio)
+            implementation(libs.kotlinx.coroutines.swing)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
@@ -52,11 +54,11 @@ kotlin {
 }
 
 android {
-    namespace = "org.mlm.frair"
+    namespace = "org.mlm.mages"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "org.mlm.frair"
+        applicationId = "org.mlm.mages"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
@@ -237,9 +239,9 @@ abstract class GenerateUniFFITask @Inject constructor(
 val rustDir = rootProject.layout.projectDirectory.dir("rust")
 val os = OperatingSystem.current()
 val hostLibName = when {
-    os.isMacOsX -> "libfrair_ffi.dylib"
-    os.isWindows -> "frair_ffi.dll"
-    else -> "libfrair_ffi.so"
+    os.isMacOsX -> "mages_ffi.dylib"
+    os.isWindows -> "mages_ffi.dll"
+    else -> "mages_ffi.so"
 }
 val hostLibFile = rustDir.file("target/release/$hostLibName")
 
@@ -274,12 +276,12 @@ val genUniFFIJvm = tasks.register<GenerateUniFFITask>("genUniFFIJvm") {
 // Ensure bindings + Android .so exist before compiling Kotlin/packaging
 tasks.named("preBuild").configure {
     dependsOn(genUniFFIAndroid)
-//    dependsOn(genUniFFIJvm)
+    dependsOn(genUniFFIJvm)
     dependsOn(cargoBuildAndroid)
 }
 
 /**
- * Host (Desktop) cargo build that produces libfrair_native for the current OS.
+ * Host (Desktop) cargo build that produces libmages_native for the current OS.
  */
 @DisableCachingByDefault(because = "Builds native code; output path is deterministic")
 abstract class CargoHostTask @Inject constructor(
@@ -306,3 +308,17 @@ abstract class CargoHostTask @Inject constructor(
     }
 }
 
+compose.desktop {
+    application {
+        mainClass = "org.mlm.mages.DesktopMainKt"
+        // Let the JVM find libmages_ffi.so at runtime
+        jvmArgs += "-Djava.library.path=${rootProject.layout.projectDirectory.dir("rust/target/release").asFile.absolutePath}"
+
+        // Optional: build Linux packages
+        nativeDistributions {
+            targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
+            packageName = "Mages"
+            packageVersion = "0.1.0"
+        }
+    }
+}

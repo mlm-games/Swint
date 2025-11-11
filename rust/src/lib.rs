@@ -9,13 +9,25 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{runtime::Runtime, time::timeout};
+use tokio::runtime::Runtime;
 
-use futures_util::{StreamExt, pin_mut};
+use futures_util::{StreamExt, TryStreamExt};
 use thiserror::Error;
 
+use matrix_sdk::ruma::{
+    DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
+    api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod,
+    api::client::receipt::create_receipt::v3::ReceiptType, events::typing::SyncTypingEvent,
+};
 use matrix_sdk::{
-    executor::spawn,
+    Client as SdkClient, Room, SessionTokens,
+    authentication::matrix::MatrixSession,
+    config::SyncSettings,
+    media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
+    ruma::{OwnedMxcUri, events::room::MediaSource},
+};
+use matrix_sdk::{
+    encryption::EncryptionSettings,
     ruma::{
         self,
         events::{
@@ -25,25 +37,12 @@ use matrix_sdk::{
         owned_device_id,
     },
 };
-// Matrix SDK core and UI
-use matrix_sdk::ruma::{
-    DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
-    api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod,
-    api::client::receipt::create_receipt::v3::ReceiptType, events::typing::SyncTypingEvent,
-};
-use matrix_sdk::{
-    Client as SdkClient, Room, SessionTokens,
-    attachment::AttachmentConfig,
-    authentication::matrix::MatrixSession,
-    config::SyncSettings,
-    media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
-    ruma::{OwnedMxcUri, events::room::MediaSource},
-};
 use matrix_sdk::{
     encryption::verification::{SasState as SdkSasState, SasVerification, VerificationRequest},
     ruma::events::receipt::ReceiptThread,
 };
 use matrix_sdk_ui::{
+    encryption_sync_service::{EncryptionSyncService, WithLocking},
     eyeball_im::VectorDiff,
     sync_service::SyncService,
     timeline::{
@@ -157,11 +156,6 @@ pub struct SasEmojis {
 }
 
 #[uniffi::export(callback_interface)]
-pub trait TimelineObserver: Send + Sync {
-    fn on_event(&self, event: MessageEvent);
-}
-
-#[uniffi::export(callback_interface)]
 pub trait VerificationObserver: Send + Sync {
     fn on_phase(&self, flow_id: String, phase: SasPhase);
     fn on_emojis(&self, payload: SasEmojis);
@@ -230,7 +224,7 @@ struct SessionInfo {
 }
 
 fn default_store_dir() -> PathBuf {
-    std::env::temp_dir().join("frair_store")
+    std::env::temp_dir().join("mages_store")
 }
 
 fn session_file(dir: &PathBuf) -> PathBuf {
@@ -302,7 +296,8 @@ pub struct Client {
     store_dir: PathBuf,
     guards: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     verifs: VerifMap,
-    send_observers: Arc<Mutex<Vec<Arc<dyn SendObserver>>>>,
+    send_observers: Arc<Mutex<HashMap<u64, Arc<dyn SendObserver>>>>,
+    send_obs_counter: AtomicU64,
     send_tx: tokio::sync::mpsc::UnboundedSender<SendUpdate>,
     inbox: Arc<Mutex<HashMap<String, (OwnedUserId, OwnedDeviceId)>>>,
     sync_service: Arc<Mutex<Option<Arc<SyncService>>>>,
@@ -357,26 +352,32 @@ struct QueuedItem {
 #[uniffi::export]
 impl Client {
     #[uniffi::constructor]
-    pub fn new(homeserver_url: String) -> Self {
-        let store_dir = default_store_dir();
+    pub fn new(homeserver_url: String, store_dir: String) -> Self {
+        let store_dir_path = std::path::PathBuf::from(&store_dir);
+        let _ = std::fs::create_dir_all(&store_dir_path);
 
         let inner = RT.block_on(async {
             SdkClient::builder()
                 .homeserver_url(&homeserver_url)
-                .sqlite_store(&store_dir, None)
+                .sqlite_store(&store_dir_path, None)
+                .with_encryption_settings(EncryptionSettings {
+                    auto_enable_cross_signing: true,
+                    auto_enable_backups: true,
+                    ..Default::default()
+                })
                 .build()
                 .await
                 .expect("client")
         });
 
         let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<SendUpdate>();
-
         let this = Self {
             inner,
-            store_dir,
+            store_dir: store_dir_path,
             guards: Mutex::new(vec![]),
             verifs: Arc::new(Mutex::new(HashMap::new())),
-            send_observers: Arc::new(Mutex::new(Vec::new())),
+            send_observers: Arc::new(Mutex::new(HashMap::new())),
+            send_obs_counter: AtomicU64::new(0),
             send_tx,
             inbox: Arc::new(Mutex::new(HashMap::new())),
             sync_service: Arc::new(Mutex::new(None)),
@@ -387,9 +388,46 @@ impl Client {
             inbox_subs: Mutex::new(HashMap::new()),
         };
 
-        // Initialize caches early - fail fast if there's a problem
         if !this.init_caches() {
             panic!("Failed to initialize local caches");
+        }
+
+        {
+            let client = this.inner.clone();
+            let svc_slot = this.sync_service.clone();
+            let h = RT.spawn(async move {
+                loop {
+                    if client.user_id().is_some() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                let service = SyncService::builder(client.clone())
+                    .build()
+                    .await
+                    .expect("SyncService");
+                {
+                    let mut g = svc_slot.lock().unwrap();
+                    // g.replace(service.clone());
+                }
+                loop {
+                    if let Some(permit) = service.try_get_encryption_sync_permit() {
+                        match EncryptionSyncService::new(client.clone(), None, WithLocking::Yes)
+                            .await
+                        {
+                            Ok(enc) => {
+                                let _ = enc.run_fixed_iterations(200, permit).await;
+                            }
+                            Err(_) => {
+                                tokio::time::sleep(Duration::from_secs(3)).await;
+                            }
+                        }
+                    } else {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
+                }
+            });
+            this.guards.lock().unwrap().push(h);
         }
 
         {
@@ -398,11 +436,10 @@ impl Client {
                 while let Some(upd) = send_rx.recv().await {
                     let list: Vec<Arc<dyn SendObserver>> = {
                         let guard = observers.lock().expect("send_observers");
-                        guard.iter().cloned().collect()
+                        guard.values().cloned().collect()
                     };
-
                     for obs in list {
-                        let upd_clone = upd.clone(); // Clone per observer
+                        let upd_clone = upd.clone();
                         let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
                             obs.on_update(upd_clone)
                         }));
@@ -412,21 +449,20 @@ impl Client {
             this.guards.lock().unwrap().push(h);
         }
 
-        // Initialize send queue database with WAL mode
         {
-            let path = default_store_dir().join("send_queue.sqlite3");
+            let path = this.store_dir.join("send_queue.sqlite3");
             if let Ok(conn) = rusqlite::Connection::open(&path) {
                 let _ = conn.execute_batch(
                     "PRAGMA journal_mode=WAL;
-                     PRAGMA synchronous=NORMAL;
-                     CREATE TABLE IF NOT EXISTS queued_sends(
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        room_id TEXT NOT NULL,
-                        body TEXT NOT NULL,
-                        txn_id TEXT NOT NULL UNIQUE,
-                        attempts INTEGER NOT NULL DEFAULT 0,
-                        next_try_ms INTEGER NOT NULL DEFAULT 0
-                    );",
+                 PRAGMA synchronous=NORMAL;
+                 CREATE TABLE IF NOT EXISTS queued_sends(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_id TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    txn_id TEXT NOT NULL UNIQUE,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_try_ms INTEGER NOT NULL DEFAULT 0
+                );",
                 );
             }
         }
@@ -435,35 +471,44 @@ impl Client {
             match this.inner.whoami().await {
                 Ok(_) => {
                     let _ = this.inner.sync_once(SyncSettings::default()).await;
-                    return;
+                    if this.sync_service.lock().unwrap().is_none() {
+                        if let Ok(service) = SyncService::builder(this.inner.clone()).build().await
+                        {
+                            this.sync_service.lock().unwrap().replace(service.into());
+                        }
+                    }
                 }
-                Err(_) => { /* fall through to JSON restore */ }
-            }
-
-            let path = session_file(&this.store_dir);
-            if let Ok(txt) = tokio::fs::read_to_string(&path).await {
-                if let Ok(info) = serde_json::from_str::<SessionInfo>(&txt) {
-                    if let Ok(user_id) = info.user_id.parse::<OwnedUserId>() {
-                        let session = MatrixSession {
-                            meta: matrix_sdk::SessionMeta {
-                                user_id,
-                                device_id: info.device_id.into(),
-                            },
-                            tokens: SessionTokens {
-                                access_token: info.access_token.clone(),
-                                refresh_token: info.refresh_token.clone(),
-                            },
-                        };
-
-                        match this.inner.restore_session(session).await {
-                            Ok(_) => {
-                                let _ = this.inner.sync_once(SyncSettings::default()).await;
-                                return;
-                            }
-                            Err(_) => {
-                                // Session restore failed - clean up stale data
-                                let _ = tokio::fs::remove_file(&path).await;
-                                reset_store_dir(&this.store_dir);
+                Err(_) => {
+                    let path = session_file(&this.store_dir);
+                    if let Ok(txt) = tokio::fs::read_to_string(&path).await {
+                        if let Ok(info) = serde_json::from_str::<SessionInfo>(&txt) {
+                            if let Ok(user_id) = info.user_id.parse::<OwnedUserId>() {
+                                let session = MatrixSession {
+                                    meta: matrix_sdk::SessionMeta {
+                                        user_id,
+                                        device_id: info.device_id.clone().into(),
+                                    },
+                                    tokens: SessionTokens {
+                                        access_token: info.access_token.clone(),
+                                        refresh_token: info.refresh_token.clone(),
+                                    },
+                                };
+                                if this.inner.restore_session(session).await.is_ok() {
+                                    let _ = this.inner.sync_once(SyncSettings::default()).await;
+                                    if this.sync_service.lock().unwrap().is_none() {
+                                        if let Ok(service) =
+                                            SyncService::builder(this.inner.clone()).build().await
+                                        {
+                                            this.sync_service
+                                                .lock()
+                                                .unwrap()
+                                                .replace(service.into());
+                                        }
+                                    }
+                                } else {
+                                    let _ = tokio::fs::remove_file(&path).await;
+                                    reset_store_dir(&this.store_dir);
+                                }
                             }
                         }
                     }
@@ -471,32 +516,51 @@ impl Client {
             }
         });
 
-        // Token refresh handler
         {
             let inner = this.inner.clone();
             let store = this.store_dir.clone();
             let h = RT.spawn(async move {
                 let mut session_rx = inner.subscribe_to_session_changes();
-
                 while let Ok(update) = session_rx.recv().await {
-                    match update {
-                        matrix_sdk::SessionChange::TokensRefreshed => {
-                            if let Some(sess) = inner.matrix_auth().session() {
-                                let path = session_file(&store);
-                                let info = SessionInfo {
-                                    user_id: sess.meta.user_id.to_string(),
-                                    device_id: sess.meta.device_id.to_string(),
-                                    access_token: sess.tokens.access_token.clone(),
-                                    refresh_token: sess.tokens.refresh_token.clone(),
-                                    homeserver: inner.homeserver().to_string(),
-                                };
-                                let _ =
-                                    tokio::fs::write(path, serde_json::to_string(&info).unwrap())
-                                        .await;
-                            }
+                    if let matrix_sdk::SessionChange::TokensRefreshed = update {
+                        if let Some(sess) = inner.matrix_auth().session() {
+                            let path = session_file(&store);
+                            let info = SessionInfo {
+                                user_id: sess.meta.user_id.to_string(),
+                                device_id: sess.meta.device_id.to_string(),
+                                access_token: sess.tokens.access_token.clone(),
+                                refresh_token: sess.tokens.refresh_token.clone(),
+                                homeserver: inner.homeserver().to_string(),
+                            };
+                            let _ =
+                                tokio::fs::write(path, serde_json::to_string(&info).unwrap()).await;
                         }
-                        matrix_sdk::SessionChange::UnknownToken { soft_logout: _ } => {
-                            let _ = inner.matrix_auth().refresh_access_token().await;
+                    }
+                }
+            });
+            this.guards.lock().unwrap().push(h);
+        }
+
+        {
+            let client = this.inner.clone();
+            let h = RT.spawn(async move {
+                if let Some(mut stream) = client.encryption().room_keys_received_stream().await {
+                    while let Some(batch) = stream.next().await {
+                        let Ok(infos) = batch else { continue };
+                        use std::collections::HashMap;
+                        let mut by_room: HashMap<OwnedRoomId, Vec<String>> = HashMap::new();
+                        for info in infos {
+                            by_room
+                                .entry(info.room_id.clone())
+                                .or_default()
+                                .push(info.session_id.clone());
+                        }
+                        for (rid, sessions) in by_room {
+                            if let Some(room) = client.get_room(&rid) {
+                                if let Ok(tl) = room.timeline().await {
+                                    tl.retry_decryption(sessions).await;
+                                }
+                            }
                         }
                     }
                 }
@@ -507,16 +571,16 @@ impl Client {
         this
     }
 
-    pub fn observe_sends(&self, observer: Box<dyn SendObserver>) {
-        let obs: Arc<dyn SendObserver> = Arc::from(observer);
-        self.send_observers.lock().unwrap().push(obs);
-    }
-
     pub fn whoami(&self) -> Option<String> {
         self.inner.user_id().map(|u| u.to_string())
     }
 
-    pub fn login(&self, username: String, password: String, device_display_name: Option<String>) {
+    pub fn login(
+        &self,
+        username: String,
+        password: String,
+        device_display_name: Option<String>,
+    ) -> Result<(), FfiError> {
         RT.block_on(async {
             let mut req = self
                 .inner
@@ -526,7 +590,7 @@ impl Client {
                 req = req.initial_device_display_name(name);
             }
 
-            let res = req.send().await.expect("login");
+            let res = req.send().await.map_err(|e| FfiError::Msg(e.to_string()))?;
 
             let info = SessionInfo {
                 user_id: res.user_id.to_string(),
@@ -535,15 +599,19 @@ impl Client {
                 refresh_token: res.refresh_token.clone(),
                 homeserver: self.inner.homeserver().to_string(),
             };
-            let _ = tokio::fs::create_dir_all(&self.store_dir).await;
-            let _ = tokio::fs::write(
+
+            tokio::fs::create_dir_all(&self.store_dir).await?;
+            tokio::fs::write(
                 session_file(&self.store_dir),
                 serde_json::to_string(&info).unwrap(),
             )
-            .await;
+            .await?;
 
+            // Warm caches once; ignore errors deliberately (don’t block login success)
             let _ = self.inner.sync_once(SyncSettings::default()).await;
-        });
+
+            Ok(())
+        })
     }
 
     pub fn rooms(&self) -> Vec<RoomSummary> {
@@ -577,10 +645,18 @@ impl Client {
         })
     }
 
-    pub fn enter_foreground(&self) {}
+    pub fn enter_foreground(&self) {
+        if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
+            let _ = RT.block_on(async { svc.start().await });
+        }
+    }
 
     /// Send the app to background: stop Sliding Sync supervision. (stub)
-    pub fn enter_background(&self) {}
+    pub fn enter_background(&self) {
+        if let Some(svc) = self.sync_service.lock().unwrap().as_ref().cloned() {
+            let _ = RT.block_on(async { svc.stop().await });
+        }
+    }
 
     pub fn recent_events(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {
         RT.block_on(async {
@@ -626,7 +702,6 @@ impl Client {
                 return;
             };
             let (items, mut stream) = tl.subscribe().await;
-            let mut mirror = items.clone();
 
             // Initial snapshot
             let initial: Vec<_> = items
@@ -643,14 +718,12 @@ impl Client {
                 for diff in diffs {
                     match diff {
                         VectorDiff::PushBack { value } => {
-                            // BEFORE updating mirror, emit insert if event
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
                             }
-                            mirror.push_back(value);
                         }
                         VectorDiff::PushFront { value } => {
                             let uid = value.unique_id().0.to_string();
@@ -659,41 +732,34 @@ impl Client {
                                     obs.on_insert(ev);
                                 }
                             }
-                            mirror.insert(0, value);
                         }
-                        VectorDiff::Insert { index, value } => {
+                        VectorDiff::Insert { index: _, value } => {
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
                             }
-                            mirror.insert(index, value);
                         }
-                        VectorDiff::Set { index, value } => {
+                        VectorDiff::Set { index: _, value } => {
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_update(ev);
                                 }
                             }
-                            if index < mirror.len() {
-                                mirror[index] = value;
-                            }
                         }
                         VectorDiff::Remove { index } => {
-                            // Get the removed unique_id from mirror BEFORE removal
-                            if let Some(item) = mirror.get(index) {
+                            // Best-effort: get the item id before removal
+                            if let Some(item) = tl.items().await.get(index) {
                                 let uid = item.unique_id().0.to_string();
                                 obs.on_remove(uid);
-                            }
-                            if index < mirror.len() {
-                                mirror.remove(index);
+                            } else {
+                                // Fallback: notify clear/reset in corner cases
                             }
                         }
                         VectorDiff::Clear {} => {
                             obs.on_clear();
-                            mirror.clear();
                         }
                         VectorDiff::Reset { values } => {
                             let events = values
@@ -706,7 +772,6 @@ impl Client {
                                 })
                                 .collect::<Vec<_>>();
                             obs.on_reset(events);
-                            mirror = values;
                         }
                         _ => {}
                     }
@@ -865,6 +930,19 @@ impl Client {
         }
     }
 
+    pub fn observe_sends(&self, observer: Box<dyn SendObserver>) -> u64 {
+        let id = self.send_obs_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        self.send_observers
+            .lock()
+            .unwrap()
+            .insert(id, Arc::from(observer));
+        id
+    }
+
+    pub fn unobserve_sends(&self, id: u64) -> bool {
+        self.send_observers.lock().unwrap().remove(&id).is_some()
+    }
+
     pub fn send_message(&self, room_id: String, body: String) -> bool {
         RT.block_on(async {
             use matrix_sdk::ruma::events::room::message::RoomMessageEventContent as Msg;
@@ -905,7 +983,7 @@ impl Client {
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();
         }
-        let _ = RT.block_on(async { self.inner.matrix_auth().logout().await });
+        let _ = RT.block_on(async { self.inner.logout().await });
         let _ = std::fs::remove_file(session_file(&self.store_dir));
         reset_store_dir(&self.store_dir);
         true
@@ -1222,7 +1300,6 @@ impl Client {
             };
 
             let parsed: Mime = mime.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
-            // No local echo currently; see docs
             let fut = tl.send_attachment(
                 AttachmentSource::Data {
                     filename: filename.clone(),
@@ -1309,6 +1386,7 @@ impl Client {
 
         let h = RT.spawn(async move {
             use rand::Rng;
+            use std::time::Duration;
 
             let mut backoff_secs: u64 = 1;
             let max_backoff: u64 = 60;
@@ -1351,7 +1429,7 @@ impl Client {
                             message: Some(msg.clone()),
                         });
 
-                        let jitter = rand::thread_rng().gen_range(0.8f64..1.2f64);
+                        let jitter = rand::rng().random_range(0.8f64..1.2f64);
                         let wait = (backoff_secs as f64 * jitter).round() as u64;
                         obs.on_state(SyncStatus {
                             phase: SyncPhase::BackingOff,
@@ -1652,7 +1730,7 @@ impl Client {
     }
 
     pub fn enqueue_text(&self, room_id: String, body: String, txn_id: Option<String>) -> String {
-        let txn = txn_id.unwrap_or_else(|| format!("frair-{}", now_ms()));
+        let txn = txn_id.unwrap_or_else(|| format!("mages-{}", now_ms()));
 
         let path = queue_db_path(&self.store_dir);
         let Ok(conn) = open_queue_db(&path) else {
@@ -2060,17 +2138,16 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<T
 fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-    // Use message body if present; otherwise emit a placeholder so we don’t hide history
-    let body = ev
-        .content()
-        .as_message()
-        .map(|m| render_message_text(m))
-        .unwrap_or_else(|| {
-            "Encrypted or unsupported message. Verify this session or restore keys to view."
-                .to_owned()
-        });
+
+    // Prefer message text; otherwise render state/membership/profile/etc.
+    let body = if let Some(msg) = ev.content().as_message() {
+        render_message_text(msg)
+    } else {
+        render_timeline_text(ev)
+    };
+
     Some(MessageEvent {
-        item_id: format!("{:?}", ev.identifier()), // stable enough per run
+        item_id: format!("{:?}", ev.identifier()),
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),
@@ -2082,16 +2159,15 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
 fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-    let body = ev
-        .content()
-        .as_message()
-        .map(|m| render_message_text(m))
-        .unwrap_or_else(|| {
-            "Encrypted or unsupported message. Verify this session or restore keys to view."
-                .to_owned()
-        });
+
+    let body = if let Some(msg) = ev.content().as_message() {
+        render_message_text(msg)
+    } else {
+        render_timeline_text(ev)
+    };
+
     Some(MessageEvent {
-        item_id: uid.to_string(), // matches what the diff stream uses
+        item_id: uid.to_string(),
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),
@@ -2117,7 +2193,7 @@ fn render_timeline_text(ev: &EventTimelineItem) -> String {
     }
 }
 
-fn render_msg_like(ev: &EventTimelineItem, ml: &MsgLikeContent) -> String {
+fn render_msg_like(_ev: &EventTimelineItem, ml: &MsgLikeContent) -> String {
     use MsgLikeKind::*;
     match &ml.kind {
         Message(m) => render_message_text(m),
@@ -2172,7 +2248,6 @@ async fn attach_sas_stream(
                 obs.on_phase(flow_id.clone(), SasPhase::Cancelled);
                 // Clean up after cancellation
                 verifs.lock().unwrap().remove(&flow_id);
-                //TODO: inbox.lock().unwrap().remove(&flow_id);
 
                 break;
             }
@@ -2180,7 +2255,6 @@ async fn attach_sas_stream(
                 obs.on_phase(flow_id.clone(), SasPhase::Done);
                 // Clean up after completion
                 verifs.lock().unwrap().remove(&flow_id);
-                //TODO: inbox.lock().unwrap().remove(&flow_id);
 
                 break;
             }
@@ -2217,53 +2291,31 @@ fn render_membership_change(
 ) -> String {
     use matrix_sdk_ui::timeline::MembershipChange as MC;
 
-    // Whose membership changed and who did the action
     let actor = ev.sender().to_string();
     let subject = ch.user_id().to_string();
 
-    // The UI helper computes the change enum for you.
-    let change = ch // There is a public enum MembershipChange used by RoomMembershipChange
-        // When the SDK can’t compute (e.g. redacted prev_content), treat as a generic change.
-        .clone();
-    // RoomMembershipChange holds an Option<MembershipChange>; docs show the enum, and the item exposes
-    // convenience accessors like display_name()/avatar_url() already used below.
-
-    // We can’t directly call a change() method; match via the exported enum when present.
-    // For a simple, Element-like string set, infer from content(). This keeps it stable.
-    let text = match change.content() {
-        _ => {
-            // If SDK computed a concrete change, prefer it
-            if let Some(kind) = change.change() {
-                match kind {
-                    MC::Joined => format!("{subject} joined the room"),
-                    MC::Left => format!("{subject} left the room"),
-                    MC::Invited => format!("{actor} invited {subject}"),
-                    MC::Kicked => format!("{actor} removed {subject}"),
-                    MC::Banned => format!("{actor} banned {subject}"),
-                    MC::Unbanned => format!("{actor} unbanned {subject}"),
-                    MC::InvitationAccepted => format!("{subject} accepted the invite"),
-                    MC::InvitationRejected => format!("{subject} rejected the invite"),
-                    MC::InvitationRevoked => format!("{actor} revoked the invite for {subject}"),
-                    MC::KickedAndBanned => format!("{actor} removed and banned {subject}"),
-                    MC::Knocked => format!("{subject} knocked"),
-                    MC::KnockAccepted => format!("{actor} accepted {subject}"),
-                    MC::KnockDenied => format!("{actor} denied {subject}"),
-                    _ => format!("{subject} updated membership"),
-                }
-            } else {
-                format!("{subject} updated membership")
-            }
-        }
-    };
-
-    text
+    match ch.change() {
+        Some(MC::Joined) => format!("{subject} joined the room"),
+        Some(MC::Left) => format!("{subject} left the room"),
+        Some(MC::Invited) => format!("{actor} invited {subject}"),
+        Some(MC::Kicked) => format!("{actor} removed {subject}"),
+        Some(MC::Banned) => format!("{actor} banned {subject}"),
+        Some(MC::Unbanned) => format!("{actor} unbanned {subject}"),
+        Some(MC::InvitationAccepted) => format!("{subject} accepted the invite"),
+        Some(MC::InvitationRejected) => format!("{subject} rejected the invite"),
+        Some(MC::InvitationRevoked) => format!("{actor} revoked the invite for {subject}"),
+        Some(MC::KickedAndBanned) => format!("{actor} removed and banned {subject}"),
+        Some(MC::Knocked) => format!("{subject} knocked"),
+        Some(MC::KnockAccepted) => format!("{actor} accepted {subject}"),
+        Some(MC::KnockDenied) => format!("{actor} denied {subject}"),
+        _ => format!("{subject} updated membership"),
+    }
 }
 
 fn render_profile_change(
     _ev: &EventTimelineItem,
     pc: &matrix_sdk_ui::timeline::MemberProfileChange,
 ) -> String {
-    // displayname/ avatar change Element-style lines.
     let subject = pc.user_id().to_string();
 
     if let Some(ch) = pc.displayname_change() {
@@ -2311,7 +2363,6 @@ fn render_other_state(ev: &EventTimelineItem, s: &matrix_sdk_ui::timeline::Other
         A::RoomPowerLevels(_) => format!("{actor} changed power levels"),
         A::RoomCanonicalAlias(_) => format!("{actor} changed the main address"),
         _ => {
-            // Fallback for less common state
             let ty = s.content().event_type().to_string();
             format!("{actor} updated state: {ty}")
         }
