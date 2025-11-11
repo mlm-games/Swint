@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import android.content.Intent
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import org.mlm.frair.platform.FrairPaths
 import org.mlm.frair.storage.provideAppDataStore
 
 class MainActivity : ComponentActivity() {
@@ -20,6 +21,7 @@ class MainActivity : ComponentActivity() {
         val dataStore = provideAppDataStore(this)
 
         handleIntent(intent)
+        FrairPaths.init(this)
         setContent {
             App(dataStore = dataStore, deepLinks = deepLinks)
         }

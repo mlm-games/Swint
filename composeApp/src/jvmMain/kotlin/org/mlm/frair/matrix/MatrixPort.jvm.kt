@@ -8,10 +8,10 @@ import frair.RoomSummary as FfiRoom
 import frair.MessageEvent as FfiEvent
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
+import org.mlm.frair.platform.FrairPaths
 
 class RustMatrixPort(hs: String) : MatrixPort {
-    private val client = FfiClient(hs)
-
+    private val client = FfiClient(hs, FrairPaths.storeDir())
     override suspend fun init(hs: String) { /* constructed with hs */ }
 
     override suspend fun login(user: String, password: String, deviceDisplayName: String?) {

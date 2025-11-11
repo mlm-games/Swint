@@ -19,6 +19,7 @@ captures
 node_modules/
 
 rust/target
+target/
 rust/uniffi-bindgen/target
 rust/uniffi-bindgen/Cargo.lock
 

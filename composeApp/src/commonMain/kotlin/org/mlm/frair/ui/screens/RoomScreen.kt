@@ -119,7 +119,7 @@ fun RoomScreen(
                         onCancel = onCancelUpload
                     )
                 }
-                
+
                 OutboxChips(items = state.outbox)
 
                 MessageComposer(

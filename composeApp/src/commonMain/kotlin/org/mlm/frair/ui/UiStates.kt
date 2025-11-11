@@ -5,6 +5,7 @@ import org.mlm.frair.RoomSummary
 import org.mlm.frair.matrix.DeviceSummary
 import org.mlm.frair.matrix.SasPhase
 import org.mlm.frair.ui.components.AttachmentData
+import org.mlm.frair.ui.components.SendIndicator
 
 
 data class LoginUiState(

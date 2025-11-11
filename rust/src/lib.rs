@@ -351,13 +351,14 @@ struct QueuedItem {
 #[uniffi::export]
 impl Client {
     #[uniffi::constructor]
-    pub fn new(homeserver_url: String) -> Self {
-        let store_dir = default_store_dir();
+    pub fn new(homeserver_url: String, store_dir: String) -> Self {
+        let store_dir_path = std::path::PathBuf::from(&store_dir);
+        let _ = std::fs::create_dir_all(&store_dir_path);
 
         let inner = RT.block_on(async {
             SdkClient::builder()
                 .homeserver_url(&homeserver_url)
-                .sqlite_store(&store_dir, None)
+                .sqlite_store(&store_dir_path, None)
                 .with_encryption_settings(EncryptionSettings {
                     auto_enable_cross_signing: true,
                     auto_enable_backups: true,
@@ -369,10 +370,9 @@ impl Client {
         });
 
         let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<SendUpdate>();
-
         let this = Self {
             inner,
-            store_dir,
+            store_dir: store_dir_path,
             guards: Mutex::new(vec![]),
             verifs: Arc::new(Mutex::new(HashMap::new())),
             send_observers: Arc::new(Mutex::new(Vec::new())),
@@ -386,36 +386,28 @@ impl Client {
             inbox_subs: Mutex::new(HashMap::new()),
         };
 
-        // Initialize caches early - fail fast if there's a problem
         if !this.init_caches() {
             panic!("Failed to initialize local caches");
         }
 
-        // Build a SyncService slot and drive encryption sync with permits
         {
             let client = this.inner.clone();
             let svc_slot = this.sync_service.clone();
             let h = RT.spawn(async move {
-                // Wait until logged in/restored
                 loop {
                     if client.user_id().is_some() {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-
-                // Create SyncService once and store it
                 let service = SyncService::builder(client.clone())
                     .build()
                     .await
                     .expect("SyncService");
-
                 {
-                    let mut guard = svc_slot.lock().unwrap();
-                    // guard.replace(Arc::new(service));
+                    let mut g = svc_slot.lock().unwrap();
+                    // g.replace(service.clone());
                 }
-
-                // Drive the EncryptionSyncService in bounded iterations whenever we get a permit
                 loop {
                     if let Some(permit) = service.try_get_encryption_sync_permit() {
                         match EncryptionSyncService::new(client.clone(), None, WithLocking::Yes)
@@ -424,7 +416,7 @@ impl Client {
                             Ok(enc) => {
                                 let _ = enc.run_fixed_iterations(200, permit).await;
                             }
-                            Err(_e) => {
+                            Err(_) => {
                                 tokio::time::sleep(Duration::from_secs(3)).await;
                             }
                         }
@@ -436,7 +428,6 @@ impl Client {
             this.guards.lock().unwrap().push(h);
         }
 
-        // Send updates dispatcher
         {
             let observers = this.send_observers.clone();
             let h = RT.spawn(async move {
@@ -445,7 +436,6 @@ impl Client {
                         let guard = observers.lock().expect("send_observers");
                         guard.iter().cloned().collect()
                     };
-
                     for obs in list {
                         let upd_clone = upd.clone();
                         let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
@@ -457,31 +447,28 @@ impl Client {
             this.guards.lock().unwrap().push(h);
         }
 
-        // Initialize send queue database with WAL mode
         {
-            let path = default_store_dir().join("send_queue.sqlite3");
+            let path = this.store_dir.join("send_queue.sqlite3");
             if let Ok(conn) = rusqlite::Connection::open(&path) {
                 let _ = conn.execute_batch(
                     "PRAGMA journal_mode=WAL;
-                     PRAGMA synchronous=NORMAL;
-                     CREATE TABLE IF NOT EXISTS queued_sends(
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        room_id TEXT NOT NULL,
-                        body TEXT NOT NULL,
-                        txn_id TEXT NOT NULL UNIQUE,
-                        attempts INTEGER NOT NULL DEFAULT 0,
-                        next_try_ms INTEGER NOT NULL DEFAULT 0
-                    );",
+                 PRAGMA synchronous=NORMAL;
+                 CREATE TABLE IF NOT EXISTS queued_sends(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_id TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    txn_id TEXT NOT NULL UNIQUE,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_try_ms INTEGER NOT NULL DEFAULT 0
+                );",
                 );
             }
         }
 
-        // Try to restore session (if exists)
         RT.block_on(async {
             match this.inner.whoami().await {
                 Ok(_) => {
                     let _ = this.inner.sync_once(SyncSettings::default()).await;
-                    // Build SyncService now that whoami worked
                     if this.sync_service.lock().unwrap().is_none() {
                         if let Ok(service) = SyncService::builder(this.inner.clone()).build().await
                         {
@@ -497,34 +484,28 @@ impl Client {
                                 let session = MatrixSession {
                                     meta: matrix_sdk::SessionMeta {
                                         user_id,
-                                        device_id: info.device_id.into(),
+                                        device_id: info.device_id.clone().into(),
                                     },
                                     tokens: SessionTokens {
                                         access_token: info.access_token.clone(),
                                         refresh_token: info.refresh_token.clone(),
                                     },
                                 };
-                                match this.inner.restore_session(session).await {
-                                    Ok(_) => {
-                                        let _ = this.inner.sync_once(SyncSettings::default()).await;
-                                        if this.sync_service.lock().unwrap().is_none() {
-                                            if let Ok(service) =
-                                                SyncService::builder(this.inner.clone())
-                                                    .build()
-                                                    .await
-                                            {
-                                                this.sync_service
-                                                    .lock()
-                                                    .unwrap()
-                                                    .replace(service.into());
-                                            }
+                                if this.inner.restore_session(session).await.is_ok() {
+                                    let _ = this.inner.sync_once(SyncSettings::default()).await;
+                                    if this.sync_service.lock().unwrap().is_none() {
+                                        if let Ok(service) =
+                                            SyncService::builder(this.inner.clone()).build().await
+                                        {
+                                            this.sync_service
+                                                .lock()
+                                                .unwrap()
+                                                .replace(service.into());
                                         }
                                     }
-                                    Err(_) => {
-                                        // Session restore failed - clean up stale data
-                                        let _ = tokio::fs::remove_file(&path).await;
-                                        reset_store_dir(&this.store_dir);
-                                    }
+                                } else {
+                                    let _ = tokio::fs::remove_file(&path).await;
+                                    reset_store_dir(&this.store_dir);
                                 }
                             }
                         }
@@ -533,32 +514,24 @@ impl Client {
             }
         });
 
-        // Token refresh handler
         {
             let inner = this.inner.clone();
             let store = this.store_dir.clone();
             let h = RT.spawn(async move {
                 let mut session_rx = inner.subscribe_to_session_changes();
-
                 while let Ok(update) = session_rx.recv().await {
-                    match update {
-                        matrix_sdk::SessionChange::TokensRefreshed => {
-                            if let Some(sess) = inner.matrix_auth().session() {
-                                let path = session_file(&store);
-                                let info = SessionInfo {
-                                    user_id: sess.meta.user_id.to_string(),
-                                    device_id: sess.meta.device_id.to_string(),
-                                    access_token: sess.tokens.access_token.clone(),
-                                    refresh_token: sess.tokens.refresh_token.clone(),
-                                    homeserver: inner.homeserver().to_string(),
-                                };
-                                let _ =
-                                    tokio::fs::write(path, serde_json::to_string(&info).unwrap())
-                                        .await;
-                            }
-                        }
-                        matrix_sdk::SessionChange::UnknownToken { soft_logout: _ } => {
-                            let _ = inner.matrix_auth().refresh_access_token().await;
+                    if let matrix_sdk::SessionChange::TokensRefreshed = update {
+                        if let Some(sess) = inner.matrix_auth().session() {
+                            let path = session_file(&store);
+                            let info = SessionInfo {
+                                user_id: sess.meta.user_id.to_string(),
+                                device_id: sess.meta.device_id.to_string(),
+                                access_token: sess.tokens.access_token.clone(),
+                                refresh_token: sess.tokens.refresh_token.clone(),
+                                homeserver: inner.homeserver().to_string(),
+                            };
+                            let _ =
+                                tokio::fs::write(path, serde_json::to_string(&info).unwrap()).await;
                         }
                     }
                 }
@@ -566,7 +539,6 @@ impl Client {
             this.guards.lock().unwrap().push(h);
         }
 
-        // Watch for newly received/updated Megolm sessions and re-decrypt affected timelines.
         {
             let client = this.inner.clone();
             let h = RT.spawn(async move {
@@ -2156,17 +2128,16 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<T
 fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-    // Use message body if present; otherwise emit a placeholder so we don’t hide history
-    let body = ev
-        .content()
-        .as_message()
-        .map(|m| render_message_text(m))
-        .unwrap_or_else(|| {
-            "Encrypted or unsupported message. Verify this session or restore keys to view."
-                .to_owned()
-        });
+
+    // Prefer message text; otherwise render state/membership/profile/etc.
+    let body = if let Some(msg) = ev.content().as_message() {
+        render_message_text(msg)
+    } else {
+        render_timeline_text(ev)
+    };
+
     Some(MessageEvent {
-        item_id: format!("{:?}", ev.identifier()), // stable enough per run
+        item_id: format!("{:?}", ev.identifier()),
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),
@@ -2178,16 +2149,15 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
 fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-    let body = ev
-        .content()
-        .as_message()
-        .map(|m| render_message_text(m))
-        .unwrap_or_else(|| {
-            "Encrypted or unsupported message. Verify this session or restore keys to view."
-                .to_owned()
-        });
+
+    let body = if let Some(msg) = ev.content().as_message() {
+        render_message_text(msg)
+    } else {
+        render_timeline_text(ev)
+    };
+
     Some(MessageEvent {
-        item_id: uid.to_string(), // matches what the diff stream uses
+        item_id: uid.to_string(),
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),

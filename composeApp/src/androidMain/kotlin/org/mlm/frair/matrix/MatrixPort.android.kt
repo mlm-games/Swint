@@ -10,21 +10,21 @@ import frair.RoomSummary as FfiRoom
 import frair.MessageEvent as FfiEvent
 import org.mlm.frair.MessageEvent
 import org.mlm.frair.RoomSummary
+import org.mlm.frair.platform.FrairPaths
 
 class RustMatrixPort(hs: String) : MatrixPort {
-    @Volatile private var client: FfiClient = FfiClient(hs)
+    @Volatile private var client: FfiClient = FfiClient(hs, FrairPaths.storeDir())
     private val clientLock = Any()
     private var currentHs = hs
 
     override suspend fun init(hs: String) {
         synchronized(clientLock) {
             if (hs != currentHs) {
-                // Graceful stop then deterministic free of previous instance
                 client.let { c ->
-                    runCatching { c.shutdown() }       // your Rust method
-                    runCatching { c.close() }          // UniFFI-generated: AutoCloseable
+                    runCatching { c.shutdown() }
+                    runCatching { c.close() }
                 }
-                client = frair.Client(hs)
+                client = frair.Client(hs, FrairPaths.storeDir())
                 currentHs = hs
             }
         }

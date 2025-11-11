@@ -45,7 +45,7 @@ class LoginController(
                 service.init(s.homeserver)
                 service.login(s.user, s.pass, "Frair")
             }.onSuccess {
-                service.startSupervisedSync()
+//                service.startSync()
                 service.startSendWorker()   // start the background send worker
                 _state.update { it.copy(isBusy = false) }
                 withContext(Dispatchers.Main) { onLoggedIn() }
