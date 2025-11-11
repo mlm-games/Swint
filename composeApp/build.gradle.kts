@@ -6,6 +6,7 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.*
 import org.gradle.process.ExecOperations
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -44,6 +45,7 @@ kotlin {
             implementation(compose.desktop.currentOs)
             implementation(libs.net.jna)
             implementation(libs.okio)
+            implementation(libs.kotlinx.coroutines.swing)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
@@ -306,3 +308,17 @@ abstract class CargoHostTask @Inject constructor(
     }
 }
 
+compose.desktop {
+    application {
+        mainClass = "org.mlm.frair.DesktopMainKt"
+        // Let the JVM find libfrair_ffi.so at runtime
+        jvmArgs += "-Djava.library.path=${rootProject.layout.projectDirectory.dir("rust/target/release").asFile.absolutePath}"
+
+        // Optional: build Linux packages
+        nativeDistributions {
+            targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
+            packageName = "Frair"
+            packageVersion = "0.1.0"
+        }
+    }
+}

@@ -1,6 +1,8 @@
 package org.mlm.frair.matrix
 
+import frair.SasEmojis
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import frair.Client as FfiClient
@@ -11,29 +13,49 @@ import org.mlm.frair.RoomSummary
 import org.mlm.frair.platform.FrairPaths
 
 class RustMatrixPort(hs: String) : MatrixPort {
-    private val client = FfiClient(hs, FrairPaths.storeDir())
-    override suspend fun init(hs: String) { /* constructed with hs */ }
+    @Volatile private var client: FfiClient = FfiClient(hs, FrairPaths.storeDir())
+    private val clientLock = Any()
+    private var currentHs = hs
+
+    override suspend fun init(hs: String) {
+        synchronized(clientLock) {
+            if (hs != currentHs) {
+                client.let { c ->
+                    runCatching { c.shutdown() }
+                    runCatching { c.close() }
+                }
+                client = frair.Client(hs, FrairPaths.storeDir())
+                currentHs = hs
+            }
+        }
+    }
+
+    override fun close() {
+        synchronized(clientLock) {
+            client.let { c ->
+                runCatching { c.shutdown() }
+                runCatching { c.close() }              // key: avoid Cleaner path
+            }
+        }
+    }
 
     override suspend fun login(user: String, password: String, deviceDisplayName: String?) {
         client.login(user, password, deviceDisplayName)
     }
-
     override fun isLoggedIn(): Boolean = client.isLoggedIn()
 
-    override suspend fun listRooms(): List<RoomSummary> =
-        client.rooms().map { it.toModel() }
-
+    override suspend fun listRooms(): List<RoomSummary> = client.rooms().map { it.toModel() }
     override suspend fun recent(roomId: String, limit: Int): List<MessageEvent> =
         client.recentEvents(roomId, limit.toUInt()).map { it.toModel() }
 
     override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
         val obs = object : frair.TimelineDiffObserver {
-            override fun onInsert(event: frair.MessageEvent) { trySend(TimelineDiff.Insert(event.toModel())) }
-            override fun onUpdate(event: frair.MessageEvent) { trySend(TimelineDiff.Update(event.toModel())) }
-            override fun onRemove(itemId: String) { trySend(TimelineDiff.Remove(itemId)) }
-            override fun onClear() { trySend(TimelineDiff.Clear) }
+            override fun onInsert(event: frair.MessageEvent) { trySendBlocking(TimelineDiff.Insert(event.toModel())) }
+            override fun onUpdate(event: frair.MessageEvent) { trySendBlocking(TimelineDiff.Update(event.toModel())) }
+            override fun onRemove(itemId: String) { trySendBlocking(TimelineDiff.Remove(itemId)) } // was eventId
+            override fun onClear() { trySendBlocking(TimelineDiff.Clear) }
             override fun onReset(events: List<frair.MessageEvent>) {
-                trySend(TimelineDiff.Reset(events.map { it.toModel() }))
+                trySendBlocking(TimelineDiff.Reset(events.map { it.toModel() }))
             }
         }
         val subId: ULong = client.observeRoomTimelineDiffs(roomId, obs)
@@ -97,7 +119,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
         return client.monitorConnection(cb)
     }
-
     override fun stopConnectionObserver(token: ULong) {
         client.unobserveConnection(token)
     }
@@ -107,25 +128,18 @@ class RustMatrixPort(hs: String) : MatrixPort {
             override fun onRequest(flowId: String, fromUser: String, fromDevice: String) {
                 observer.onRequest(flowId, fromUser, fromDevice)
             }
-            override fun onError(message: String) {
-                observer.onError(message)
-            }
+            override fun onError(message: String) { observer.onError(message) }
         }
         return client.startVerificationInbox(cb)
     }
-
     override fun stopVerificationInbox(token: ULong) {
         client.unobserveVerificationInbox(token)
     }
 
-    override fun close() = client.shutdown()
 
-    override suspend fun send(roomId: String, body: String): Boolean =
-        client.sendMessage(roomId, body)
-
+    override suspend fun send(roomId: String, body: String): Boolean = client.sendMessage(roomId, body)
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
         client.enqueueText(roomId, body, txnId)
-
     override fun startSendWorker() = client.startSendWorker()
 
     override fun observeSends(): Flow<SendUpdate> = callbackFlow {
@@ -149,42 +163,38 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 )
             }
         }
+        val token = client.observeSends(obs)
+        awaitClose { client.unobserveSends(token) }
         client.observeSends(obs)
-        awaitClose { /* one-shot stream; nothing to unobserve */ }
+        awaitClose { }
     }
 
     override suspend fun mediaCacheStats(): Pair<Long, Long> {
-        val s = client.mediaCacheStats()
-        return s.bytes.toLong() to s.files.toLong()
+        val s = client.mediaCacheStats(); return s.bytes.toLong() to s.files.toLong()
     }
-
-    override suspend fun mediaCacheEvict(maxBytes: Long): Long =
-        client.mediaCacheEvict(maxBytes.toULong()).toLong()
-
+    override suspend fun mediaCacheEvict(maxBytes: Long): Long = client.mediaCacheEvict(maxBytes.toULong()).toLong()
     override suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String> =
         runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
 
-    override suspend fun paginateBack(roomId: String, count: Int): Boolean =
-        client.paginateBackwards(roomId, count.toUShort())
 
-    override suspend fun paginateForward(roomId: String, count: Int): Boolean =
-        client.paginateForwards(roomId, count.toUShort())
+    override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
+        return client.setTyping(roomId, typing)
+    }
 
-    override suspend fun markRead(roomId: String): Boolean = client.markRead(roomId)
+    override fun whoami(): String? {
+        return client.whoami()
+    }
 
-    override suspend fun markReadAt(roomId: String, eventId: String): Boolean =
-        client.markReadAt(roomId, eventId)
-
-    override suspend fun react(roomId: String, eventId: String, emoji: String): Boolean =
-        client.react(roomId, eventId, emoji)
-
-    override suspend fun reply(roomId: String, inReplyToEventId: String, body: String): Boolean =
+    override suspend fun paginateBack(roomId: String, count: Int) = client.paginateBackwards(roomId, count.toUShort())
+    override suspend fun paginateForward(roomId: String, count: Int) = client.paginateForwards(roomId, count.toUShort())
+    override suspend fun markRead(roomId: String) = client.markRead(roomId)
+    override suspend fun markReadAt(roomId: String, eventId: String) = client.markReadAt(roomId, eventId)
+    override suspend fun react(roomId: String, eventId: String, emoji: String) = client.react(roomId, eventId, emoji)
+    override suspend fun reply(roomId: String, inReplyToEventId: String, body: String) =
         client.reply(roomId, inReplyToEventId, body)
-
-    override suspend fun edit(roomId: String, targetEventId: String, newBody: String): Boolean =
+    override suspend fun edit(roomId: String, targetEventId: String, newBody: String) =
         client.edit(roomId, targetEventId, newBody)
-
-    override suspend fun redact(roomId: String, eventId: String, reason: String?): Boolean =
+    override suspend fun redact(roomId: String, eventId: String, reason: String?) =
         client.redact(roomId, eventId, reason)
 
     override fun observeTyping(roomId: String, onUpdate: (List<String>) -> Unit): ULong {
@@ -197,11 +207,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override fun stopTypingObserver(token: ULong) {
         client.unobserveTyping(token)
     }
-
-    override suspend fun setTyping(roomId: String, typing: Boolean): Boolean =
-        client.setTyping(roomId, typing)
-
-    override fun whoami(): String? = client.whoami()
 
     override fun startSupervisedSync(observer: MatrixPort.SyncObserver) {
         val cb = object : frair.SyncObserver {
@@ -272,20 +277,58 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.startUserSas(userId, obs)
     }
 
-    override suspend fun acceptVerification(flowId: String, otherUserId: String?, observer: VerificationObserver): Boolean {
-        val obs = object : frair.VerificationObserver {
+//    override suspend fun startVerification(
+//        targetUser: String,
+//        targetDevice: String,
+//        observer: VerificationObserver
+//    ): Boolean {
+//        val cb = object : frair.VerificationObserver {
+//            override fun onPhase(flowId: String, phase: frair.SasPhase) {
+//                observer.onPhase(flowId, when (phase) {
+//                    frair.SasPhase.REQUESTED -> SasPhase.Requested
+//                    frair.SasPhase.READY -> SasPhase.Ready
+//                    frair.SasPhase.EMOJIS -> SasPhase.Emojis
+//                    frair.SasPhase.CONFIRMED -> SasPhase.Confirmed
+//                    frair.SasPhase.CANCELLED -> SasPhase.Cancelled
+//                    frair.SasPhase.FAILED -> SasPhase.Failed
+//                    frair.SasPhase.DONE -> SasPhase.Done
+//                })
+//            }
+//            override fun onEmojis(payload: SasEmojis) {
+//                observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
+//            }
+//            override fun onError(flowId: String, message: String) {
+//                observer.onError(flowId, message)
+//            }
+//        }
+//        return client.startVerification(targetUser, targetDevice, cb)
+//    }
+
+    override suspend fun acceptVerification(
+        flowId: String,
+        otherUserId: String?,
+        observer: VerificationObserver
+    ): Boolean {
+        val cb = object : frair.VerificationObserver {
             override fun onPhase(flowId: String, phase: frair.SasPhase) {
-                observer.onPhase(flowId, phase.toCommon())
+                observer.onPhase(flowId, when (phase) {
+                    frair.SasPhase.REQUESTED -> SasPhase.Requested
+                    frair.SasPhase.READY -> SasPhase.Ready
+                    frair.SasPhase.EMOJIS -> SasPhase.Emojis
+                    frair.SasPhase.CONFIRMED -> SasPhase.Confirmed
+                    frair.SasPhase.CANCELLED -> SasPhase.Cancelled
+                    frair.SasPhase.FAILED -> SasPhase.Failed
+                    frair.SasPhase.DONE -> SasPhase.Done
+                })
             }
-            override fun onEmojis(payload: frair.SasEmojis) {
+            override fun onEmojis(payload: SasEmojis) {
                 observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
             }
             override fun onError(flowId: String, message: String) {
                 observer.onError(flowId, message)
             }
         }
-        // otherUserId is not required by the FFI (it resolves the user), but we keep the param to match the common API.
-        return client.acceptVerification(flowId, obs)
+        return client.acceptVerification(flowId, cb)
     }
 
     override suspend fun confirmVerification(flowId: String): Boolean =
@@ -297,70 +340,50 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun cancelVerificationRequest(flowId: String, otherUserId: String?): Boolean =
         client.cancelVerificationRequest(flowId)
 
-    override fun enterForeground() = client.enterForeground()
-
-    override fun enterBackground() = client.enterBackground()
+    override fun enterForeground() {
+        client.enterForeground()
+    }
+    override fun enterBackground() {
+        client.enterBackground()
+    }
 
     override suspend fun logout(): Boolean = client.logout()
+    override suspend fun cancelTxn(txnId: String): Boolean =
+        client.cancelTxn(txnId)
 
-    override suspend fun cancelTxn(txnId: String): Boolean = client.cancelTxn(txnId)
+    override suspend fun retryTxnNow(txnId: String): Boolean =
+        client.retryTxnNow(txnId)
 
-    override suspend fun retryTxnNow(txnId: String): Boolean = client.retryTxnNow(txnId)
-
-    override suspend fun pendingSends(): UInt = client.pendingSends()
+    override suspend fun pendingSends(): UInt =
+        client.pendingSends()
 
     override suspend fun checkVerificationRequest(userId: String, flowId: String): Boolean =
         client.checkVerificationRequest(userId, flowId)
 
-    override suspend fun sendAttachmentFromPath(
-        roomId: String,
-        path: String,
-        mime: String,
-        filename: String?,
-        onProgress: ((Long, Long?) -> Unit)?
-    ): Boolean {
+    override suspend fun sendAttachmentFromPath(roomId: String, path: String, mime: String, filename: String?, onProgress: ((Long, Long?) -> Unit)?): Boolean {
         val cb = if (onProgress != null) object : frair.ProgressObserver {
             override fun onProgress(sent: ULong, total: ULong?) { onProgress(sent.toLong(), total?.toLong()) }
         } else null
         return client.sendAttachmentFromPath(roomId, path, mime, filename, cb)
     }
-
-    override suspend fun sendAttachmentBytes(
-        roomId: String,
-        data: ByteArray,
-        mime: String,
-        filename: String,
-        onProgress: ((Long, Long?) -> Unit)?
-    ): Boolean {
+    override suspend fun sendAttachmentBytes(roomId: String, data: ByteArray, mime: String, filename: String, onProgress: ((Long, Long?) -> Unit)?): Boolean {
         val cb = if (onProgress != null) object : frair.ProgressObserver {
             override fun onProgress(sent: ULong, total: ULong?) { onProgress(sent.toLong(), total?.toLong()) }
         } else null
         return client.sendAttachmentBytes(roomId, filename, mime, data, cb)
     }
-
-    override suspend fun downloadToPath(
-        mxcUri: String,
-        savePath: String,
-        onProgress: ((Long, Long?) -> Unit)?
-    ): Result<String> {
+    override suspend fun downloadToPath(mxcUri: String, savePath: String, onProgress: ((Long, Long?) -> Unit)?): Result<String> {
         val cb = if (onProgress != null) object : frair.ProgressObserver {
             override fun onProgress(sent: ULong, total: ULong?) { onProgress(sent.toLong(), total?.toLong()) }
         } else null
         return runCatching { client.downloadToPath(mxcUri, savePath, cb).path }
     }
-
-    override suspend fun recoverWithKey(recoveryKey: String): Boolean =
-        client.recoverWithKey(recoveryKey)
+    override suspend fun recoverWithKey(recoveryKey: String): Boolean = client.recoverWithKey(recoveryKey)
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
 private fun FfiEvent.toModel() = MessageEvent(
-    itemId = itemId,
-    eventId = eventId,
-    roomId = roomId,
-    sender = sender,
-    body = body,
-    timestamp = timestampMs.toLong()
+    itemId = itemId, eventId = eventId, roomId = roomId, sender = sender, body = body, timestamp = timestampMs.toLong()
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)
