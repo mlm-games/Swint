@@ -27,6 +27,10 @@ class LoginController(
         scope.launch {
             runCatching { service.init(_state.value.homeserver) }
             if (service.isLoggedIn()) {
+                service.startSendWorker()
+                service.startSupervisedSync(object : org.mlm.frair.matrix.MatrixPort.SyncObserver {
+                    override fun onState(status: org.mlm.frair.matrix.MatrixPort.SyncStatus) {}
+                })
                 withContext(Dispatchers.Main) { onLoggedIn() }
             }
         }
