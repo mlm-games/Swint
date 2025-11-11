@@ -27,3 +27,4 @@ composeApp/src/androidMain/jniLibs
 composeApp/src/jvmMain/jniLibs
 composeApp/src/androidMain/kotlin/mages
 composeApp/src/jvmMain/kotlin/mages
+composeApp/src/jvmMain/resources

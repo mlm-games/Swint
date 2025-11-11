@@ -64,7 +64,6 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // Include only the ABIs you need
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64", "armeabi-v7a")
         }
@@ -91,11 +90,156 @@ dependencies {
     debugImplementation(compose.uiTooling)
 }
 
-/**
- * Configuration-cache friendly Cargo + NDK task.
- * Uses typed properties and ExecOperations, no Project/script objects captured.
- */
-@DisableCachingByDefault(because = "Invokes external tool; outputs are tracked via @OutputDirectory")
+val cargoAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+
+val rustDirDefault = rootProject.layout.projectDirectory.dir("rust")
+val os = OperatingSystem.current()
+val hostLibName = when {
+    os.isMacOsX -> "libmages_ffi.dylib"
+    os.isWindows -> "mages_ffi.dll"
+    else -> "libmages_ffi.so"
+}
+val hostLibFile = rustDirDefault.file("target/release/$hostLibName")
+
+val useCargoFallback = providers.provider { true }
+val cargoBinDefault = providers.provider { if (os.isWindows) "cargo.exe" else "cargo" }
+val vendoredManifestVar = rustDirDefault.file("uniffi-bindgen/Cargo.toml")
+
+val cargoBuildAndroid = tasks.register<CargoNdkTask>("cargoBuildAndroid") {
+    abis.set(cargoAbis)
+    cargoBin.set(cargoBinDefault)
+    rustDir.set(rustDirDefault)
+    jniOut.set(layout.projectDirectory.dir("src/androidMain/jniLibs"))
+}
+
+val cargoBuildDesktop = tasks.register<CargoHostTask>("cargoBuildDesktop") {
+    cargoBin.set(cargoBinDefault)
+    rustDir.set(rustDirDefault)
+    jniOut.set(layout.buildDirectory.dir("nativeLibs"))
+}
+
+val genUniFFIAndroid = tasks.register<GenerateUniFFITask>("genUniFFIAndroid") {
+    dependsOn(cargoBuildAndroid)
+    libraryFile.set(hostLibFile)
+    configFile.set(rustDirDefault.file("uniffi.android.toml"))
+    language.set("kotlin")
+    uniffiPath.set("")
+    useFallbackCargo.set(useCargoFallback)
+    cargoBin.set(cargoBinDefault)
+    vendoredManifest.set(vendoredManifestVar)
+    outDir.set(layout.projectDirectory.dir("src/androidMain/kotlin"))
+}
+
+val genUniFFIJvm = tasks.register<GenerateUniFFITask>("genUniFFIJvm") {
+    dependsOn(cargoBuildDesktop)
+    libraryFile.set(hostLibFile)
+    configFile.set(rustDirDefault.file("uniffi.jvm.toml"))
+    language.set("kotlin")
+    uniffiPath.set("")
+    useFallbackCargo.set(useCargoFallback)
+    cargoBin.set(cargoBinDefault)
+    vendoredManifest.set(vendoredManifestVar)
+    outDir.set(layout.projectDirectory.dir("src/jvmMain/kotlin"))
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(genUniFFIAndroid)
+    dependsOn(cargoBuildAndroid)
+}
+
+afterEvaluate {
+    tasks.findByName("compileKotlinJvm")?.dependsOn(genUniFFIJvm, cargoBuildDesktop)
+}
+
+compose.desktop {
+    application {
+        mainClass = "org.mlm.mages.DesktopMainKt"
+
+        nativeDistributions {
+            targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
+            packageName = "Mages"
+            packageVersion = "0.1.0"
+        }
+    }
+}
+
+// Configure the run task to set jna.library.path
+afterEvaluate {
+    tasks.findByName("compileKotlinJvm")?.dependsOn(genUniFFIJvm, cargoBuildDesktop)
+
+    tasks.withType<JavaExec>().configureEach {
+        if (name == "run") {
+            dependsOn(cargoBuildDesktop)
+            val libDir = layout.buildDirectory.dir("nativeLibs").get().asFile.absolutePath
+            systemProperty("jna.library.path", libDir)
+
+            doFirst {
+                logger.lifecycle("JNA library path set to: $libDir")
+                val libFile = File(libDir, hostLibName)
+                if (libFile.exists()) {
+                    logger.lifecycle("Library found at: ${libFile.absolutePath}")
+                } else {
+                    logger.error("Library NOT found at: ${libFile.absolutePath}")
+                }
+            }
+        }
+    }
+}
+
+@DisableCachingByDefault(because = "Builds native code")
+abstract class CargoHostTask @Inject constructor(
+    private val execOps: ExecOperations
+) : DefaultTask() {
+
+    @get:Input
+    abstract val cargoBin: Property<String>
+
+    @get:InputDirectory
+    abstract val rustDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val jniOut: DirectoryProperty
+
+    @TaskAction
+    fun run() {
+        val rustDirFile = rustDir.get().asFile
+
+        logger.lifecycle("Building Rust library in: ${rustDirFile.absolutePath}")
+
+        execOps.exec {
+            workingDir = rustDirFile
+            commandLine(
+                cargoBin.get(),
+                "build",
+                "--release"
+            )
+        }
+
+        val outDir = jniOut.get().asFile
+        outDir.mkdirs()
+
+        val os = OperatingSystem.current()
+        val libName = when {
+            os.isMacOsX -> "libmages_ffi.dylib"
+            os.isWindows -> "mages_ffi.dll"
+            else -> "libmages_ffi.so"
+        }
+
+        val sourceLib = rustDirFile.resolve("target/release/$libName")
+        val targetLib = outDir.resolve(libName)
+
+        if (!sourceLib.exists()) {
+            throw GradleException("Library not found at ${sourceLib.absolutePath}")
+        }
+
+        logger.lifecycle("Copying ${sourceLib.absolutePath} to ${targetLib.absolutePath}")
+        sourceLib.copyTo(targetLib, overwrite = true)
+        logger.lifecycle("Library successfully copied")
+    }
+}
+
+
+@DisableCachingByDefault(because = "Invokes external tool")
 abstract class CargoNdkTask @Inject constructor(
     private val execOps: ExecOperations
 ) : DefaultTask() {
@@ -134,21 +278,8 @@ abstract class CargoNdkTask @Inject constructor(
     }
 }
 
-val cargoAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 
-val cargoBuildAndroid = tasks.register<CargoNdkTask>("cargoBuildAndroid") {
-    abis.set(cargoAbis)
-    cargoBin.set(if (OperatingSystem.current().isWindows) "cargo.exe" else "cargo")
-    rustDir.set(rootProject.layout.projectDirectory.dir("rust"))
-    jniOut.set(layout.projectDirectory.dir("src/androidMain/jniLibs"))
-}
-
-val cargoBuildDesktop = tasks.register<CargoHostTask>("cargoBuildDesktop") {
-    cargoBin.set(if (OperatingSystem.current().isWindows) "cargo.exe" else "cargo")
-    rustDir.set(rootProject.layout.projectDirectory.dir("rust"))
-}
-
-@DisableCachingByDefault(because = "Runs external tool; outputs are tracked")
+@DisableCachingByDefault(because = "Runs external tool")
 abstract class GenerateUniFFITask @Inject constructor(
     private val execOps: ExecOperations
 ) : DefaultTask() {
@@ -166,7 +297,6 @@ abstract class GenerateUniFFITask @Inject constructor(
     @get:Input
     abstract val uniffiPath: Property<String>
 
-    // Fallback via cargo run (resolved at configuration time)
     @get:Input
     abstract val useFallbackCargo: Property<Boolean>
 
@@ -192,8 +322,6 @@ abstract class GenerateUniFFITask @Inject constructor(
         val workDir: File
 
         if (exe != null) {
-            // Use the standalone binary, but run it from a Cargo dir so any internal
-            // `cargo metadata` calls succeed.
             cmd += exe.absolutePath
             workDir = libraryFile.get().asFile.parentFile // rust/target/release
                 ?.parentFile        // rust/target
@@ -216,7 +344,6 @@ abstract class GenerateUniFFITask @Inject constructor(
                 "--manifest-path", manifest.absolutePath,
                 "--bin", "uniffi-bindgen", "--"
             )
-            // Run cargo from the vendored crate directory
             workDir = manifest.parentFile
         }
 
@@ -232,93 +359,6 @@ abstract class GenerateUniFFITask @Inject constructor(
         execOps.exec {
             workingDir = workDir
             commandLine(cmd)
-        }
-    }
-}
-
-val rustDir = rootProject.layout.projectDirectory.dir("rust")
-val os = OperatingSystem.current()
-val hostLibName = when {
-    os.isMacOsX -> "libmages_ffi.dylib"
-    os.isWindows -> "mages_ffi.dll"
-    else -> "libmages_ffi.so"
-}
-val hostLibFile = rustDir.file("target/release/$hostLibName")
-
-val useCargoFallback = providers.provider { true }
-val cargoBinDefault = providers.provider { if (os.isWindows) "cargo.exe" else "cargo" }
-val vendoredManifestVar = rustDir.file("uniffi-bindgen/Cargo.toml")
-
-val genUniFFIAndroid = tasks.register<GenerateUniFFITask>("genUniFFIAndroid") {
-    libraryFile.set(hostLibFile)
-    configFile.set(rustDir.file("uniffi.android.toml"))
-    language.set("kotlin")
-    uniffiPath.set("")                      // force cargo fallback
-    useFallbackCargo.set(useCargoFallback)  // true
-    cargoBin.set(cargoBinDefault)
-    vendoredManifest.set(vendoredManifestVar)
-    outDir.set(layout.projectDirectory.dir("src/androidMain/kotlin"))
-    dependsOn(cargoBuildDesktop)
-}
-
-val genUniFFIJvm = tasks.register<GenerateUniFFITask>("genUniFFIJvm") {
-    libraryFile.set(hostLibFile)
-    configFile.set(rustDir.file("uniffi.jvm.toml"))
-    language.set("kotlin")
-    uniffiPath.set("")                      // force cargo fallback
-    useFallbackCargo.set(useCargoFallback)  // true
-    cargoBin.set(cargoBinDefault)
-    vendoredManifest.set(vendoredManifestVar)
-    outDir.set(layout.projectDirectory.dir("src/jvmMain/kotlin"))
-    dependsOn(cargoBuildDesktop)
-}
-
-// Ensure bindings + Android .so exist before compiling Kotlin/packaging
-tasks.named("preBuild").configure {
-    dependsOn(genUniFFIAndroid)
-    dependsOn(genUniFFIJvm)
-    dependsOn(cargoBuildAndroid)
-}
-
-/**
- * Host (Desktop) cargo build that produces libmages_native for the current OS.
- */
-@DisableCachingByDefault(because = "Builds native code; output path is deterministic")
-abstract class CargoHostTask @Inject constructor(
-    private val execOps: ExecOperations
-) : DefaultTask() {
-
-    @get:Input
-    abstract val cargoBin: Property<String>
-
-    @get:InputDirectory
-    abstract val rustDir: DirectoryProperty
-
-    @TaskAction
-    fun run() {
-        val rustDirFile = rustDir.get().asFile
-        execOps.exec {
-            workingDir = rustDirFile
-            commandLine(
-                cargoBin.get(),
-                "build",
-                "--release"
-            )
-        }
-    }
-}
-
-compose.desktop {
-    application {
-        mainClass = "org.mlm.mages.DesktopMainKt"
-        // Let the JVM find libmages_ffi.so at runtime
-        jvmArgs += "-Djava.library.path=${rootProject.layout.projectDirectory.dir("rust/target/release").asFile.absolutePath}"
-
-        // Optional: build Linux packages
-        nativeDistributions {
-            targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
-            packageName = "Mages"
-            packageVersion = "0.1.0"
         }
     }
 }
