@@ -1,10 +1,10 @@
-# Frair
+# Mages
 
 Kotlin Multiplatform (Compose for Android) app with a Rust core called via JNI.
 
 ## Layout
 - `composeApp/` — KMP Android app (Compose)
-- `rust/` — Rust crate that builds a shared library (`libfrair_native.so`)
+- `rust/` — Rust crate that builds a shared library (`libmages_native.so`)
 
 ## Prerequisites
 - Android Studio + Android SDK + NDK installed
@@ -26,7 +26,7 @@ Ensure `cargo` and `cargo-ndk` are on your PATH, and the Android NDK is installe
 
 Gradle will invoke `cargo ndk` to build Rust for `arm64-v8a`, `x86_64`, and `armeabi-v7a`, and place the `.so` files under:
 ```
-composeApp/src/androidMain/jniLibs/<abi>/libfrair_native.so
+composeApp/src/androidMain/jniLibs/<abi>/libmages_native.so
 ```
 
 ## Code Usage
@@ -37,7 +37,7 @@ val msg = RustApi.greet(getPlatform().name)
 
 Rust implements the logic, JNI exposes:
 ```rust
-Java_org_mlm_frair_NativeLib_greetFromRust(env, class, name)
+Java_org_mlm_mages_NativeLib_greetFromRust(env, class, name)
 ```
 
 ## Notes

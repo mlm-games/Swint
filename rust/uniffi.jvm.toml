@@ -1,4 +1,4 @@
 [bindings.kotlin]
-package_name = "frair"
-cdylib_name = "frair_ffi"
+package_name = "mages"
+cdylib_name = "mages_ffi"
 jni = true

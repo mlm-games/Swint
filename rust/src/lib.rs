@@ -224,7 +224,7 @@ struct SessionInfo {
 }
 
 fn default_store_dir() -> PathBuf {
-    std::env::temp_dir().join("frair_store")
+    std::env::temp_dir().join("mages_store")
 }
 
 fn session_file(dir: &PathBuf) -> PathBuf {
@@ -1730,7 +1730,7 @@ impl Client {
     }
 
     pub fn enqueue_text(&self, room_id: String, body: String, txn_id: Option<String>) -> String {
-        let txn = txn_id.unwrap_or_else(|| format!("frair-{}", now_ms()));
+        let txn = txn_id.unwrap_or_else(|| format!("mages-{}", now_ms()));
 
         let path = queue_db_path(&self.store_dir);
         let Ok(conn) = open_queue_db(&path) else {

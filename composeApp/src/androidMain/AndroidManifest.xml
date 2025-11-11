@@ -22,7 +22,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
-                    android:scheme="frair"
+                    android:scheme="mages"
                     android:host="room" />
             </intent-filter>
         </activity>

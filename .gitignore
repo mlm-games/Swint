@@ -25,5 +25,5 @@ rust/uniffi-bindgen/Cargo.lock
 
 composeApp/src/androidMain/jniLibs
 composeApp/src/jvmMain/jniLibs
-composeApp/src/androidMain/kotlin/frair
-composeApp/src/jvmMain/kotlin/frair
+composeApp/src/androidMain/kotlin/mages
+composeApp/src/jvmMain/kotlin/mages

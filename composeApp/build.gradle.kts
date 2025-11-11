@@ -54,11 +54,11 @@ kotlin {
 }
 
 android {
-    namespace = "org.mlm.frair"
+    namespace = "org.mlm.mages"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "org.mlm.frair"
+        applicationId = "org.mlm.mages"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
@@ -239,9 +239,9 @@ abstract class GenerateUniFFITask @Inject constructor(
 val rustDir = rootProject.layout.projectDirectory.dir("rust")
 val os = OperatingSystem.current()
 val hostLibName = when {
-    os.isMacOsX -> "libfrair_ffi.dylib"
-    os.isWindows -> "frair_ffi.dll"
-    else -> "libfrair_ffi.so"
+    os.isMacOsX -> "libmages_ffi.dylib"
+    os.isWindows -> "mages_ffi.dll"
+    else -> "libmages_ffi.so"
 }
 val hostLibFile = rustDir.file("target/release/$hostLibName")
 
@@ -281,7 +281,7 @@ tasks.named("preBuild").configure {
 }
 
 /**
- * Host (Desktop) cargo build that produces libfrair_native for the current OS.
+ * Host (Desktop) cargo build that produces libmages_native for the current OS.
  */
 @DisableCachingByDefault(because = "Builds native code; output path is deterministic")
 abstract class CargoHostTask @Inject constructor(
@@ -310,14 +310,14 @@ abstract class CargoHostTask @Inject constructor(
 
 compose.desktop {
     application {
-        mainClass = "org.mlm.frair.DesktopMainKt"
-        // Let the JVM find libfrair_ffi.so at runtime
+        mainClass = "org.mlm.mages.DesktopMainKt"
+        // Let the JVM find libmages_ffi.so at runtime
         jvmArgs += "-Djava.library.path=${rootProject.layout.projectDirectory.dir("rust/target/release").asFile.absolutePath}"
 
         // Optional: build Linux packages
         nativeDistributions {
             targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
-            packageName = "Frair"
+            packageName = "Mages"
             packageVersion = "0.1.0"
         }
     }

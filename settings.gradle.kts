@@ -1,4 +1,4 @@
-rootProject.name = "Frair"
+rootProject.name = "Mages"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {
