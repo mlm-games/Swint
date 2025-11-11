@@ -239,9 +239,9 @@ abstract class GenerateUniFFITask @Inject constructor(
 val rustDir = rootProject.layout.projectDirectory.dir("rust")
 val os = OperatingSystem.current()
 val hostLibName = when {
-    os.isMacOsX -> "libmages_ffi.dylib"
+    os.isMacOsX -> "mages_ffi.dylib"
     os.isWindows -> "mages_ffi.dll"
-    else -> "libmages_ffi.so"
+    else -> "mages_ffi.so"
 }
 val hostLibFile = rustDir.file("target/release/$hostLibName")
 

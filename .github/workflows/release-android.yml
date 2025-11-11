@@ -90,7 +90,8 @@ jobs:
     permissions: { contents: write }
     steps:
       - uses: actions/checkout@v5
-        with: { ref: ${{ needs.prepare-version.outputs.commit_sha }} }
+        with: 
+          ref: ${{ needs.prepare-version.outputs.commit_sha }}
 
       - uses: actions/setup-java@v5
         with:
