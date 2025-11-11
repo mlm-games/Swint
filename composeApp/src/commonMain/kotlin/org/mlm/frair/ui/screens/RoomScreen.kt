@@ -36,7 +36,8 @@ fun RoomScreen(
     onPaginateBack: () -> Unit,
     onMarkReadHere: (MessageEvent) -> Unit,
     onSendAttachment: (AttachmentData) -> Unit,
-    onCancelUpload: () -> Unit
+    onCancelUpload: () -> Unit,
+    onDelete: (MessageEvent) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
@@ -48,12 +49,19 @@ fun RoomScreen(
     }
     val scope = rememberCoroutineScope()
     var showAttachmentPicker by remember { mutableStateOf(false) }
+    var sheetEvent by remember { mutableStateOf<MessageEvent?>(null) }
+
 
     val picker = rememberFilePicker { data ->
         if (data != null) {
             onSendAttachment(data)
         }
         showAttachmentPicker = false
+    }
+
+    LaunchedEffect(events.lastOrNull()?.itemId, isNearBottom) {
+        val last = events.lastOrNull() ?: return@LaunchedEffect
+        if (isNearBottom) onMarkReadHere(last)
     }
 
     Scaffold(
@@ -128,17 +136,16 @@ fun RoomScreen(
                     isOffline = state.isOffline,
                     replyingTo = state.replyingTo,
                     editing = state.editing,
-                    currentAttachment = null,
-                    isUploadingAttachment = false,
+                    currentAttachment = state.currentAttachment,
+                    isUploadingAttachment = state.isUploadingAttachment,
                     onValueChange = onSetInput,
-                    onSend = {
-                        if (state.editing != null) onConfirmEdit() else onSend()
-                    },
+                    onSend = { if (state.editing != null) onConfirmEdit() else onSend() },
                     onCancelReply = onCancelReply,
                     onCancelEdit = onCancelEdit,
                     onAttach = { showAttachmentPicker = true },
                     onCancelUpload = onCancelUpload
                 )
+
             }
         },
         floatingActionButton = {
@@ -201,7 +208,7 @@ fun RoomScreen(
                             timestamp = event.timestamp,
                             grouped = false,
                             reactions = emptySet(),
-                            onLongPress = { /* open action sheet later */ },
+                            onLongPress = { sheetEvent = event },
                             onReact = { emoji -> onReact(event, emoji) }
                         )
                         Spacer(Modifier.height(2.dp))
@@ -217,6 +224,21 @@ fun RoomScreen(
             onPickVideo = { picker.pick("video/*") },
             onPickDocument = { picker.pick("*/*") },
             onDismiss = { showAttachmentPicker = false }
+        )
+    }
+
+    if (sheetEvent != null) {
+        val ev = sheetEvent!!
+        val isMine = ev.sender == state.myUserId
+        MessageActionSheet(
+            event = ev,
+            isMine = isMine,
+            onDismiss = { sheetEvent = null },
+            onReply = { onReply(ev) },
+            onEdit = { onEdit(ev) },
+            onDelete = { onDelete(ev) },
+            onReact = { emoji -> onReact(ev, emoji) },
+            onMarkReadHere = { onMarkReadHere(ev) }
         )
     }
 }

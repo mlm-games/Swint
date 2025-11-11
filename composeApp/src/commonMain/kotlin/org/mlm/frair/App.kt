@@ -20,6 +20,8 @@ fun App(
 
         val service = remember { MatrixService(port = org.mlm.frair.matrix.createMatrixPort("https://matrix.org")) }
 
+        BindLifecycle(service)
+
         when (val r = nav.current) {
             Route.Login -> {
                 val controller = remember {
@@ -71,7 +73,8 @@ fun App(
                     onPaginateBack = controller::paginateBack,
                     onMarkReadHere = controller::markReadHere,
                     onSendAttachment = controller::sendAttachment,
-                    onCancelUpload = controller::cancelAttachmentUpload
+                    onCancelUpload = controller::cancelAttachmentUpload,
+                    onDelete = controller::delete,
                 )
             }
             Route.Security -> {
@@ -114,5 +117,18 @@ fun App(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun BindLifecycle(service: MatrixService) {
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = object : androidx.lifecycle.DefaultLifecycleObserver {
+            override fun onStart(owner: androidx.lifecycle.LifecycleOwner) { service.port.enterForeground() }
+            override fun onStop(owner: androidx.lifecycle.LifecycleOwner) { service.port.enterBackground() }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 }

@@ -274,7 +274,7 @@ val genUniFFIJvm = tasks.register<GenerateUniFFITask>("genUniFFIJvm") {
 // Ensure bindings + Android .so exist before compiling Kotlin/packaging
 tasks.named("preBuild").configure {
     dependsOn(genUniFFIAndroid)
-//    dependsOn(genUniFFIJvm)
+    dependsOn(genUniFFIJvm)
     dependsOn(cargoBuildAndroid)
 }
 

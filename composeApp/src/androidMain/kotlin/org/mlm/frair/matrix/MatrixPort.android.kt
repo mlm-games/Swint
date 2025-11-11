@@ -163,6 +163,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 )
             }
         }
+        val token = client.observeSends(obs)
+        awaitClose { client.unobserveSends(token) }
         client.observeSends(obs)
         awaitClose { }
     }

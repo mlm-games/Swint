@@ -120,4 +120,8 @@ class MatrixService(val port: MatrixPort) {
 
     @OptIn(ExperimentalTime::class)
     fun nowMs(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()
+
+    suspend fun startUserSas(userId: String, observer: VerificationObserver) =
+        port.startUserSas(userId, observer)
+
 }

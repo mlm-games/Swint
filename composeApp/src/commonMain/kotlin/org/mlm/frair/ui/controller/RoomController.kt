@@ -22,6 +22,8 @@ class RoomController(
 
     private var typingToken: ULong? = null
     private var uploadJob: Job? = null
+    private var typingJob: Job? = null
+
 
     init {
         service.startSupervisedSync(object : org.mlm.frair.matrix.MatrixPort.SyncObserver {
@@ -129,9 +131,9 @@ class RoomController(
 
     fun setInput(v: String) {
         _state.update { it.copy(input = v) }
-        scope.launch {
-            val text = v
-            if (text.isBlank()) {
+        typingJob?.cancel()
+        typingJob = scope.launch {
+            if (v.isBlank()) {
                 service.port.setTyping(_state.value.roomId, false)
             } else {
                 service.port.setTyping(_state.value.roomId, true)
@@ -146,8 +148,15 @@ class RoomController(
         if (s.input.isBlank()) return
         scope.launch {
             val text = s.input.trim()
-            runCatching { service.enqueueText(s.roomId, text, null) }
-            _state.update { it.copy(input = "") }
+            val replyTo = s.replyingTo
+            if (replyTo != null) {
+                val ok = service.reply(s.roomId, replyTo.eventId, text)
+                if (ok) _state.update { it.copy(input = "", replyingTo = null) }
+                else _state.update { it.copy(error = "Reply failed") }
+            } else {
+                runCatching { service.enqueueText(s.roomId, text, null) }
+                _state.update { it.copy(input = "") }
+            }
         }
     }
 
@@ -251,5 +260,9 @@ class RoomController(
 
     fun markReadHere(ev: MessageEvent) {
         scope.launch { service.markReadAt(ev.roomId, ev.eventId) }
+    }
+
+    fun delete(ev: MessageEvent) {
+        scope.launch { service.redact(_state.value.roomId, ev.eventId, null) }
     }
 }

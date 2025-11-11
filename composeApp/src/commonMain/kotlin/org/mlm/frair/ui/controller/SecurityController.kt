@@ -120,12 +120,11 @@ class SecurityController(
 
     fun startUserVerify(userId: String) {
         scope.launch {
-            val flowId = service.port.startUserSas(userId, commonObserver())
-            if (flowId.isBlank()) {
-                _state.update { it.copy(sasError = "Failed to start verification") }
-            }
+            val flowId = service.startUserSas(userId, commonObserver())
+            if (flowId.isBlank()) _state.update { it.copy(sasError = "Failed to start verification") }
         }
     }
+
 
     fun acceptSas() {
         val flowId = _state.value.sasFlowId ?: return
@@ -180,4 +179,6 @@ class SecurityController(
     }
 
     fun openMediaCache() { onOpenMediaCache?.invoke() }
+
+
 }

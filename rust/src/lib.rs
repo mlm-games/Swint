@@ -296,7 +296,8 @@ pub struct Client {
     store_dir: PathBuf,
     guards: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     verifs: VerifMap,
-    send_observers: Arc<Mutex<Vec<Arc<dyn SendObserver>>>>,
+    send_observers: Arc<Mutex<HashMap<u64, Arc<dyn SendObserver>>>>,
+    send_obs_counter: AtomicU64,
     send_tx: tokio::sync::mpsc::UnboundedSender<SendUpdate>,
     inbox: Arc<Mutex<HashMap<String, (OwnedUserId, OwnedDeviceId)>>>,
     sync_service: Arc<Mutex<Option<Arc<SyncService>>>>,
@@ -375,7 +376,8 @@ impl Client {
             store_dir: store_dir_path,
             guards: Mutex::new(vec![]),
             verifs: Arc::new(Mutex::new(HashMap::new())),
-            send_observers: Arc::new(Mutex::new(Vec::new())),
+            send_observers: Arc::new(Mutex::new(HashMap::new())),
+            send_obs_counter: AtomicU64::new(0),
             send_tx,
             inbox: Arc::new(Mutex::new(HashMap::new())),
             sync_service: Arc::new(Mutex::new(None)),
@@ -434,7 +436,7 @@ impl Client {
                 while let Some(upd) = send_rx.recv().await {
                     let list: Vec<Arc<dyn SendObserver>> = {
                         let guard = observers.lock().expect("send_observers");
-                        guard.iter().cloned().collect()
+                        guard.values().cloned().collect()
                     };
                     for obs in list {
                         let upd_clone = upd.clone();
@@ -567,11 +569,6 @@ impl Client {
         }
 
         this
-    }
-
-    pub fn observe_sends(&self, observer: Box<dyn SendObserver>) {
-        let obs: Arc<dyn SendObserver> = Arc::from(observer);
-        self.send_observers.lock().unwrap().push(obs);
     }
 
     pub fn whoami(&self) -> Option<String> {
@@ -931,6 +928,19 @@ impl Client {
         } else {
             false
         }
+    }
+
+    pub fn observe_sends(&self, observer: Box<dyn SendObserver>) -> u64 {
+        let id = self.send_obs_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        self.send_observers
+            .lock()
+            .unwrap()
+            .insert(id, Arc::from(observer));
+        id
+    }
+
+    pub fn unobserve_sends(&self, id: u64) -> bool {
+        self.send_observers.lock().unwrap().remove(&id).is_some()
     }
 
     pub fn send_message(&self, room_id: String, body: String) -> bool {

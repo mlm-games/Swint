@@ -17,18 +17,32 @@ class MediaCacheController(
     val state: StateFlow<MediaCacheUiState> = _state
 
 
-    fun clearAll() {
-        /*TODO*/
-    }
-    fun clearKeep(d: Long) {
-        /*TODO*/
-    }
-
     fun refresh() {
         scope.launch {
             _state.update { it.copy(isBusy = true, error = null) }
-             // TODO
-            _state.update { it.copy(isBusy = false) }
+            runCatching { service.mediaCacheStats() }
+                .onSuccess { (bytes, filesCount) ->
+                    _state.update { it.copy(bytes = bytes, files = mapOf("total" to filesCount), isBusy = false) }
+                }
+                .onFailure { t -> _state.update { it.copy(isBusy = false, error = t.message ?: "Failed to read cache") } }
+        }
+    }
+
+    fun clearAll() {
+        scope.launch {
+            _state.update { it.copy(isBusy = true, error = null) }
+            runCatching { service.mediaCacheEvict(0L) }
+                .onSuccess { refresh() }
+                .onFailure { t -> _state.update { it.copy(isBusy = false, error = t.message ?: "Clear failed") } }
+        }
+    }
+
+    fun clearKeep(d: Long) {
+        scope.launch {
+            _state.update { it.copy(isBusy = true, error = null) }
+            runCatching { service.mediaCacheEvict(d) }
+                .onSuccess { refresh() }
+                .onFailure { t -> _state.update { it.copy(isBusy = false, error = t.message ?: "Evict failed") } }
         }
     }
 }
