@@ -240,10 +240,15 @@ compose.desktop {
         mainClass = "org.mlm.mages.DesktopMainKt"
 
         nativeDistributions {
-            targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
+            targetFormats(TargetFormat.AppImage)
             packageName = "Mages"
             packageVersion = android.defaultConfig.versionName
+            appResourcesRootDir.set(project.layout.projectDirectory.dir("resources"))
+
         }
+        jvmArgs += listOf(
+            "-Djna.library.path=\$APPDIR/lib"
+        )
     }
 }
 
