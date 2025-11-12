@@ -192,30 +192,25 @@ fun RoomScreen(
                         }
                     }
 
-                    var lastDate: String? = null
-                    var unreadShown = false
-                    val lastReadTs = state.lastReadTs
-
                     itemsIndexed(events, key = { _, e -> e.itemId }) { index, event ->
-                        // Date header (dedup)
                         val eventDate = formatDate(event.timestamp)
-                        if (eventDate != lastDate) {
+                        val prevDate = events.getOrNull(index - 1)?.let { formatDate(it.timestamp) }
+
+                        // Date header only when date boundary changes
+                        if (prevDate != eventDate) {
                             DateHeader(eventDate)
-                            lastDate = eventDate
                         }
 
-                        // Unread separator
-                        if (!unreadShown && lastReadTs != null) {
-                            val isNewer = event.timestamp > lastReadTs
+                        val lastReadTs = state.lastReadTs
+                        if (lastReadTs != null) {
                             val prevTs = events.getOrNull(index - 1)?.timestamp
-                            val prevIsOlderOrNull = prevTs == null || prevTs <= lastReadTs
-                            if (isNewer && prevIsOlderOrNull) {
+                            val showUnread = (event.timestamp > lastReadTs) && (prevTs == null || prevTs <= lastReadTs)
+                            if (showUnread) {
                                 UnreadDivider()
-                                unreadShown = true
                             }
-                        } else if (!unreadShown && index == 0) {
+                        } else if (index == 0) {
+                            // No record: show once at the top
                             UnreadDivider()
-                            unreadShown = true
                         }
 
                         MessageBubble(
@@ -225,13 +220,12 @@ fun RoomScreen(
                             timestamp = event.timestamp,
                             grouped = false,
                             reactions = state.reactions[event.eventId] ?: emptySet(),
-                            eventId = event.eventId,                     // NEW
+                            eventId = event.eventId,
                             onLongPress = { sheetEvent = event },
                             onReact = { emoji -> onReact(event, emoji) }
                         )
                         Spacer(Modifier.height(2.dp))
                     }
-
                 }
             }
         }

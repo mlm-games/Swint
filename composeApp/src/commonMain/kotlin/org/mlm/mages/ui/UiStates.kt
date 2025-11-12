@@ -22,7 +22,10 @@ data class RoomsUiState(
     val offlineBanner: String? = null,
     val syncBanner: String? = null,
     val isBusy: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+
+    val lastActivity: Map<String, Long> = emptyMap(),
+    val lastOutgoing: Map<String, Long> = emptyMap()
 )
 data class RoomUiState(
     val roomId: String,

@@ -22,9 +22,11 @@ class RoomsController(
 
     private var connToken: ULong? = null
     private var syncStarted = false
+    private var sendsJob: Job? = null
 
     init {
         observeConnection()
+        observeSends()
         refreshRooms()
         startSync()
     }
@@ -61,6 +63,21 @@ class RoomsController(
 
     private fun key(roomId: String) = "room_read_ts:$roomId"
 
+    private fun observeSends() {
+        sendsJob?.cancel()
+        sendsJob = scope.launch {
+            service.observeSends().collect { upd ->
+                // Any outgoing event bumps “recently chatted”
+                val now = service.nowMs()
+                _state.update { st ->
+                    val m = st.lastOutgoing.toMutableMap()
+                    m[upd.roomId] = now
+                    st.copy(lastOutgoing = m)
+                }
+            }
+        }
+    }
+
     fun refreshRooms() {
         scope.launch {
             _state.update { it.copy(isBusy = true, error = null) }
@@ -68,24 +85,41 @@ class RoomsController(
                 _state.update { s -> s.copy(isBusy = false, error = "Failed to load rooms: ${it.message}") }
                 return@launch
             }
-            _state.update { it.copy(rooms = rooms, isBusy = false) }
-
-            // unread counts (concurrent, cap to 50 recent)
-            val counts = withContext(Dispatchers.Default) {
+            // unread + last activity
+            val results = withContext(Dispatchers.Default) {
                 coroutineScope {
                     rooms.map { room ->
                         async {
-                            val last = runCatching { loadLong(dataStore, key(room.id)) }.getOrNull() ?: 0L
                             val recent = runCatching { service.loadRecent(room.id, 50) }.getOrDefault(emptyList())
-                            val unread = recent.count { it.timestamp > last }
-                            room.id to unread
+                            val lastTs = recent.maxOfOrNull { it.timestamp } ?: 0L
+                            room.id to (recent to lastTs)
                         }
                     }.awaitAll().toMap()
                 }
             }
-            _state.update { it.copy(unread = counts) }
+
+            val unreadMap = buildMap {
+                for ((rid, pair) in results) {
+                    val (recent, _) = pair
+                    val lastRead = loadLong(dataStore, key(rid)) ?: 0L
+                    put(rid, recent.count { it.timestamp > lastRead })
+                }
+            }
+            val lastActivityMap = buildMap {
+                for ((rid, pair) in results) put(rid, pair.second)
+            }
+
+            _state.update {
+                it.copy(
+                    rooms = rooms,
+                    unread = unreadMap,
+                    lastActivity = lastActivityMap,
+                    isBusy = false
+                )
+            }
         }
     }
+
 
 
     fun setSearchQuery(q: String) {
