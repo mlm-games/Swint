@@ -240,7 +240,7 @@ compose.desktop {
         mainClass = "org.mlm.mages.DesktopMainKt"
 
         nativeDistributions {
-            targetFormats(TargetFormat.AppImage)
+            targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "Mages"
             packageVersion = android.defaultConfig.versionName
             appResourcesRootDir.set(project.layout.projectDirectory.dir("resources"))
