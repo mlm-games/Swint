@@ -206,7 +206,7 @@ val cargoBuildDesktop = tasks.register<CargoHostTask>("cargoBuildDesktop") {
 }
 
 val genUniFFIAndroid = tasks.register<GenerateUniFFITask>("genUniFFIAndroid") {
-    dependsOn(cargoBuildAndroid)
+    dependsOn(cargoBuildDesktop)
     libraryFile.set(hostLibFile)
     configFile.set(rustDirDefault.file("uniffi.android.toml"))
     language.set("kotlin")
@@ -232,10 +232,6 @@ val genUniFFIJvm = tasks.register<GenerateUniFFITask>("genUniFFIJvm") {
 tasks.named("preBuild").configure {
     dependsOn(genUniFFIAndroid)
     dependsOn(cargoBuildAndroid)
-}
-
-afterEvaluate {
-    tasks.findByName("compileKotlinJvm")?.dependsOn(genUniFFIJvm, cargoBuildDesktop)
 }
 
 compose.desktop {
