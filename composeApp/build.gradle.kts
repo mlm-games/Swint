@@ -143,8 +143,8 @@ android {
             isDebuggable = false
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            buildConfigField("Long", "BUILD_TIME", "0L")
-            isShrinkResources = true
+//            buildConfigField("Long", "BUILD_TIME", "0L")
+//            isShrinkResources = true
         }
         getByName("debug") {
             isShrinkResources = false
@@ -250,7 +250,6 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "Mages"
-            packageVersion = "0.1.0"
         }
     }
 }

@@ -50,46 +50,6 @@ fun MessageComposer(
     onCancelUpload: (() -> Unit)? = null
 ) {
     Column {
-        // Context banner (reply/edit)
-        AnimatedVisibility(visible = replyingTo != null || editing != null) {
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = if (editing != null) Icons.Default.Edit else Icons.AutoMirrored.Filled.Reply,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = if (editing != null) "Editing message" else "Replying to ${replyingTo?.sender}",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = (editing?.body ?: replyingTo?.body ?: "").take(100),
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    IconButton(
-                        onClick = if (editing != null) onCancelEdit else onCancelReply
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = "Cancel")
-                    }
-                }
-            }
-        }
-
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 3.dp,
