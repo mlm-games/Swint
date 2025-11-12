@@ -8,6 +8,7 @@ import org.mlm.mages.MatrixService
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.storage.loadLong
+import org.mlm.mages.storage.saveLong
 import org.mlm.mages.ui.RoomsUiState
 
 class RoomsController(
@@ -23,6 +24,9 @@ class RoomsController(
     private var connToken: ULong? = null
     private var syncStarted = false
     private var sendsJob: Job? = null
+
+    private var lastHeartbeatRefreshMs = 0L
+    private fun actKey(roomId: String) = "room_last_activity_ts:$roomId"
 
     init {
         observeConnection()
@@ -57,8 +61,24 @@ class RoomsController(
                     else -> null
                 }
                 _state.update { it.copy(syncBanner = banner) }
+
+                if (status.phase == MatrixPort.SyncPhase.Running) {
+                    val now = service.nowMs()
+                    if (now - lastHeartbeatRefreshMs > 10_000) {
+                        lastHeartbeatRefreshMs = now
+                        refreshActivityLight()
+                    }
+                }
             }
         })
+    }
+
+    private fun refreshActivityLight() {
+        val rooms = _state.value.rooms
+        if (rooms.isEmpty()) return
+        // (refreshes first 20 for now)
+        val top = rooms.take(20)
+        fillLastActivityBackground(top)
     }
 
     private fun key(roomId: String) = "room_read_ts:$roomId"
@@ -67,13 +87,13 @@ class RoomsController(
         sendsJob?.cancel()
         sendsJob = scope.launch {
             service.observeSends().collect { upd ->
-                // Any outgoing event bumps “recently chatted”
                 val now = service.nowMs()
                 _state.update { st ->
                     val m = st.lastOutgoing.toMutableMap()
                     m[upd.roomId] = now
                     st.copy(lastOutgoing = m)
                 }
+                runCatching { saveLong(dataStore, actKey(upd.roomId), now) }
             }
         }
     }
@@ -85,6 +105,25 @@ class RoomsController(
                 _state.update { s -> s.copy(isBusy = false, error = "Failed to load rooms: ${it.message}") }
                 return@launch
             }
+
+            val cachedActivity = withContext(Dispatchers.Default) {
+                buildMap {
+                    for (r in rooms) {
+                        val ts = runCatching { loadLong(dataStore, actKey(r.id)) }.getOrNull()
+                        if (ts != null) put(r.id, ts)
+                    }
+                }
+            }
+
+            // rooms + cached activity
+            _state.update {
+                it.copy(
+                    rooms = rooms,
+                    lastActivity = cachedActivity,
+                    isBusy = false
+                )
+            }
+
             // unread + last activity
             val results = withContext(Dispatchers.Default) {
                 coroutineScope {
@@ -117,10 +156,42 @@ class RoomsController(
                     isBusy = false
                 )
             }
+
+            val missing = rooms.filter { it.id !in cachedActivity }
+            if (missing.isNotEmpty()) {
+                fillLastActivityBackground(missing)
+            }
         }
     }
 
+    private fun fillLastActivityBackground(rooms: List<RoomSummary>) {
+        scope.launch(Dispatchers.Default) {
+            val sem = kotlinx.coroutines.sync.Semaphore(permits = 8)
+            val updates = rooms.map { room ->
+                async {
+                    sem.acquire()
+                    try {
+                        val recent = runCatching { service.loadRecent(room.id, 1) }.getOrElse { emptyList() }
+                        val ts = recent.firstOrNull()?.timestamp ?: 0L
+                        if (ts > 0) {
+                            runCatching { saveLong(dataStore, actKey(room.id), ts) }
+                        }
+                        room.id to ts
+                    } finally {
+                        sem.release()
+                    }
+                }
+            }.awaitAll().toMap()
 
+            if (updates.isNotEmpty()) {
+                _state.update { st ->
+                    val merged = st.lastActivity.toMutableMap()
+                    for ((rid, ts) in updates) if (ts > 0) merged[rid] = ts
+                    st.copy(lastActivity = merged)
+                }
+            }
+        }
+    }
 
     fun setSearchQuery(q: String) {
         _state.update { it.copy(roomSearchQuery = q) }
