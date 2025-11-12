@@ -22,3 +22,13 @@ suspend fun loadString(ds: DataStore<Preferences>, key: String): String? {
     val k = stringPreferencesKey(key)
     return ds.data.map { it[k] }.first()
 }
+
+suspend fun saveLong(ds: DataStore<Preferences>, key: String, value: Long) {
+    val k = longPreferencesKey(key)
+    ds.edit { it[k] = value }
+}
+
+suspend fun loadLong(ds: DataStore<Preferences>, key: String): Long? {
+    val k = longPreferencesKey(key)
+    return ds.data.map { it[k] }.first()
+}

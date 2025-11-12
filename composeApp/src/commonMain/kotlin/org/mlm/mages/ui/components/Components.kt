@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -102,9 +103,34 @@ fun ActionBanner(replyingTo: MessageEvent?, editing: MessageEvent?, onCancelRepl
     }
 }
 
+@Composable
+fun UnreadDivider() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp, horizontal = 24.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        HorizontalDivider(modifier = Modifier.weight(1f))
+        Surface(
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.padding(horizontal = 12.dp)
+        ) {
+            Text(
+                "Unread messages",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+            )
+        }
+        HorizontalDivider(modifier = Modifier.weight(1f))
+    }
+}
 
 @Composable
-fun OutboxChips(items: List<SendIndicator>) {
+fun OutboxChips(items: List<SendIndicator>) { // Old
     if (items.isEmpty()) return
     Row(
         Modifier

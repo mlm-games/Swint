@@ -41,7 +41,11 @@ data class RoomUiState(
     val currentAttachment: AttachmentData? = null,
     val isUploadingAttachment: Boolean = false,
     val attachmentProgress: Float = 0f,
-    val error: String? = null
+    val error: String? = null,
+
+    val reactions: Map<String, Set<String>> = emptyMap(),
+    val lastReadTs: Long? = null
+
 )
 data class VerificationRequestUi(
     val flowId: String,

@@ -128,8 +128,6 @@ fun RoomScreen(
                     )
                 }
 
-                OutboxChips(items = state.outbox)
-
                 MessageComposer(
                     value = state.input,
                     enabled = true,
@@ -195,24 +193,45 @@ fun RoomScreen(
                     }
 
                     var lastDate: String? = null
-                    itemsIndexed(events, key = { _, e -> e.itemId }) { _, event ->
+                    var unreadShown = false
+                    val lastReadTs = state.lastReadTs
+
+                    itemsIndexed(events, key = { _, e -> e.itemId }) { index, event ->
+                        // Date header (dedup)
                         val eventDate = formatDate(event.timestamp)
                         if (eventDate != lastDate) {
                             DateHeader(eventDate)
                             lastDate = eventDate
                         }
+
+                        // Unread separator
+                        if (!unreadShown && lastReadTs != null) {
+                            val isNewer = event.timestamp > lastReadTs
+                            val prevTs = events.getOrNull(index - 1)?.timestamp
+                            val prevIsOlderOrNull = prevTs == null || prevTs <= lastReadTs
+                            if (isNewer && prevIsOlderOrNull) {
+                                UnreadDivider()
+                                unreadShown = true
+                            }
+                        } else if (!unreadShown && index == 0) {
+                            UnreadDivider()
+                            unreadShown = true
+                        }
+
                         MessageBubble(
                             isMine = (event.sender == state.myUserId),
                             body = event.body,
                             sender = event.sender,
                             timestamp = event.timestamp,
                             grouped = false,
-                            reactions = emptySet(),
+                            reactions = state.reactions[event.eventId] ?: emptySet(),
+                            eventId = event.eventId,                     // NEW
                             onLongPress = { sheetEvent = event },
                             onReact = { emoji -> onReact(event, emoji) }
                         )
                         Spacer(Modifier.height(2.dp))
                     }
+
                 }
             }
         }

@@ -44,6 +44,7 @@ fun App(
                 val controller = remember {
                     RoomsController(
                         service = service,
+                        dataStore = dataStore,
                         onOpenRoom = { room -> nav.push(Route.Room(room.id, room.name)) }
                     )
                 }
@@ -57,7 +58,7 @@ fun App(
                 )
             }
             is Route.Room -> {
-                val controller = remember(r.roomId) { RoomController(service, r.roomId, r.name) }
+                val controller = remember(r.roomId) { RoomController(service, dataStore, r.roomId, r.name) }
                 val ui by controller.state.collectAsState()
                 RoomScreen(
                     state = ui,

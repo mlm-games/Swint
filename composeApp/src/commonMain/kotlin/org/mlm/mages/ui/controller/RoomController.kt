@@ -1,17 +1,22 @@
 package org.mlm.mages.ui.controller
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.matrix.SendState
 import org.mlm.mages.matrix.TimelineDiff
+import org.mlm.mages.storage.loadLong
+import org.mlm.mages.storage.saveLong
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.AttachmentData
 import org.mlm.mages.ui.components.SendIndicator
 
 class RoomController(
     private val service: MatrixService,
+    private val dataStore: DataStore<Preferences>,
     roomId: String,
     roomName: String
 ) {
@@ -29,12 +34,19 @@ class RoomController(
         service.startSupervisedSync(object : org.mlm.mages.matrix.MatrixPort.SyncObserver {
             override fun onState(status: org.mlm.mages.matrix.MatrixPort.SyncStatus) { /* no-op */ }
         })
+        scope.launch {
+            val ts = runCatching { loadLong(dataStore, key(_state.value.roomId)) }.getOrNull()
+            _state.update { it.copy(lastReadTs = ts) }
+        }
         loadInitial()
         observeTimeline()
         observeTyping()
         observeOutbox()
         updateMyUserId()
     }
+
+    private fun key(roomId: String) = "room_read_ts:$roomId"
+
 
     private fun updateMyUserId() {
         _state.update { it.copy(myUserId = service.port.whoami()) }
@@ -220,7 +232,15 @@ class RoomController(
     }
 
     fun react(ev: MessageEvent, emoji: String) {
-        scope.launch { service.react(_state.value.roomId, ev.eventId, emoji) }
+        scope.launch {
+            runCatching { service.react(_state.value.roomId, ev.eventId, emoji) }
+
+            _state.update { st ->
+                val current = st.reactions[ev.eventId].orEmpty().toMutableSet()
+                if (emoji in current) current.remove(emoji) else current.add(emoji)
+                st.copy(reactions = st.reactions.toMutableMap().apply { put(ev.eventId, current) })
+            }
+        }
     }
 
     fun paginateBack() {
@@ -259,7 +279,15 @@ class RoomController(
     }
 
     fun markReadHere(ev: MessageEvent) {
-        scope.launch { service.markReadAt(ev.roomId, ev.eventId) }
+        scope.launch {
+            service.markReadAt(ev.roomId, ev.eventId)
+            saveLastRead(ev.timestamp)
+        }
+    }
+
+    private suspend fun saveLastRead(ts: Long) {
+        saveLong(dataStore, key(_state.value.roomId), ts)
+        _state.update { it.copy(lastReadTs = ts) }
     }
 
     fun delete(ev: MessageEvent) {

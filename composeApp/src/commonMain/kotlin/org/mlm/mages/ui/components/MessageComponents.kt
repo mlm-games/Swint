@@ -19,10 +19,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -53,6 +55,7 @@ fun MessageBubble(
     timestamp: Long,
     grouped: Boolean,
     reactions: Set<String> = emptySet(),
+    eventId: String? = null,
     onLongPress: (() -> Unit)? = null,
     onReact: ((String) -> Unit)? = null
 ) {
@@ -123,6 +126,27 @@ fun MessageBubble(
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = formatTime(timestamp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isMine)
+                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            )
+                            if (isMine) {
+                                Spacer(Modifier.width(6.dp))
+                                val isPending = eventId.isNullOrBlank()
+                                Icon(
+                                    imageVector = if (isPending) Icons.Default.Schedule else Icons.Default.Check,
+                                    contentDescription = if (isPending) "Sending" else "Sent",
+                                    tint = if (isPending)
+                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+                                    else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
                         }
                     }
                     Spacer(Modifier.height(8.dp))

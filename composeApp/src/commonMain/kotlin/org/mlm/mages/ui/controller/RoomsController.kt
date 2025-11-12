@@ -1,14 +1,18 @@
 package org.mlm.mages.ui.controller
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.mlm.mages.MatrixService
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.MatrixPort
+import org.mlm.mages.storage.loadLong
 import org.mlm.mages.ui.RoomsUiState
 
 class RoomsController(
     private val service: MatrixService,
+    private val dataStore: DataStore<Preferences>,
     private val onOpenRoom: (RoomSummary) -> Unit
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -55,6 +59,8 @@ class RoomsController(
         })
     }
 
+    private fun key(roomId: String) = "room_read_ts:$roomId"
+
     fun refreshRooms() {
         scope.launch {
             _state.update { it.copy(isBusy = true, error = null) }
@@ -63,8 +69,24 @@ class RoomsController(
                 return@launch
             }
             _state.update { it.copy(rooms = rooms, isBusy = false) }
+
+            // unread counts (concurrent, cap to 50 recent)
+            val counts = withContext(Dispatchers.Default) {
+                coroutineScope {
+                    rooms.map { room ->
+                        async {
+                            val last = runCatching { loadLong(dataStore, key(room.id)) }.getOrNull() ?: 0L
+                            val recent = runCatching { service.loadRecent(room.id, 50) }.getOrDefault(emptyList())
+                            val unread = recent.count { it.timestamp > last }
+                            room.id to unread
+                        }
+                    }.awaitAll().toMap()
+                }
+            }
+            _state.update { it.copy(unread = counts) }
         }
     }
+
 
     fun setSearchQuery(q: String) {
         _state.update { it.copy(roomSearchQuery = q) }
