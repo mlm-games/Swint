@@ -167,11 +167,6 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
-    buildTypes {
-        getByName("release") {
-            isMinifyEnabled = false
-        }
-    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -182,7 +177,7 @@ dependencies {
     debugImplementation(compose.uiTooling)
 }
 
-val cargoAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+val cargoAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
 val rustDirDefault = rootProject.layout.projectDirectory.dir("rust")
 val os = OperatingSystem.current()
