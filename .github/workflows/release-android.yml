@@ -121,6 +121,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE }}" > release.keystore.asc
+          gpg -d --passphrase "${{ secrets.KEYSTORE_PASSPHRASE }}" --batch release.keystore.asc > release.keystore
+
       # Build AAB (preBuild triggers cargo ndk + UniFFI)
       - name: Build AAB
         env:
@@ -128,7 +133,16 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_ALIAS:      ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD:   ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew :composeApp:bundleRelease --no-daemon
+        run: ./gradlew :composeApp:bundleRelease -PenableApkSplits=false
+
+      - name: Prepare AAB artifact
+        run: |
+          mkdir -p artifacts
+          cp composeApp/build/outputs/bundle/release/*release.aab \
+             "artifacts/${{ env.APP_SLUG }}-${{ needs.prepare-version.outputs.version_name }}.aab"
+      
+      - name: Clean before APK build
+        run: ./gradlew clean
 
       - name: Build APKs
         env:
@@ -136,17 +150,20 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_ALIAS:      ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD:   ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew :composeApp:assembleRelease --no-daemon
+        run: ./gradlew :composeApp:assembleRelease --no-daemon -PenableApkSplits=true -PincludeUniversalApk=true
 
-      - name: Collect artifacts
-        shell: bash
+      - name: Prepare APKs
         run: |
-          set -euxo pipefail
           mkdir -p artifacts
-          cp composeApp/build/outputs/bundle/release/*.aab artifacts/ || true
-          cp composeApp/build/outputs/apk/release/*.apk artifacts/ || true
-          ls -la artifacts
-
+          for apk in composeApp/build/outputs/apk/release/*.apk; do
+            if [ -f "$apk" ]; then
+              arch=$(echo "$apk" | grep -oE '(arm64-v8a|armeabi-v7a|x86_64|x86|universal)')
+              if [ -n "$arch" ]; then
+                cp "$apk" "artifacts/${{ env.APP_SLUG }}-${{ needs.prepare-version.outputs.version_name }}-${arch}.apk"
+              fi
+            fi
+          done
+          
       - name: Upload artifacts (CI only)
         if: inputs.upload_releases == false || github.event_name != 'workflow_dispatch'
         uses: actions/upload-artifact@v4
