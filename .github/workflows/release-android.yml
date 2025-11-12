@@ -57,7 +57,7 @@ jobs:
           OLD_CODE=$(grep -m1 "versionCode" $BUILD_GRADLE_PATH | grep -oE '[0-9]+')
           OLD_NAME=$(grep -m1 "versionName" $BUILD_GRADLE_PATH | grep -oE '"([^"]+)"' | tr -d '"')
           IFS='.' read -r MAJ MIN PAT <<<"${OLD_NAME:-0.1.0}"
-          NEW_CODE=$(( ${OLD_CODE:-1} + 1 ))
+          NEW_CODE=$(( ${OLD_CODE:-1} + 10 ))
           NEW_NAME="$MAJ.$MIN.$(( ${PAT:-0} + 1 ))"
           sed -i "s/versionCode = $OLD_CODE/versionCode = $NEW_CODE/" $BUILD_GRADLE_PATH
           sed -i "s/versionName = \"$OLD_NAME\"/versionName = \"$NEW_NAME\"/" $BUILD_GRADLE_PATH

@@ -115,10 +115,10 @@ android {
                             else -> base
                         }
                         versionCodeOverride = abiVersionCode
-                        outputFileName = "flicky-${variant.versionName}-${abiName}.apk"
+                        outputFileName = "mages-${variant.versionName}-${abiName}.apk"
                     } else {
                         versionCodeOverride = base + 1
-                        outputFileName = "flicky-${variant.versionName}-universal.apk"
+                        outputFileName = "mages-${variant.versionName}-universal.apk"
                     }
                 }
             }
@@ -161,6 +161,7 @@ android {
 
     dependenciesInfo {
         includeInApk = false
+        includeInBundle = false
     }
     packaging {
         resources {
@@ -241,6 +242,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "Mages"
+            packageVersion = android.defaultConfig.versionName
         }
     }
 }
