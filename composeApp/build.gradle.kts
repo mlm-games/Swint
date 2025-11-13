@@ -8,6 +8,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.*
 import org.gradle.process.ExecOperations
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.gradle.api.tasks.Copy
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -235,8 +236,36 @@ tasks.named("preBuild").configure {
     dependsOn(cargoBuildAndroid)
 }
 
+val jnaPlatformDir: String = run {
+    val arch = System.getProperty("os.arch").lowercase()
+    when {
+        os.isLinux && (arch.contains("aarch64") || arch.contains("arm64")) -> "linux-aarch64"
+        os.isLinux -> "linux-x86-64"
+        os.isMacOsX && (arch.contains("aarch64") || arch.contains("arm64")) -> "darwin-aarch64"
+        os.isMacOsX -> "darwin"
+        os.isWindows && arch.contains("64") -> "win32-x86-64"
+        os.isWindows -> "win32-x86"
+        else -> error("Unsupported OS/arch: ${System.getProperty("os.name")} $arch")
+    }
+}
+
+val copyNativeForJna = tasks.register<Copy>("copyNativeForJna") {
+    dependsOn(cargoBuildDesktop)
+    val nativeLib = layout.buildDirectory.dir("nativeLibs").get().file(hostLibName).asFile
+    from(nativeLib)
+    into(file("src/jvmMain/resources/$jnaPlatformDir"))
+}
+
+tasks.named("jvmProcessResources").configure {
+    dependsOn(copyNativeForJna)
+}
+
 compose.desktop {
     application {
+        run {
+            val libDirProvider = layout.buildDirectory.dir("nativeLibs")
+            jvmArgs("-Djna.library.path=${libDirProvider.get().asFile.absolutePath}")
+        }
         mainClass = "org.mlm.mages.DesktopMainKt"
 
         nativeDistributions {
@@ -244,11 +273,7 @@ compose.desktop {
             packageName = "Mages"
             packageVersion = android.defaultConfig.versionName
             appResourcesRootDir.set(project.layout.projectDirectory.dir("resources"))
-
         }
-        jvmArgs += listOf(
-            "-Djna.library.path=\$APP_HOME/lib:\$APPDIR/usr/lib:\$APPDIR/lib:./lib"
-        )
     }
 }
 
