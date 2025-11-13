@@ -247,7 +247,7 @@ compose.desktop {
 
         }
         jvmArgs += listOf(
-            "-Djna.library.path=\$APPDIR/lib"
+            "-Djna.library.path=\$APP_HOME/lib:\$APPDIR/usr/lib:\$APPDIR/lib:./lib"
         )
     }
 }
