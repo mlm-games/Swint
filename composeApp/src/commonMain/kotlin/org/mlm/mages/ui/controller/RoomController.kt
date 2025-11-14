@@ -6,6 +6,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
+import org.mlm.mages.matrix.MatrixPort
+import org.mlm.mages.matrix.ReceiptsObserver
 import org.mlm.mages.matrix.SendState
 import org.mlm.mages.matrix.TimelineDiff
 import org.mlm.mages.storage.loadLong
@@ -26,6 +28,8 @@ class RoomController(
     val state: StateFlow<RoomUiState> = _state
 
     private var typingToken: ULong? = null
+    private var receiptsToken: ULong? = null
+    private var dmPeer: String? = null
     private var uploadJob: Job? = null
     private var typingJob: Job? = null
 
@@ -41,8 +45,12 @@ class RoomController(
         loadInitial()
         observeTimeline()
         observeTyping()
+        observeReceipts()
         observeOutbox()
         updateMyUserId()
+        scope.launch {
+            dmPeer = runCatching { service.port.dmPeerUserId(_state.value.roomId) }.getOrNull()
+        }
     }
 
     private fun key(roomId: String) = "room_read_ts:$roomId"
@@ -144,17 +152,44 @@ class RoomController(
         }
     }
 
+    private fun observeReceipts() {
+        receiptsToken?.let { service.port.stopReceiptsObserver(it) }
+        receiptsToken = service.port.observeReceipts(_state.value.roomId, object :
+            ReceiptsObserver {
+            override fun onChanged() {
+                recomputeReadStatuses()
+            }
+        })
+    }
+
     private fun recomputeDerived() {
         val s = _state.value
         val me = s.myUserId
         if (me == null || s.events.isEmpty()) {
-            _state.update { it.copy(isDm = false, lastIncomingFromOthersTs = null) }
+            _state.update { it.copy(isDm = false, lastIncomingFromOthersTs = null, lastOutgoingRead = false) }
             return
         }
         val otherSenders = s.events.asSequence().map { it.sender }.filter { it != me }.toSet()
         val isDm = otherSenders.size == 1
         val lastIncoming = s.events.asSequence().filter { it.sender != me }.maxOfOrNull { it.timestamp }
         _state.update { it.copy(isDm = isDm, lastIncomingFromOthersTs = lastIncoming) }
+        if (isDm) recomputeReadStatuses()
+    }
+
+    private fun recomputeReadStatuses() {
+        val s = _state.value
+        if (!s.isDm) return
+        val me = s.myUserId ?: return
+        val lastOutgoing = s.events.lastOrNull { it.sender == me } ?: run {
+            _state.update { it.copy(lastOutgoingRead = false) }; return
+        }
+        val peer = dmPeer ?: return
+        scope.launch {
+            val read = runCatching {
+                service.port.isEventReadBy(s.roomId, lastOutgoing.eventId, peer)
+            }.getOrDefault(false)
+            _state.update { it.copy(lastOutgoingRead = read) }
+        }
     }
 
     fun setInput(v: String) {
@@ -186,6 +221,7 @@ class RoomController(
                 _state.update { it.copy(input = "") }
             }
         }
+        recomputeReadStatuses()
     }
 
     fun sendAttachment(data: AttachmentData) {

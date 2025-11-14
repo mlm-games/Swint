@@ -39,6 +39,16 @@ interface VerificationObserver {
     fun onError(flowId: String, message: String)
 }
 
+interface ReceiptsObserver { fun onChanged() }
+
+data class CallInvite(
+    val roomId: String,
+    val sender: String,
+    val callId: String,
+    val isVideo: Boolean,
+    val tsMs: Long
+)
+
 interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
@@ -160,6 +170,14 @@ interface MatrixPort {
     ): Result<String>
 
     suspend fun recoverWithKey(recoveryKey: String): Boolean
+    fun observeReceipts(roomId: String, observer: ReceiptsObserver): ULong
+    fun stopReceiptsObserver(token: ULong)
+    suspend fun dmPeerUserId(roomId: String): String?
+    suspend fun isEventReadBy(roomId: String, eventId: String, userId: String): Boolean
+
+    interface CallObserver { fun onInvite(invite: CallInvite) }
+    fun startCallInbox(observer: CallObserver): ULong
+    fun stopCallInbox(token: ULong)
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

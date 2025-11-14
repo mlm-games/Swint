@@ -21,7 +21,6 @@ node_modules/
 rust/target
 target/
 rust/uniffi-bindgen/target
-rust/uniffi-bindgen/Cargo.lock
 
 composeApp/src/androidMain/jniLibs
 composeApp/src/jvmMain/jniLibs

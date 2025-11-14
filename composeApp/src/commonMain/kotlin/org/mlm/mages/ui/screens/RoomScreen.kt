@@ -250,8 +250,7 @@ fun RoomScreen(
                             if (state.isDm) {
                                 val statusText = when {
                                     lastOutgoing?.eventId.isNullOrBlank() -> "Sending…"
-                                    // Placeholder “read by other”: they spoke after my last outgoing
-                                    othersAfter.isNotEmpty() -> "Seen ${formatTime((othersAfter.maxOf { it.timestamp }))}"
+                                    state.lastOutgoingRead -> "Seen ${formatTime(lastOutgoing.timestamp)}"
                                     else -> "Delivered"
                                 }
                                 MessageStatusLine(text = statusText, isMine = true)

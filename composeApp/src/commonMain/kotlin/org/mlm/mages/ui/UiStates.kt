@@ -49,7 +49,8 @@ data class RoomUiState(
     val reactions: Map<String, Set<String>> = emptyMap(),
     val lastReadTs: Long? = null,
     val isDm: Boolean = false,
-    val lastIncomingFromOthersTs: Long? = null
+    val lastIncomingFromOthersTs: Long? = null,
+    val lastOutgoingRead: Boolean = false,
 
 )
 data class VerificationRequestUi(

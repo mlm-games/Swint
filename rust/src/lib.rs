@@ -15,7 +15,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use thiserror::Error;
 
 use matrix_sdk::{
-    Client as SdkClient, Room, SessionTokens,
+    Client as SdkClient, Room, RoomMemberships, SessionTokens,
     authentication::matrix::MatrixSession,
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
@@ -29,6 +29,8 @@ use matrix_sdk::{
             media::get_content_thumbnail::v3::Method as ThumbnailMethod,
             receipt::create_receipt::v3::ReceiptType,
         },
+        events::call::invite::OriginalSyncCallInviteEvent,
+        events::receipt::SyncReceiptEvent,
         events::typing::SyncTypingEvent,
     },
 };
@@ -129,6 +131,25 @@ pub trait SyncObserver: Send + Sync {
 #[uniffi::export(callback_interface)]
 pub trait TypingObserver: Send + Sync {
     fn on_update(&self, names: Vec<String>);
+}
+
+#[uniffi::export(callback_interface)]
+pub trait ReceiptsObserver: Send + Sync {
+    fn on_changed(&self);
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct CallInvite {
+    pub room_id: String,
+    pub sender: String,
+    pub call_id: String,
+    pub is_video: bool,
+    pub ts_ms: u64,
+}
+
+#[uniffi::export(callback_interface)]
+pub trait CallObserver: Send + Sync {
+    fn on_invite(&self, invite: CallInvite); // Optional future: on_hangup, on_answer…
 }
 
 #[uniffi::export(callback_interface)]
@@ -1282,6 +1303,125 @@ impl Client {
 
     pub fn unobserve_typing(&self, sub_id: u64) -> bool {
         if let Some(h) = self.typing_subs.lock().unwrap().remove(&sub_id) {
+            h.abort();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn observe_receipts(&self, room_id: String, observer: Box<dyn ReceiptsObserver>) -> u64 {
+        let client = self.inner.clone();
+        let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+            return 0;
+        };
+        let obs: Arc<dyn ReceiptsObserver> = Arc::from(observer);
+        let id = self.next_sub_id();
+        let h = RT.spawn(async move {
+            let stream = client.observe_room_events::<SyncReceiptEvent, Room>(&rid);
+            let mut sub = stream.subscribe();
+            while let Some((_ev, _room)) = sub.next().await {
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| obs.on_changed()));
+            }
+        });
+        self.typing_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn unobserve_receipts(&self, sub_id: u64) -> bool {
+        self.unobserve_typing(sub_id)
+    }
+
+    pub fn dm_peer_user_id(&self, room_id: String) -> Option<String> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+            let Some(me) = self.inner.user_id() else {
+                return None;
+            };
+            if let Ok(members) = room.members(RoomMemberships::ACTIVE).await {
+                for m in members {
+                    if m.user_id() != me {
+                        return Some(m.user_id().to_string());
+                    }
+                }
+            }
+            None
+        })
+    }
+
+    pub fn is_event_read_by(&self, room_id: String, event_id: String, user_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let Ok(eid) = EventId::parse(&event_id) else {
+                return false;
+            };
+            let Ok(uid) = user_id.parse::<OwnedUserId>() else {
+                return false;
+            };
+            let Some(tl) = get_timeline_for(&self.inner, &rid).await else {
+                return false;
+            };
+            let latest_opt = tl.latest_user_read_receipt_timeline_event_id(&uid).await;
+            let Some(latest) = latest_opt else {
+                return false;
+            };
+            // Compare positions within current items
+            let items = tl.items().await;
+            let mut idx_latest = None;
+            let mut idx_mine = None;
+            for (i, it) in items.iter().enumerate() {
+                if let Some(ev) = it.as_event() {
+                    if let Some(e) = ev.event_id() {
+                        if e == &latest {
+                            idx_latest = Some(i);
+                        }
+                        if e == &eid {
+                            idx_mine = Some(i);
+                        }
+                    }
+                }
+                if idx_latest.is_some() && idx_mine.is_some() {
+                    break;
+                }
+            }
+            matches!((idx_mine, idx_latest), (Some(i_m), Some(i_l)) if i_l >= i_m)
+        })
+    }
+
+    pub fn start_call_inbox(&self, observer: Box<dyn CallObserver>) -> u64 {
+        let client = self.inner.clone();
+        let obs: Arc<dyn CallObserver> = Arc::from(observer);
+        let id = self.next_sub_id();
+        let h = RT.spawn(async move {
+            let handler = client.observe_events::<OriginalSyncCallInviteEvent, Room>();
+            let mut sub = handler.subscribe();
+            while let Some((ev, room)) = sub.next().await {
+                let call_id = ev.content.call_id.to_string();
+                let is_video = ev.content.offer.sdp.contains("m=video");
+                let ts: u64 = ev.origin_server_ts.0.into();
+                let invite = CallInvite {
+                    room_id: room.room_id().to_string(),
+                    sender: ev.sender.to_string(),
+                    call_id,
+                    is_video,
+                    ts_ms: ts,
+                };
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| obs.on_invite(invite)));
+            }
+        });
+        self.connection_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn stop_call_inbox(&self, token: u64) -> bool {
+        if let Some(h) = self.connection_subs.lock().unwrap().remove(&token) {
             h.abort();
             true
         } else {

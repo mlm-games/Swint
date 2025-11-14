@@ -165,7 +165,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
         val token = client.observeSends(obs)
         awaitClose { client.unobserveSends(token) }
-        awaitClose { }
     }
 
     override suspend fun mediaCacheStats(): Pair<Long, Long> {
@@ -206,6 +205,39 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override fun stopTypingObserver(token: ULong) {
         client.unobserveTyping(token)
     }
+
+     override fun observeReceipts(roomId: String, observer: ReceiptsObserver): ULong {
+      val cb = object : mages.ReceiptsObserver {
+          override fun onChanged() { observer.onChanged() }
+      }
+      return client.observeReceipts(roomId, cb)
+  }
+  override fun stopReceiptsObserver(token: ULong) {
+      client.unobserveReceipts(token)
+  }
+  override suspend fun dmPeerUserId(roomId: String): String? = client.dmPeerUserId(roomId)
+  override suspend fun isEventReadBy(roomId: String, eventId: String, userId: String): Boolean =
+      client.isEventReadBy(roomId, eventId, userId)
+
+  override fun startCallInbox(observer: MatrixPort.CallObserver): ULong {
+      val cb = object : mages.CallObserver {
+          override fun onInvite(invite: mages.CallInvite) {
+              observer.onInvite(
+                  CallInvite(
+                      roomId = invite.roomId,
+                      sender = invite.sender,
+                      callId = invite.callId,
+                      isVideo = invite.isVideo,
+                      tsMs = invite.tsMs.toLong()
+                  )
+              )
+          }
+      }
+      return client.startCallInbox(cb)
+  }
+  override fun stopCallInbox(token: ULong) {
+      client.stopCallInbox(token)
+  }
 
     override fun startSupervisedSync(observer: MatrixPort.SyncObserver) {
         val cb = object : mages.SyncObserver {
