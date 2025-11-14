@@ -62,9 +62,38 @@ jobs:
           APPDIR=$(find composeApp/build/compose/binaries/main/app -type d -name "Mages" | head -n 1)
           if [ -d "$APPDIR" ]; then
             mkdir -p dist
-            appimagetool "$APPDIR" dist/mages-${{ github.ref_name }}-x86_64.AppImage
+            
+            # Create .desktop file in the root of AppDir
+            cat > "$APPDIR/mages.desktop" <<EOF
+          [Desktop Entry]
+          Name=Mages
+          Comment=Mages matrix client (desktop)
+          MimeType=x-scheme-handler/matrix;
+          Exec=Mages
+          Icon=mages
+          Terminal=false
+          Type=Application
+          Categories=Network;InstantMessaging;
+          EOF
+            
+            cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/sh
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${HERE}/lib:${LD_LIBRARY_PATH}"
+          cd "${HERE}"
+          exec "${HERE}/bin/Mages" "$@"
+          EOF
+            chmod +x "$APPDIR/AppRun"
+            
+            ln -sf lib/Mages.png "$APPDIR/mages.png"
+            
+            ln -sf lib/Mages.png "$APPDIR/.DirIcon"
+            
+            ARCH=x86_64 appimagetool "$APPDIR" "dist/mages-${{ github.ref_name }}-x86_64.AppImage"
           fi
-
+      
       - name: Collect desktop artifacts
         run: |
           mkdir -p dist
