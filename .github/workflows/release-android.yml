@@ -181,3 +181,16 @@ jobs:
           target_commitish: ${{ needs.prepare-version.outputs.commit_sha }}
           prerelease: ${{ inputs.mark_prerelease }}
           body: ${{ needs.prepare-version.outputs.release_notes }}
+
+      - name: Dispatch release-desktop.yml
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-desktop.yml',
+              ref: '${{ inputs.version_name }}'
+            });
+            core.info('Triggered desktop builds for ${{ inputs.version_name }}');
