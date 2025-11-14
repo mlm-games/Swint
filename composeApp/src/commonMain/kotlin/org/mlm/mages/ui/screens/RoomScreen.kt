@@ -163,6 +163,21 @@ fun RoomScreen(
         }
     ) { innerPadding ->
         Box(Modifier.fillMaxSize().padding(innerPadding)) {
+            val myId = state.myUserId
+            val lastOutgoingIndex = remember(events, myId) {
+                if (myId == null) -1 else events.indexOfLast { it.sender == myId }
+            }
+            val lastOutgoing = events.getOrNull(lastOutgoingIndex)
+            val othersAfter = remember(events, lastOutgoingIndex, myId) {
+                if (lastOutgoingIndex >= 0 && myId != null) {
+                    events.drop(lastOutgoingIndex + 1).filter { it.sender != myId }
+                } else emptyList()
+            }
+            val seenByNames = remember(othersAfter) {
+                othersAfter.map { it.sender }.distinct().map { sender ->
+                    sender.substringAfter(':', sender).substringBefore(':').ifBlank { sender }
+                }
+            }
             if (events.isEmpty()) {
                 EmptyRoomView()
             } else {
@@ -212,6 +227,9 @@ fun RoomScreen(
                             // No record: show once at the top
                             UnreadDivider()
                         }
+                        val showTicks = state.isDm &&
+                                (event.sender == state.myUserId) &&
+                                ((events.lastIndex - index) < 12)
 
                         MessageBubble(
                             isMine = (event.sender == state.myUserId),
@@ -222,9 +240,27 @@ fun RoomScreen(
                             reactions = state.reactions[event.eventId] ?: emptySet(),
                             eventId = event.eventId,
                             onLongPress = { sheetEvent = event },
-                            onReact = { emoji -> onReact(event, emoji) }
+                            onReact = { emoji -> onReact(event, emoji) },
+                            showTicks = showTicks,
+                            lastReadByOthersTs = state.lastIncomingFromOthersTs,
                         )
                         Spacer(Modifier.height(2.dp))
+
+                        if (index == lastOutgoingIndex) {
+                            if (state.isDm) {
+                                val statusText = when {
+                                    lastOutgoing?.eventId.isNullOrBlank() -> "Sending…"
+                                    // Placeholder “read by other”: they spoke after my last outgoing
+                                    othersAfter.isNotEmpty() -> "Seen ${formatTime((othersAfter.maxOf { it.timestamp }))}"
+                                    else -> "Delivered"
+                                }
+                                MessageStatusLine(text = statusText, isMine = true)
+                            } else {
+                                if (seenByNames.isNotEmpty()) {
+                                    SeenByChip(names = seenByNames)
+                                }
+                            }
+                        }
                     }
                 }
             }

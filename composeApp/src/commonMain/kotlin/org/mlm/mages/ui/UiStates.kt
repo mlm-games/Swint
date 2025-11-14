@@ -47,7 +47,9 @@ data class RoomUiState(
     val error: String? = null,
 
     val reactions: Map<String, Set<String>> = emptyMap(),
-    val lastReadTs: Long? = null
+    val lastReadTs: Long? = null,
+    val isDm: Boolean = false,
+    val lastIncomingFromOthersTs: Long? = null
 
 )
 data class VerificationRequestUi(

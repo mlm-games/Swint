@@ -57,7 +57,9 @@ fun MessageBubble(
     reactions: Set<String> = emptySet(),
     eventId: String? = null,
     onLongPress: (() -> Unit)? = null,
-    onReact: ((String) -> Unit)? = null
+    onReact: ((String) -> Unit)? = null,
+    showTicks: Boolean = false,
+    lastReadByOthersTs: Long? = null,
 ) {
     val (replyPreview, bodyShown) = remember(body) { parseReplyFallback(body) }
 
@@ -343,6 +345,64 @@ fun AttachmentProgress(
         trackColor = ProgressIndicatorDefaults.linearTrackColor,
         strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
         )
+    }
+}
+
+@Composable
+fun MessageStatusLine(text: String, isMine: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            color = if (isMine)
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.06f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isMine)
+                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                else
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun SeenByChip(names: List<String>) {
+    if (names.isEmpty()) return
+    val label = when {
+        names.size == 1 -> "Seen by ${names[0]}"
+        names.size == 2 -> "Seen by ${names[0]} and ${names[1]}"
+        else -> "Seen by ${names[0]}, ${names[1]} +${names.size - 2}"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
     }
 }
 

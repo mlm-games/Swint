@@ -50,6 +50,7 @@ class RoomController(
 
     private fun updateMyUserId() {
         _state.update { it.copy(myUserId = service.port.whoami()) }
+        recomputeDerived()
     }
 
     private fun loadInitial() {
@@ -75,6 +76,7 @@ class RoomController(
                                 .sortedBy { e -> e.timestamp }
                         )
                     }
+                    recomputeDerived()
                 }
             }
         }
@@ -105,6 +107,7 @@ class RoomController(
                         s.copy(events = s.events.filterNot { it.itemId == diff.itemId })
                     }
                 }
+                recomputeDerived()
             }
         }
     }
@@ -139,6 +142,19 @@ class RoomController(
         typingToken = service.observeTyping(_state.value.roomId) { names ->
             _state.update { it.copy(typingNames = names) }
         }
+    }
+
+    private fun recomputeDerived() {
+        val s = _state.value
+        val me = s.myUserId
+        if (me == null || s.events.isEmpty()) {
+            _state.update { it.copy(isDm = false, lastIncomingFromOthersTs = null) }
+            return
+        }
+        val otherSenders = s.events.asSequence().map { it.sender }.filter { it != me }.toSet()
+        val isDm = otherSenders.size == 1
+        val lastIncoming = s.events.asSequence().filter { it.sender != me }.maxOfOrNull { it.timestamp }
+        _state.update { it.copy(isDm = isDm, lastIncomingFromOthersTs = lastIncoming) }
     }
 
     fun setInput(v: String) {

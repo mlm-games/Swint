@@ -277,28 +277,10 @@ compose.desktop {
     }
 }
 
-// Configure the run task to set jna.library.path
-afterEvaluate {
-    tasks.findByName("compileKotlinJvm")?.dependsOn(genUniFFIJvm, cargoBuildDesktop)
-
-    tasks.withType<JavaExec>().configureEach {
-        if (name == "run") {
-            dependsOn(cargoBuildDesktop)
-            val libDir = layout.buildDirectory.dir("nativeLibs").get().asFile.absolutePath
-            systemProperty("jna.library.path", libDir)
-
-            doFirst {
-                logger.lifecycle("JNA library path set to: $libDir")
-                val libFile = File(libDir, hostLibName)
-                if (libFile.exists()) {
-                    logger.lifecycle("Library found at: ${libFile.absolutePath}")
-                } else {
-                    logger.error("Library NOT found at: ${libFile.absolutePath}")
-                }
-            }
-        }
-    }
+tasks.named("compileKotlinJvm").configure {
+    dependsOn(genUniFFIJvm)
 }
+
 
 @DisableCachingByDefault(because = "Builds native code")
 abstract class CargoHostTask @Inject constructor(
