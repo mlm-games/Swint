@@ -73,7 +73,7 @@ jobs:
           Name=Mages
           Comment=Mages matrix client (desktop)
           MimeType=x-scheme-handler/matrix;
-          Exec=Mages
+          Exec=Mages %u
           Icon=mages
           Terminal=false
           Type=Application
