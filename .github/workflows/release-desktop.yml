@@ -48,7 +48,10 @@ jobs:
         run: |
           wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
-          sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
+          ./appimagetool-x86_64.AppImage --appimage-extract
+          sudo mv squashfs-root /opt/appimagetool
+          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+
 
       - name: Generate UniFFI (JVM) and package desktop
         run: |
@@ -58,7 +61,8 @@ jobs:
         run: |
           APPDIR=$(find composeApp/build/compose/binaries/main/app -type d -name "Mages" | head -n 1)
           if [ -d "$APPDIR" ]; then
-            appimagetool "$APPDIR" dist/Mages-${{ github.ref_name }}-x86_64.AppImage
+            mkdir -p dist
+            appimagetool "$APPDIR" dist/mages-${{ github.ref_name }}-x86_64.AppImage
           fi
 
       - name: Collect desktop artifacts
