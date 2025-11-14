@@ -194,8 +194,10 @@ val useCargoFallback = providers.provider { true }
 val cargoBinDefault = providers.provider { if (os.isWindows) "cargo.exe" else "cargo" }
 val vendoredManifestVar = rustDirDefault.file("uniffi-bindgen/Cargo.toml")
 
+val targetAbiList = providers.gradleProperty("targetAbi").orNull?.let { listOf(it) } ?: cargoAbis
+
 val cargoBuildAndroid = tasks.register<CargoNdkTask>("cargoBuildAndroid") {
-    abis.set(cargoAbis)
+    abis.set(targetAbiList)
     cargoBin.set(cargoBinDefault)
     rustDir.set(rustDirDefault)
     jniOut.set(layout.projectDirectory.dir("src/androidMain/jniLibs"))
