@@ -22,7 +22,10 @@ env:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm64' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
@@ -46,12 +49,16 @@ jobs:
 
       - name: Install AppImage tools
         run: |
-          wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool-x86_64.AppImage
-          ./appimagetool-x86_64.AppImage --appimage-extract
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            APPIMAGETOOL_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage"
+          else
+            APPIMAGETOOL_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          fi
+          wget "$APPIMAGETOOL_URL" -O appimagetool.AppImage
+          chmod +x appimagetool.AppImage
+          ./appimagetool.AppImage --appimage-extract
           sudo mv squashfs-root /opt/appimagetool
           sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
-
 
       - name: Generate UniFFI (JVM) and package desktop
         run: |
@@ -63,7 +70,6 @@ jobs:
           if [ -d "$APPDIR" ]; then
             mkdir -p dist
             
-            # Create .desktop file in the root of AppDir
             cat > "$APPDIR/mages.desktop" <<EOF
           [Desktop Entry]
           Name=Mages
@@ -88,12 +94,11 @@ jobs:
             chmod +x "$APPDIR/AppRun"
             
             ln -sf lib/Mages.png "$APPDIR/mages.png"
-            
             ln -sf lib/Mages.png "$APPDIR/.DirIcon"
             
-            ARCH=x86_64 appimagetool "$APPDIR" "dist/mages-${{ github.ref_name }}-x86_64.AppImage"
+            ARCH=${{ matrix.arch }} appimagetool "$APPDIR" "dist/mages-${{ github.ref_name }}-${{ matrix.arch }}.AppImage"
           fi
-      
+
       - name: Collect desktop artifacts
         run: |
           mkdir -p dist
@@ -103,7 +108,7 @@ jobs:
       - name: Upload artifacts (CI)
         uses: actions/upload-artifact@v4
         with:
-          name: linux-desktop
+          name: linux-desktop-${{ matrix.arch }}
           path: dist/*
 
   release:
@@ -112,7 +117,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: linux-desktop
+          pattern: linux-desktop-*
+          merge-multiple: true
           path: dist
 
       - name: Create / Update GitHub Release
