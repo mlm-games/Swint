@@ -11,7 +11,7 @@ import kotlin.time.ExperimentalTime
 class MatrixService(val port: MatrixPort) {
     suspend fun init(hs: String) = port.init(hs.trim())
     suspend fun login(user: String, password: String, deviceDisplayName: String?) =
-        runCatching { port.login(user.trim(), password, deviceDisplayName) }
+         port.login(user.trim(), password, deviceDisplayName)
 
     fun isLoggedIn(): Boolean = port.isLoggedIn()
 

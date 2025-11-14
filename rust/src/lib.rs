@@ -14,17 +14,23 @@ use tokio::runtime::Runtime;
 use futures_util::{StreamExt, TryStreamExt};
 use thiserror::Error;
 
-use matrix_sdk::ruma::{
-    DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
-    api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod,
-    api::client::receipt::create_receipt::v3::ReceiptType, events::typing::SyncTypingEvent,
-};
 use matrix_sdk::{
     Client as SdkClient, Room, SessionTokens,
     authentication::matrix::MatrixSession,
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
     ruma::{OwnedMxcUri, events::room::MediaSource},
+};
+use matrix_sdk::{
+    encryption::BackupDownloadStrategy,
+    ruma::{
+        DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
+        api::client::{
+            media::get_content_thumbnail::v3::Method as ThumbnailMethod,
+            receipt::create_receipt::v3::ReceiptType,
+        },
+        events::typing::SyncTypingEvent,
+    },
 };
 use matrix_sdk::{
     encryption::EncryptionSettings,
@@ -363,6 +369,7 @@ impl Client {
                 .with_encryption_settings(EncryptionSettings {
                     auto_enable_cross_signing: true,
                     auto_enable_backups: true,
+                    backup_download_strategy: BackupDownloadStrategy::OneShot,
                     ..Default::default()
                 })
                 .build()

@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -44,7 +45,8 @@ fun SecurityScreen(
     onSubmitRecoveryKey: () -> Unit,
     onOpenMediaCache: (() -> Unit)? = null,
     selectedTab: Int,
-    onSelectTab: (Int) -> Unit
+    onSelectTab: (Int) -> Unit,
+    onLogout: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -87,7 +89,8 @@ fun SecurityScreen(
                     )
                     1 -> RecoveryTab(
                         onOpenRecovery = onOpenRecovery,
-                        onOpenMediaCache = onOpenMediaCache
+                        onOpenMediaCache = onOpenMediaCache,
+                        onLogout = onLogout
                     )
                     else -> PrivacyTab()
                 }
@@ -259,7 +262,8 @@ private fun DeviceCard(
 @Composable
 private fun RecoveryTab(
     onOpenRecovery: () -> Unit,
-    onOpenMediaCache: (() -> Unit)?
+    onOpenMediaCache: (() -> Unit)?,
+    onLogout: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Card(
@@ -295,6 +299,13 @@ private fun RecoveryTab(
                 SecurityOption(Icons.Default.CleaningServices, "Media Cache", "Manage cached media") {
                     onOpenMediaCache?.invoke()
                 }
+                Divider(Modifier.padding(vertical = 8.dp))
+                SecurityOption(
+                    icon = Icons.AutoMirrored.Filled.Logout,
+                    title = "Log out",
+                    subtitle = "Sign out from this device",
+                    onClick = onLogout
+                )
             }
         }
     }

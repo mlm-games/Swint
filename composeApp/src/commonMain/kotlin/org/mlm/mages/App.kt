@@ -4,6 +4,7 @@ import androidx.compose.runtime.*
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import org.mlm.mages.nav.*
 import org.mlm.mages.ui.MainTheme
 import org.mlm.mages.ui.controller.*
@@ -83,10 +84,11 @@ fun App(
                 val controller = remember {
                     SecurityController(
                         service = service,
-                        onOpenMediaCache = { nav.push(Route.MediaCache) }
+                        onOpenMediaCache = { nav.push(Route.MediaCache) },
                     )
                 }
                 val ui by controller.state.collectAsState()
+                val scope = rememberCoroutineScope()
                 SecurityScreen(
                     state = ui,
                     onBack = { nav.pop() },
@@ -103,7 +105,14 @@ fun App(
                     onSubmitRecoveryKey = controller::submitRecoveryKey,
                     onOpenMediaCache = { nav.push(Route.MediaCache) },
                     selectedTab = selectedTab,
-                    onSelectTab = { selectedTab = it }
+                    onSelectTab = { selectedTab = it },
+                    onLogout = {
+                        scope.launch {
+                            val ok = service.logout()
+                            service.port.close()
+                            if (ok) { nav.replace(Route.Login)}
+                        }
+                    }
                 )
             }
             Route.MediaCache -> {

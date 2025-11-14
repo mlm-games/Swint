@@ -53,7 +53,6 @@ fun RoomsScreen(
                     actions = {
                         IconButton(enabled = !state.isBusy, onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh") }
                         IconButton(onClick = onOpenSecurity) { Icon(Icons.Default.Security, "Security") }
-                        IconButton(onClick = { /* TODO logout later */ }) { Icon(Icons.AutoMirrored.Filled.Logout, "Logout") }
                     }
                 )
                 state.offlineBanner?.let {
