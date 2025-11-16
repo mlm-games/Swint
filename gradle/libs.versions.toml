@@ -4,6 +4,7 @@ android-compileSdk = "36"
 android-minSdk = "24"
 android-targetSdk = "36"
 connector = "3.1.2"
+slf4jSimple = "2.0.17"
 up-fcm = "3.0.0"
 up-ui = "1.1.0"
 androidx-activity = "1.11.0"
@@ -48,6 +49,7 @@ kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-c
 material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
 net-jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4jSimple" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

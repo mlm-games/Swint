@@ -55,6 +55,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.swing)
             implementation("com.github.hypfvieh:dbus-java-core:5.1.1")
             implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.1.1")
+            implementation(libs.slf4j.simple)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

@@ -3,6 +3,7 @@ package org.mlm.mages
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import kotlinx.coroutines.runBlocking
+import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.DBusInterface
@@ -84,6 +85,7 @@ object NotifierImpl {
     }
 
     // DBus interface def
+    @DBusInterfaceName("org.freedesktop.Notifications")
     interface Notifications : DBusInterface {
         fun Notify(
             appName: String,
