@@ -61,7 +61,7 @@ use matrix_sdk_ui::{
     notification_client::{
         NotificationClient, NotificationEvent, NotificationProcessSetup, NotificationStatus,
     },
-    sync_service::SyncService,
+    sync_service::{State, SyncService},
     timeline::{
         EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
         TimelineEventItemId, TimelineItem, TimelineItemContent,
@@ -1554,29 +1554,64 @@ impl Client {
         let obs: Arc<dyn SyncObserver> = Arc::from(observer);
         let svc_slot = self.sync_service.clone();
         let h = RT.spawn(async move {
+            use futures_util::StreamExt;
             use std::time::Duration;
+
             obs.on_state(SyncStatus {
                 phase: SyncPhase::Idle,
                 message: None,
             });
-            // Wait up to ~10s (session restore path)
-            let mut svc_opt = None;
-            for _ in 0..40 {
-                svc_opt = { svc_slot.lock().unwrap().as_ref().cloned() };
-                if svc_opt.is_some() {
-                    break;
+
+            // Wait until it starts (session may be restoring)
+            let svc = loop {
+                if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
+                    break s;
                 }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            if let Some(svc) = svc_opt {
-                let _ = svc.start().await;
-            } else {
-                obs.on_state(SyncStatus {
-                    phase: SyncPhase::Error,
-                    message: Some("SyncService not ready".into()),
-                });
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            };
+
+            let mut st = svc.state();
+            let _ = svc.start().await;
+
+            while let Some(state) = st.next().await {
+                match state {
+                    State::Idle => {
+                        obs.on_state(SyncStatus {
+                            phase: SyncPhase::Idle,
+                            message: None,
+                        });
+                    }
+                    State::Running => {
+                        obs.on_state(SyncStatus {
+                            phase: SyncPhase::Running,
+                            message: None,
+                        });
+                    }
+                    State::Offline => {
+                        obs.on_state(SyncStatus {
+                            phase: SyncPhase::BackingOff,
+                            message: Some("Offline".into()),
+                        });
+                    }
+                    State::Terminated => {
+                        obs.on_state(SyncStatus {
+                            phase: SyncPhase::Error,
+                            message: Some("Sync terminated".into()),
+                        });
+                        let _ = svc.start().await;
+                    }
+                    State::Error => {
+                        obs.on_state(SyncStatus {
+                            phase: SyncPhase::Error,
+                            message: Some("Sync error".to_string()),
+                        });
+                        // Restart on error as docs suggested.
+                        let _ = svc.start().await;
+                    }
+                }
             }
         });
+
         self.guards.lock().unwrap().push(h);
     }
 

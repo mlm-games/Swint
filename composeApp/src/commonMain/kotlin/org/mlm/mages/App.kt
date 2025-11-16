@@ -24,13 +24,12 @@ fun App(
         BindLifecycle(service)
 
         LaunchedEffect(service) {
-            if (service.isLoggedIn()) {
                 service.startSupervisedSync(object : MatrixPort.SyncObserver {
                     override fun onState(status: MatrixPort.SyncStatus) { /* no-op */ }
                 })
                 // Put client always in foreground until bg syncing is fixed for android
                 service.port.enterForeground()
-            }
+            
         }
 
 

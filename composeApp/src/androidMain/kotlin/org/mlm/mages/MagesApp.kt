@@ -13,7 +13,7 @@ class MagesApp : Application() {
         MagesPaths.init(this)
         AppCtx.init(this)
         val svc = MatrixProvider.get(this)
-        if (svc.isLoggedIn()) Log.println(Log.INFO, "Mages", "Sync started with status: ${MatrixProvider.ensureSyncStarted()}")
+        Log.println(Log.INFO, "Mages", "Sync started with status: ${MatrixProvider.ensureSyncStarted()}")
         WakeSyncScheduler.ensurePeriodic(this)
     }
 }
