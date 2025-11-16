@@ -175,7 +175,7 @@ fun RoomScreen(
             }
             val seenByNames = remember(othersAfter) {
                 othersAfter.map { it.sender }.distinct().map { sender ->
-                    sender.substringAfter(':', sender).substringBefore(':').ifBlank { sender }
+                    sender.substringAfter('@').substringBefore(':').ifBlank { sender }
                 }
             }
             if (events.isEmpty()) {

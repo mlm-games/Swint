@@ -127,27 +127,6 @@ fun MessageBubble(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = formatTime(timestamp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isMine)
-                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            )
-                            if (isMine) {
-                                Spacer(Modifier.width(6.dp))
-                                val isPending = eventId.isNullOrBlank()
-                                Icon(
-                                    imageVector = if (isPending) Icons.Default.Schedule else Icons.Default.Check,
-                                    contentDescription = if (isPending) "Sending" else "Sent",
-                                    tint = if (isPending)
-                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
-                                    else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
-                        }
                     }
                     Spacer(Modifier.height(8.dp))
                 }
@@ -159,6 +138,29 @@ fun MessageBubble(
                         MaterialTheme.colorScheme.onPrimaryContainer
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                    Text(
+                        text = formatTime(timestamp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isMine)
+                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                    if (isMine && showTicks) {
+                        Spacer(Modifier.width(6.dp))
+                        val isPending = eventId.isNullOrBlank()
+                        Icon(
+                            imageVector = if (isPending) Icons.Default.Schedule else Icons.Default.Check,
+                            contentDescription = if (isPending) "Sending" else "Sent",
+                            tint = if (isPending)
+                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+                            else
+                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
 
                 // Timestamp
                 Text(
