@@ -53,8 +53,7 @@ fun MediaCacheScreen(
                         }
                         Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
                             Text("Files", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
-                            Text(state.files.toString(), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                        }
+                            Text((state.files["total"] ?: 0L).toString(), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)                        }
                     }
                     LinearProgressIndicator(
                         progress = { (state.bytes / (500 * 1024 * 1024f)).coerceIn(0f, 1f) },

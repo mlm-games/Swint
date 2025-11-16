@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.nav.*
 import org.mlm.mages.ui.MainTheme
 import org.mlm.mages.ui.controller.*
@@ -21,6 +22,17 @@ fun App(
         BindDeepLinks(nav, deepLinks)
 
         BindLifecycle(service)
+
+        LaunchedEffect(service) {
+            if (service.isLoggedIn()) {
+                service.startSupervisedSync(object : MatrixPort.SyncObserver {
+                    override fun onState(status: MatrixPort.SyncStatus) { /* no-op */ }
+                })
+                // Put client always in foreground until bg syncing is fixed for android
+                service.port.enterForeground()
+            }
+        }
+
 
         when (val r = nav.current) {
             Route.Login -> {

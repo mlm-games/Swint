@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.net.toUri
 import kotlinx.coroutines.*
 import org.mlm.mages.R
 import org.mlm.mages.matrix.MatrixProvider
@@ -31,6 +32,7 @@ class WakeSyncService : Service() {
                 val service = MatrixProvider.get(this@WakeSyncService)
                 // Short wake sync (2.5s)
                 service.port.wakeSyncOnce(2500)
+                service.port.encryptionCatchupOnce()
                 // Build notifications from latest unseen events
                 Notifier.showNewEventNotifications(this@WakeSyncService, service)
             } finally {

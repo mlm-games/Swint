@@ -467,6 +467,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 hasMention = it.hasMention,
             )
         }
+
+    override suspend fun encryptionCatchupOnce(): Boolean = client.encryptionCatchupOnce()
 }
 
 

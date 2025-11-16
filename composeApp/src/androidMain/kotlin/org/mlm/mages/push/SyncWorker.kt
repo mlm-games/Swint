@@ -18,6 +18,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         if (!service.isLoggedIn()) return@withContext Result.success()
 
         runCatching { service.port.wakeSyncOnce(6000) }
+        runCatching { service.port.encryptionCatchupOnce() }
         runCatching { Notifier.showNewEventNotifications(applicationContext, service) }
 
         Result.success()

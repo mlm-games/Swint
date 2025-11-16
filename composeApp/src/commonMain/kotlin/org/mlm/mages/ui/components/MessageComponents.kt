@@ -161,16 +161,6 @@ fun MessageBubble(
                         )
                     }
                 }
-
-                // Timestamp
-                Text(
-                    text = formatTime(timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (isMine)
-                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(top = 4.dp)
-                )
             }
         }
 
@@ -380,9 +370,9 @@ fun MessageStatusLine(text: String, isMine: Boolean) {
 @Composable
 fun SeenByChip(names: List<String>) {
     if (names.isEmpty()) return
-    val label = when {
-        names.size == 1 -> "Seen by ${names[0]}"
-        names.size == 2 -> "Seen by ${names[0]} and ${names[1]}"
+    val label = when (names.size) {
+        1 -> "Seen by ${names[0]}"
+        2 -> "Seen by ${names[0]} and ${names[1]}"
         else -> "Seen by ${names[0]}, ${names[1]} +${names.size - 2}"
     }
     Row(

@@ -467,6 +467,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 hasMention = it.hasMention,
             )
         }
+
+    override suspend fun encryptionCatchupOnce(): Boolean = client.encryptionCatchupOnce()
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

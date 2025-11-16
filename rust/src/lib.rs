@@ -366,6 +366,7 @@ pub struct Client {
     typing_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     connection_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     inbox_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    receipts_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone, Enum)]
@@ -447,6 +448,7 @@ impl Client {
             typing_subs: Mutex::new(HashMap::new()),
             connection_subs: Mutex::new(HashMap::new()),
             inbox_subs: Mutex::new(HashMap::new()),
+            receipts_subs: Mutex::new(HashMap::new()),
         };
 
         if !this.init_caches() {
@@ -457,36 +459,19 @@ impl Client {
             let client = this.inner.clone();
             let svc_slot = this.sync_service.clone();
             let h = RT.spawn(async move {
+                // Wait until we have a session
                 loop {
                     if client.user_id().is_some() {
                         break;
                     }
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
                 let service = SyncService::builder(client.clone())
                     .build()
                     .await
                     .expect("SyncService");
-                {
-                    let mut g = svc_slot.lock().unwrap();
-                    // g.replace(service.clone());
-                }
-                loop {
-                    if let Some(permit) = service.try_get_encryption_sync_permit() {
-                        match EncryptionSyncService::new(client.clone(), None, WithLocking::Yes)
-                            .await
-                        {
-                            Ok(enc) => {
-                                let _ = enc.run_fixed_iterations(200, permit).await;
-                            }
-                            Err(_) => {
-                                tokio::time::sleep(Duration::from_secs(3)).await;
-                            }
-                        }
-                    } else {
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                    }
-                }
+                let mut g = svc_slot.lock().unwrap();
+                g.replace(Arc::new(service));
             });
             this.guards.lock().unwrap().push(h);
         }
@@ -1357,12 +1342,17 @@ impl Client {
                 let _ = std::panic::catch_unwind(AssertUnwindSafe(|| obs.on_changed()));
             }
         });
-        self.typing_subs.lock().unwrap().insert(id, h);
+        self.receipts_subs.lock().unwrap().insert(id, h);
         id
     }
 
     pub fn unobserve_receipts(&self, sub_id: u64) -> bool {
-        self.unobserve_typing(sub_id)
+        if let Some(h) = self.receipts_subs.lock().unwrap().remove(&sub_id) {
+            h.abort();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn dm_peer_user_id(&self, room_id: String) -> Option<String> {
@@ -1561,71 +1551,32 @@ impl Client {
     }
 
     pub fn start_supervised_sync(&self, observer: Box<dyn SyncObserver>) {
-        let client = self.inner.clone();
         let obs: Arc<dyn SyncObserver> = Arc::from(observer);
-
+        let svc_slot = self.sync_service.clone();
         let h = RT.spawn(async move {
-            use rand::Rng;
             use std::time::Duration;
-
-            let mut backoff_secs: u64 = 1;
-            let max_backoff: u64 = 60;
-            let mut consecutive_failures: u32 = 0;
-
             obs.on_state(SyncStatus {
                 phase: SyncPhase::Idle,
                 message: None,
             });
-
-            loop {
-                obs.on_state(SyncStatus {
-                    phase: SyncPhase::Running,
-                    message: None,
-                });
-
-                match client.sync_once(SyncSettings::default()).await {
-                    Ok(_) => {
-                        consecutive_failures = 0;
-                        backoff_secs = 1;
-                        continue;
-                    }
-                    Err(e) => {
-                        consecutive_failures += 1;
-                        let msg = e.to_string();
-
-                        if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
-                            obs.on_state(SyncStatus {
-                                phase: SyncPhase::Error,
-                                message: Some(format!(
-                                    "Connection lost after {} attempts. Restart app to retry.",
-                                    consecutive_failures
-                                )),
-                            });
-                            break;
-                        }
-
-                        obs.on_state(SyncStatus {
-                            phase: SyncPhase::Error,
-                            message: Some(msg.clone()),
-                        });
-
-                        let jitter = rand::rng().random_range(0.8f64..1.2f64);
-                        let wait = (backoff_secs as f64 * jitter).round() as u64;
-                        obs.on_state(SyncStatus {
-                            phase: SyncPhase::BackingOff,
-                            message: Some(format!(
-                                "retrying in {}s (attempt {})",
-                                wait, consecutive_failures
-                            )),
-                        });
-
-                        tokio::time::sleep(Duration::from_secs(wait)).await;
-                        backoff_secs = (backoff_secs * 2).min(max_backoff);
-                    }
+            // Wait up to ~10s (session restore path)
+            let mut svc_opt = None;
+            for _ in 0..40 {
+                svc_opt = { svc_slot.lock().unwrap().as_ref().cloned() };
+                if svc_opt.is_some() {
+                    break;
                 }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            if let Some(svc) = svc_opt {
+                let _ = svc.start().await;
+            } else {
+                obs.on_state(SyncStatus {
+                    phase: SyncPhase::Error,
+                    message: Some("SyncService not ready".into()),
+                });
             }
         });
-
         self.guards.lock().unwrap().push(h);
     }
 
@@ -2330,6 +2281,23 @@ impl Client {
                     .is_ok()
             } else {
                 false
+            }
+        })
+    }
+
+    /// Run a short encryption sync if a permit is available (used on push).
+    pub fn encryption_catchup_once(&self) -> bool {
+        RT.block_on(async {
+            let svc_opt = { self.sync_service.lock().unwrap().as_ref().cloned() };
+            let Some(svc) = svc_opt else {
+                return false;
+            };
+            let Some(permit) = svc.try_get_encryption_sync_permit() else {
+                return false;
+            };
+            match EncryptionSyncService::new(self.inner.clone(), None, WithLocking::Yes).await {
+                Ok(enc) => enc.run_fixed_iterations(100, permit).await.is_ok(),
+                Err(_) => false,
             }
         })
     }
