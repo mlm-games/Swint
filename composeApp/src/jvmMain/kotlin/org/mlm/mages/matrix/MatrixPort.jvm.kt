@@ -34,7 +34,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         synchronized(clientLock) {
             client.let { c ->
                 runCatching { c.shutdown() }
-                runCatching { c.close() }              // key: avoid Cleaner path
+                runCatching { c.close() }  // key: avoid Cleaner path
             }
         }
     }
@@ -410,6 +410,12 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return runCatching { client.downloadToPath(mxcUri, savePath, cb).path }
     }
     override suspend fun recoverWithKey(recoveryKey: String): Boolean = client.recoverWithKey(recoveryKey)
+    override suspend fun registerUnifiedPush(appId: String, pushKey: String, gatewayUrl: String, deviceName: String, lang: String, profileTag: String?): Boolean =
+        client.registerUnifiedpush(appId, pushKey, gatewayUrl, deviceName, lang, profileTag)
+    override suspend fun unregisterUnifiedPush(appId: String, pushKey: String): Boolean =
+        client.unregisterUnifiedpush(appId, pushKey)
+    override suspend fun wakeSyncOnce(timeoutMs: Int): Boolean =
+        client.wakeSyncOnce(timeoutMs.toUInt())
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

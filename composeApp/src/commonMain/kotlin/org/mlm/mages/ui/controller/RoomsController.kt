@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.*
 import org.mlm.mages.MatrixService
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.MatrixPort
+import org.mlm.mages.platform.Notifier
 import org.mlm.mages.storage.loadLong
 import org.mlm.mages.storage.saveLong
 import org.mlm.mages.ui.RoomsUiState
@@ -32,7 +33,6 @@ class RoomsController(
         observeConnection()
         observeSends()
         refreshRooms()
-        startSync()
     }
 
     private fun observeConnection() {
@@ -50,28 +50,6 @@ class RoomsController(
         })
     }
 
-    private fun startSync() {
-        if (syncStarted) return
-        syncStarted = true
-        service.startSupervisedSync(object : MatrixPort.SyncObserver {
-            override fun onState(status: MatrixPort.SyncStatus) {
-                val banner = when (status.phase) {
-                    MatrixPort.SyncPhase.BackingOff -> status.message ?: "Reconnecting…"
-                    MatrixPort.SyncPhase.Error -> status.message ?: "Sync error"
-                    else -> null
-                }
-                _state.update { it.copy(syncBanner = banner) }
-
-                if (status.phase == MatrixPort.SyncPhase.Running) {
-                    val now = service.nowMs()
-                    if (now - lastHeartbeatRefreshMs > 10_000) {
-                        lastHeartbeatRefreshMs = now
-                        refreshActivityLight()
-                    }
-                }
-            }
-        })
-    }
 
     private fun refreshActivityLight() {
         val rooms = _state.value.rooms
@@ -155,6 +133,32 @@ class RoomsController(
                     lastActivity = lastActivityMap,
                     isBusy = false
                 )
+            }
+
+            runCatching {
+                val me = service.port.whoami()
+                for (room in rooms) {
+                    val prevTs = cachedActivity[room.id] ?: 0L
+                    val newTs = lastActivityMap[room.id] ?: 0L
+                    val unread = unreadMap[room.id] ?: 0
+                    if (newTs > prevTs && unread > 0) {
+                        // Build a short preview from recent messages newer than lastRead
+                        val recent = runCatching { service.loadRecent(room.id, 20) }.getOrDefault(emptyList())
+                        val lastRead = runCatching { loadLong(dataStore, key(room.id)) }.getOrNull() ?: 0L
+                        val previewLines = recent
+                            .filter { it.timestamp > lastRead && it.sender != me }
+                            .takeLast(3)
+                            .joinToString("\n") { e ->
+                                val who = e.sender.substringBefore(':', e.sender)
+                                "$who: ${e.body.take(120)}"
+                            }
+                        if (previewLines.isNotBlank()) {
+                            Notifier.notifyRoom(room.name, previewLines)
+                        }
+                    }
+                }
+            }.onFailure {
+            // silence.
             }
 
             val missing = rooms.filter { it.id !in cachedActivity }

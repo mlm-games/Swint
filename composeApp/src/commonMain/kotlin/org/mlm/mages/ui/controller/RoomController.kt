@@ -35,9 +35,6 @@ class RoomController(
 
 
     init {
-        service.startSupervisedSync(object : org.mlm.mages.matrix.MatrixPort.SyncObserver {
-            override fun onState(status: org.mlm.mages.matrix.MatrixPort.SyncStatus) { /* no-op */ }
-        })
         scope.launch {
             val ts = runCatching { loadLong(dataStore, key(_state.value.roomId)) }.getOrNull()
             _state.update { it.copy(lastReadTs = ts) }

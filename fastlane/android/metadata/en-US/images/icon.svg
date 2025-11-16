@@ -71,16 +71,6 @@
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1">
-    <path
-       style="font-variation-settings:'opsz' 32;opacity:0.953035;fill:#a5d1f6;fill-opacity:1;stroke:#666666;stroke-width:2.09803;stroke-linecap:round;stroke-linejoin:round;paint-order:fill markers stroke"
-       d="m 81.644463,52.549091 c 0,0 9.790502,-17.291068 5.474325,-20.897634 -4.316177,-3.606565 -19.151754,8.892761 -19.151754,8.892761 z"
-       id="path3"
-       sodipodi:nodetypes="cscc" />
-    <path
-       style="font-variation-settings:'opsz' 32;opacity:0.953035;fill:#a5d1f6;fill-opacity:1;stroke:#666666;stroke-width:2.09803;stroke-linecap:round;stroke-linejoin:round;paint-order:fill markers stroke"
-       d="m 40.506583,73.249832 c 0,0 -9.790502,17.291068 -5.474325,20.897634 4.316177,3.606565 19.151754,-8.892761 19.151754,-8.892761 z"
-       id="path2"
-       sodipodi:nodetypes="cscc" />
     <rect
        style="font-variation-settings:'opsz' 32;opacity:0.953035;fill:url(#radialGradient11);fill-opacity:1;stroke:#666666;stroke-width:2.89119;stroke-linecap:round;stroke-linejoin:round;paint-order:fill markers stroke"
        id="rect9"
@@ -90,6 +80,16 @@
        y="-126.55441"
        ry="7.7219753"
        transform="rotate(90)" />
+    <path
+       style="font-variation-settings:'opsz' 32;opacity:0.953035;fill:#a5d1f6;fill-opacity:1;stroke:#666666;stroke-width:2.09803;stroke-linecap:round;stroke-linejoin:round;paint-order:fill markers stroke"
+       d="m 82.593772,58.908538 c 0,0 9.790502,-17.291068 5.474325,-20.897634 -4.316177,-3.606565 -19.151754,8.892761 -19.151754,8.892761 z"
+       id="path3"
+       sodipodi:nodetypes="cscc" />
+    <path
+       style="font-variation-settings:'opsz' 32;opacity:0.953035;fill:#a5d1f6;fill-opacity:1;stroke:#666666;stroke-width:2.09803;stroke-linecap:round;stroke-linejoin:round;paint-order:fill markers stroke"
+       d="m 46.506583,69.249832 c 0,0 -9.790502,17.291068 -5.474325,20.897634 4.316177,3.606565 19.151754,-8.892761 19.151754,-8.892761 z"
+       id="path2"
+       sodipodi:nodetypes="cscc" />
     <path
        id="rect5"
        style="font-variation-settings:'opsz' 32;opacity:0.953035;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:2.8658;stroke-linecap:round;stroke-linejoin:round;paint-order:fill markers stroke"

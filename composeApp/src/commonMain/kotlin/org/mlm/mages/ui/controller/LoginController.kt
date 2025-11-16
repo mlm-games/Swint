@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.mlm.mages.MatrixService
 import org.mlm.mages.ui.LoginUiState
+import kotlin.time.ExperimentalTime
 
 class LoginController(
     private val service: MatrixService,
@@ -28,9 +29,6 @@ class LoginController(
             runCatching { service.init(_state.value.homeserver) }
             if (service.isLoggedIn()) {
                 service.startSendWorker()
-                service.startSupervisedSync(object : org.mlm.mages.matrix.MatrixPort.SyncObserver {
-                    override fun onState(status: org.mlm.mages.matrix.MatrixPort.SyncStatus) {}
-                })
                 withContext(Dispatchers.Main) { onLoggedIn() }
             }
         }
@@ -40,6 +38,7 @@ class LoginController(
     fun setUser(v: String) { _state.update { it.copy(user = v) } }
     fun setPass(v: String) { _state.update { it.copy(pass = v) } }
 
+    @OptIn(ExperimentalTime::class)
     fun submit() {
         val s = _state.value
         if (s.isBusy || s.user.isBlank() || s.pass.isBlank()) return
@@ -49,8 +48,12 @@ class LoginController(
                 service.init(s.homeserver)
                 service.login(s.user, s.pass, "Mages")
             }.onSuccess {
-//                service.startSync()
-                service.startSendWorker()   // start the background send worker
+                // Persist HS for receivers/services
+                withContext(Dispatchers.Default) {
+                    org.mlm.mages.storage.saveString(dataStore, "homeserver", _state.value.homeserver)
+                    org.mlm.mages.storage.saveLong(dataStore, "notif:baseline_ms", kotlin.time.Clock.System.now().toEpochMilliseconds())
+                }
+                service.startSendWorker()
                 _state.update { it.copy(isBusy = false) }
                 withContext(Dispatchers.Main) { onLoggedIn() }
             }.onFailure { t ->

@@ -8,11 +8,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
+import androidx.compose.runtime.remember
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import org.mlm.mages.matrix.MatrixProvider
 import org.mlm.mages.platform.MagesPaths
+import org.mlm.mages.push.PREF_INSTANCE
 import org.mlm.mages.storage.provideAppDataStore
+import org.mlm.mages.push.PushManager
+import org.unifiedpush.android.connector.UnifiedPush
 
 class MainActivity : ComponentActivity() {
     private val deepLinkRoomIds = MutableSharedFlow<String>(extraBufferCapacity = 1)
@@ -27,9 +33,27 @@ class MainActivity : ComponentActivity() {
 
         handleIntent(intent)
         MagesPaths.init(this)
-        setContent {
-            App(dataStore = dataStore, deepLinks = deepLinks)
+
+
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
+
+        val saved = UnifiedPush.getSavedDistributor(this)
+        if (saved.isNullOrBlank()) {
+            // Use your helper UI to let user pick a distributor and then register
+            PushManager.registerWithDialog(this, PREF_INSTANCE)
+        } else {
+            // We have a distributor, request an endpoint
+            UnifiedPush.register(this, PREF_INSTANCE)
+        }
+
+        setContent {
+            val service = remember { MatrixProvider.get(this) }
+            App(dataStore = dataStore, service = service, deepLinks = deepLinks)
+        }
+
     }
 
     override fun onNewIntent(intent: Intent) {

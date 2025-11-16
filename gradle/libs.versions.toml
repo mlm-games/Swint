@@ -3,6 +3,9 @@ agp = "8.13.1"
 android-compileSdk = "36"
 android-minSdk = "24"
 android-targetSdk = "36"
+connector = "3.1.2"
+up-fcm = "3.0.0"
+up-ui = "1.1.0"
 androidx-activity = "1.11.0"
 androidx-appcompat = "1.7.1"
 androidx-core = "1.17.0"
@@ -19,10 +22,15 @@ materialIconsExtended = "1.7.3"
 okio = "3.16.2"
 serialization = "1.9.0"
 coroutines = "1.10.2"
+workRuntimeKtx = "2.11.0"
 
 [libraries]
 androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferencesCore" }
 androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
+androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "workRuntimeKtx" }
+connector = { module = "org.unifiedpush.android:connector", version.ref = "connector" }
+connector-ui = { module = "org.unifiedpush.android:connector-ui", version.ref = "up-ui" }
+embedded-fcm-distributor = { module = "org.unifiedpush.android:embedded-fcm-distributor", version.ref = "up-fcm" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 junit = { module = "junit:junit", version.ref = "junit" }

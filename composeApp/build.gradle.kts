@@ -27,6 +27,11 @@ kotlin {
             implementation(libs.androidx.activity.compose)
             implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
             implementation(libs.okio)
+            implementation(libs.connector)
+            implementation(libs.connector.ui)
+            implementation(libs.embedded.fcm.distributor)
+            implementation(libs.androidx.core.ktx)
+            implementation(libs.androidx.work.runtime.ktx)
         }
         commonMain.dependencies {
             implementation(compose.runtime)
@@ -48,6 +53,8 @@ kotlin {
             implementation(libs.net.jna)
             implementation(libs.okio)
             implementation(libs.kotlinx.coroutines.swing)
+            implementation("com.github.hypfvieh:dbus-java-core:5.1.1")
+            implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.1.1")
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

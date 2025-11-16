@@ -13,13 +13,12 @@ import org.mlm.mages.ui.screens.*
 @Composable
 fun App(
     dataStore: DataStore<Preferences>,
+    service: MatrixService,
     deepLinks: Flow<String>? = null
 ) {
     MainTheme {
         val nav = rememberNavigator(initial = Route.Login)
         BindDeepLinks(nav, deepLinks)
-
-        val service = remember { MatrixService(port = org.mlm.mages.matrix.createMatrixPort("https://matrix.org")) }
 
         BindLifecycle(service)
 
@@ -44,7 +43,7 @@ fun App(
             Route.Rooms -> {
                 val controller = remember {
                     RoomsController(
-                        service = service,
+                        service,
                         dataStore = dataStore,
                         onOpenRoom = { room -> nav.push(Route.Room(room.id, room.name)) }
                     )
@@ -83,7 +82,7 @@ fun App(
                 var selectedTab by remember { mutableIntStateOf(0) }
                 val controller = remember {
                     SecurityController(
-                        service = service,
+                        service,
                         onOpenMediaCache = { nav.push(Route.MediaCache) },
                     )
                 }

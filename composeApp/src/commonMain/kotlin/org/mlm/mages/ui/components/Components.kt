@@ -160,41 +160,96 @@ fun MarkdownText(
     text: String,
     color: Color = MaterialTheme.colorScheme.onSurface
 ) {
-    val styled = remember(text) { parseMarkdown(text) }
+    val styled = remember(text) { parseMarkdownSafe(text) }
     Text(styled, color = color, style = MaterialTheme.typography.bodyMedium)
 }
 
-private fun parseMarkdown(input: String): AnnotatedString {
-    val bold = Regex("\\*\\*(.+?)\\*\\*")
-    val italic = Regex("\\*(.+?)\\*")
-    val code = Regex("`([^`]+)`")
-    val link = Regex("(https?://\\S+)")
+private fun parseMarkdownSafe(input: String): AnnotatedString {
+    val boldStyle = SpanStyle(fontWeight = FontWeight.Bold)
+    val italicStyle = SpanStyle(fontStyle = FontStyle.Italic)
+    val codeStyle = SpanStyle(background = Color(0x33FFFFFF))
+    val linkStyle = SpanStyle(color = Color(0xFF7E57C2), textDecoration = TextDecoration.Underline)
 
-    var text = input
-    val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
+    val out = StringBuilder(input.length)
+    data class Range(val start: Int, val end: Int, val style: SpanStyle)
+    val spans = mutableListOf<Range>()
 
-    fun apply(regex: Regex, styleFor: (MatchResult) -> SpanStyle, strip: (String) -> String = { it }) {
-        regex.findAll(text).forEach { m ->
-            val full = m.value
-            val inner = m.groupValues[1]
-            val start = text.indexOf(full)
-            if (start >= 0) {
-                val end = start + inner.length
-                spans += (start until end) to styleFor(m)
-                text = text.replaceRange(start, start + full.length, strip(inner))
+    var i = 0
+    var boldStart = -1
+    var italicStart = -1
+    var codeStart = -1
+
+    fun startsWith(token: String) = input.regionMatches(i, token, 0, token.length)
+    fun isLinkChar(c: Char) = !c.isWhitespace()
+
+    while (i < input.length) {
+        when {
+            // inline code `
+            input[i] == '`' -> {
+                if (codeStart >= 0) {
+                    val start = codeStart
+                    val end = out.length
+                    if (end > start) spans += Range(start, end, codeStyle)
+                    codeStart = -1
+                } else {
+                    codeStart = out.length
+                }
+                i += 1 // consume `
+            }
+
+            // bold ** .. **
+            startsWith("**") -> {
+                if (boldStart >= 0) {
+                    val start = boldStart
+                    val end = out.length
+                    if (end > start) spans += Range(start, end, boldStyle)
+                    boldStart = -1
+                } else {
+                    boldStart = out.length
+                }
+                i += 2 // consume **
+            }
+
+            // italic * .. * (ignore if currently in bold opener like *** – kept simple)
+            input[i] == '*' -> {
+                if (italicStart >= 0) {
+                    val start = italicStart
+                    val end = out.length
+                    if (end > start) spans += Range(start, end, italicStyle)
+                    italicStart = -1
+                } else {
+                    italicStart = out.length
+                }
+                i += 1 // consume *
+            }
+
+            // bare links http(s)://...
+            startsWith("http://") || startsWith("https://") -> {
+                val start = out.length
+                val j0 = i
+                var j = i
+                while (j < input.length && isLinkChar(input[j])) j++
+                out.append(input, j0, j)
+                val end = out.length
+                if (end > start) spans += Range(start, end, linkStyle)
+                i = j
+            }
+
+            else -> {
+                // regular char
+                out.append(input[i])
+                i += 1
             }
         }
     }
 
-    apply(bold, { SpanStyle(fontWeight = FontWeight.Bold) })
-    apply(italic, { SpanStyle(fontStyle = FontStyle.Italic) })
-    apply(code, { SpanStyle(background = Color(0x33FFFFFF)) })
-    apply(link, { SpanStyle(color = Color.Magenta, textDecoration = TextDecoration.Underline) })
-
     return buildAnnotatedString {
-        append(text)
-        spans.forEach { (range, style) ->
-            addStyle(style, range.first, range.last + 1)
+        append(out.toString())
+        val textLen = out.length
+        for (r in spans) {
+            val s = r.start.coerceIn(0, textLen)
+            val e = r.end.coerceIn(s, textLen)
+            if (e > s) addStyle(r.style, s, e)
         }
     }
 }

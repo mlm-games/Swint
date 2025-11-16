@@ -10,6 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
+use uniffi::{Enum, Record};
 
 use futures_util::{StreamExt, TryStreamExt};
 use thiserror::Error;
@@ -19,7 +20,12 @@ use matrix_sdk::{
     authentication::matrix::MatrixSession,
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
-    ruma::{OwnedMxcUri, events::room::MediaSource},
+    ruma::{
+        OwnedMxcUri,
+        api::client::push::{Pusher, PusherIds, PusherInit, PusherKind},
+        events::room::MediaSource,
+        push::HttpPusherData,
+    },
 };
 use matrix_sdk::{
     encryption::BackupDownloadStrategy,
@@ -70,13 +76,13 @@ const SEND_MAX_ATTEMPTS: i64 = 10;
 const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 20;
 
 // Types exposed to Kotlin
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct RoomSummary {
     pub id: String,
     pub name: String,
 }
 
-#[derive(Clone, Copy, uniffi::Enum)]
+#[derive(Clone, Copy, Enum)]
 pub enum ConnectionState {
     Disconnected,
     Connecting,
@@ -90,7 +96,7 @@ pub trait ConnectionObserver: Send + Sync {
     fn on_connection_change(&self, state: ConnectionState);
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct MessageEvent {
     pub item_id: String,
     pub event_id: String,
@@ -100,7 +106,7 @@ pub struct MessageEvent {
     pub timestamp_ms: u64,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct DeviceSummary {
     pub device_id: String,
     pub display_name: String,
@@ -109,7 +115,7 @@ pub struct DeviceSummary {
     pub locally_trusted: bool,
 }
 
-#[derive(Clone, uniffi::Enum)]
+#[derive(Clone, Enum)]
 pub enum SyncPhase {
     Idle,
     Running,
@@ -117,7 +123,7 @@ pub enum SyncPhase {
     Error,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct SyncStatus {
     pub phase: SyncPhase,
     pub message: Option<String>,
@@ -138,7 +144,7 @@ pub trait ReceiptsObserver: Send + Sync {
     fn on_changed(&self);
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct CallInvite {
     pub room_id: String,
     pub sender: String,
@@ -157,13 +163,13 @@ pub trait ProgressObserver: Send + Sync {
     fn on_progress(&self, sent: u64, total: Option<u64>);
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct DownloadResult {
     pub path: String,
     pub bytes: u64,
 }
 
-#[derive(Clone, uniffi::Enum)]
+#[derive(Clone, Enum)]
 pub enum SasPhase {
     Requested,
     Ready,
@@ -174,7 +180,7 @@ pub enum SasPhase {
     Done,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct SasEmojis {
     pub flow_id: String,
     pub other_user: String,
@@ -195,7 +201,7 @@ pub trait VerificationInboxObserver: Send + Sync {
     fn on_error(&self, message: String);
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct MediaCacheStats {
     pub bytes: u64,
     pub files: u64,
@@ -300,7 +306,7 @@ impl From<std::io::Error> for FfiError {
     }
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct PaginationState {
     pub room_id: String,
     pub prev_batch: Option<String>,
@@ -335,7 +341,7 @@ pub struct Client {
     inbox_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
-#[derive(Clone, uniffi::Enum)]
+#[derive(Clone, Enum)]
 pub enum SendState {
     Enqueued,
     Sending,
@@ -344,7 +350,7 @@ pub enum SendState {
     Failed,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct SendUpdate {
     pub room_id: String,
     pub txn_id: String,
@@ -2089,6 +2095,47 @@ impl Client {
             },
         )
         .ok()
+    }
+    /// Register/Update HTTP pusher for UnifiedPush/Matrix gateway (e.g. ntfy)
+    pub fn register_unifiedpush(
+        &self,
+        app_id: String,
+        pushkey: String,
+        gateway_url: String,
+        device_display_name: String,
+        lang: String,
+        profile_tag: Option<String>,
+    ) -> bool {
+        RT.block_on(async {
+            let init = PusherInit {
+                ids: PusherIds::new(app_id.into(), pushkey.into()),
+                kind: PusherKind::Http(HttpPusherData::new(gateway_url.into())),
+                app_display_name: "Mages".into(),
+                device_display_name,
+                profile_tag,
+                lang,
+            };
+            let pusher: Pusher = init.into();
+            self.inner.pusher().set(pusher).await.is_ok()
+        })
+    }
+
+    /// Unregister HTTP pusher by ids
+    pub fn unregister_unifiedpush(&self, app_id: String, pushkey: String) -> bool {
+        RT.block_on(async {
+            let ids = PusherIds::new(app_id.into(), pushkey.into());
+            self.inner.pusher().delete(ids).await.is_ok()
+        })
+    }
+
+    /// One-shot sync used when a push arrives; small timeout and no backoff
+    pub fn wake_sync_once(&self, timeout_ms: u32) -> bool {
+        RT.block_on(async {
+            use std::time::Duration;
+            let settings =
+                SyncSettings::default().timeout(Duration::from_millis(timeout_ms as u64));
+            self.inner.sync_once(settings).await.is_ok()
+        })
     }
 }
 

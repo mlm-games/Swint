@@ -178,6 +178,9 @@ interface MatrixPort {
     interface CallObserver { fun onInvite(invite: CallInvite) }
     fun startCallInbox(observer: CallObserver): ULong
     fun stopCallInbox(token: ULong)
+    suspend fun registerUnifiedPush(appId: String, pushKey: String, gatewayUrl: String, deviceName: String, lang: String, profileTag: String? = null): Boolean
+    suspend fun unregisterUnifiedPush(appId: String, pushKey: String): Boolean
+    suspend fun wakeSyncOnce(timeoutMs: Int = 2500): Boolean
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort
