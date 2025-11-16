@@ -58,6 +58,9 @@ use matrix_sdk::{
 use matrix_sdk_ui::{
     encryption_sync_service::{EncryptionSyncService, WithLocking},
     eyeball_im::VectorDiff,
+    notification_client::{
+        NotificationClient, NotificationEvent, NotificationProcessSetup, NotificationStatus,
+    },
     sync_service::SyncService,
     timeline::{
         EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
@@ -167,6 +170,30 @@ pub trait ProgressObserver: Send + Sync {
 pub struct DownloadResult {
     pub path: String,
     pub bytes: u64,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct RenderedNotification {
+    pub room_id: String,
+    pub event_id: String,
+    pub room_name: String,
+    pub sender: String,
+    pub body: String,
+    pub is_noisy: bool,
+    pub has_mention: bool,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct UnreadStats {
+    pub messages: u64,
+    pub notifications: u64,
+    pub mentions: u64,
+}
+
+#[derive(uniffi::Record, Clone)]
+pub struct OwnReceipt {
+    pub event_id: Option<String>,
+    pub ts_ms: Option<u64>,
 }
 
 #[derive(Clone, Enum)]
@@ -2135,6 +2162,175 @@ impl Client {
             let settings =
                 SyncSettings::default().timeout(Duration::from_millis(timeout_ms as u64));
             self.inner.sync_once(settings).await.is_ok()
+        })
+    }
+
+    pub fn render_notification(
+        &self,
+        room_id: String,
+        event_id: String,
+    ) -> Result<Option<RenderedNotification>, FfiError> {
+        RT.block_on(async {
+            let rid = ruma::OwnedRoomId::try_from(room_id.clone())
+                .map_err(|_| FfiError::Msg("bad room_id".into()))?;
+            let eid = ruma::OwnedEventId::try_from(event_id.clone())
+                .map_err(|_| FfiError::Msg("bad event_id".into()))?;
+
+            // We prefer SingleProcess on Android
+            let sync = {
+                let g = self.sync_service.lock().unwrap();
+                g.as_ref()
+                    .cloned()
+                    .ok_or_else(|| FfiError::Msg("SyncService not ready".into()))?
+            };
+
+            let nc = NotificationClient::new(
+                self.inner.clone(),
+                NotificationProcessSetup::SingleProcess { sync_service: sync },
+            )
+            .await
+            .map_err(|e| FfiError::Msg(format!("notif client: {e}")))?;
+
+            match nc.get_notification(&rid, &eid).await {
+                Ok(NotificationStatus::Event(item)) => {
+                    // Title
+                    let room_name = item.room_computed_display_name.clone();
+
+                    // Sender + fallback body (for regular messages)
+                    let mut sender = item
+                        .sender_display_name
+                        .clone()
+                        .unwrap_or_else(|| item.event.sender().localpart().to_string());
+                    let mut body = String::from("New event");
+                    if let NotificationEvent::Timeline(ev) = &item.event {
+                        if let ruma::events::AnySyncTimelineEvent::MessageLike(
+                            ruma::events::AnySyncMessageLikeEvent::RoomMessage(m),
+                        ) = ev.as_ref()
+                        {
+                            if let Some(orig) = m.as_original() {
+                                sender = item
+                                    .sender_display_name
+                                    .clone()
+                                    .unwrap_or_else(|| orig.sender.localpart().to_string());
+                                // Use plain/fallback text
+                                body = orig.content.body().to_string();
+                            }
+                        }
+                    }
+
+                    Ok(Some(RenderedNotification {
+                        room_id: rid.to_string(),
+                        event_id: eid.to_string(),
+                        room_name,
+                        sender,
+                        body,
+                        is_noisy: item.is_noisy.unwrap_or(false),
+                        has_mention: item.has_mention.unwrap_or(false),
+                    }))
+                }
+                Ok(NotificationStatus::EventFilteredOut) => Ok(None),
+                Ok(NotificationStatus::EventNotFound) => Ok(None),
+                Err(e) => Err(FfiError::Msg(format!("notif fetch: {e}"))),
+            }
+        })
+    }
+
+    pub fn room_unread_stats(&self, room_id: String) -> Option<UnreadStats> {
+        RT.block_on(async {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+            Some(UnreadStats {
+                messages: room.num_unread_messages(),
+                notifications: room.num_unread_notifications(),
+                mentions: room.num_unread_mentions(),
+            })
+        })
+    }
+
+    pub fn own_last_read(&self, room_id: String) -> OwnReceipt {
+        RT.block_on(async {
+            use matrix_sdk_ui::timeline::Timeline;
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id.clone()) else {
+                return OwnReceipt {
+                    event_id: None,
+                    ts_ms: None,
+                };
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return OwnReceipt {
+                    event_id: None,
+                    ts_ms: None,
+                };
+            };
+            let Ok(tl) = room.timeline().await else {
+                return OwnReceipt {
+                    event_id: None,
+                    ts_ms: None,
+                };
+            };
+            let me = self.inner.user_id().to_owned().unwrap();
+            let eid = tl.latest_user_read_receipt_timeline_event_id(me).await;
+            // Try to map to a timestamp if the event is currently known to timeline
+            let ts = if let Some(ref e) = eid {
+                let items = tl.items().await;
+                items.iter().find_map(|it| {
+                    it.as_event()
+                        .and_then(|ev| ev.event_id().map(|id| (id == e)))
+                        .and_then(|eq| if eq { Some(()) } else { None })
+                        .and_then(|_| it.as_event().map(|ev| ev.timestamp().0.into()))
+                })
+            } else {
+                None
+            };
+            OwnReceipt {
+                event_id: eid.map(|e| e.to_string()),
+                ts_ms: ts,
+            }
+        })
+    }
+
+    pub fn observe_own_receipt(&self, room_id: String, observer: Box<dyn ReceiptsObserver>) -> u64 {
+        // Reuse the existing callback interface to notify "changed";
+        // when it fires, Kotlin can call own_last_read() to pull details.
+        let client = self.inner.clone();
+        let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+            return 0;
+        };
+        let obs: Arc<dyn ReceiptsObserver> = Arc::from(observer);
+        let id = self.next_sub_id();
+
+        let h = RT.spawn(async move {
+            let stream =
+                client.observe_room_events::<SyncReceiptEvent, matrix_sdk::room::Room>(&rid);
+            let mut sub = stream.subscribe();
+            while let Some((_ev, _room)) = sub.next().await {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| obs.on_changed()));
+            }
+        });
+        self.connection_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn mark_fully_read_at(&self, room_id: String, event_id: String) -> bool {
+        RT.block_on(async {
+            use ReceiptThread;
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let Ok(eid) = ruma::OwnedEventId::try_from(event_id) else {
+                return false;
+            };
+            if let Some(room) = self.inner.get_room(&rid) {
+                room.send_single_receipt(ReceiptType::FullyRead, ReceiptThread::Unthreaded, eid)
+                    .await
+                    .is_ok()
+            } else {
+                false
+            }
         })
     }
 }

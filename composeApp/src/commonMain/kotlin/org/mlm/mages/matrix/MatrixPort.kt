@@ -49,6 +49,10 @@ data class CallInvite(
     val tsMs: Long
 )
 
+data class RenderedNotification( val roomId: String, val eventId: String, val roomName: String, val sender: String, val body: String, val isNoisy: Boolean, val hasMention: Boolean )
+
+data class UnreadStats(val messages: Long, val notifications: Long, val mentions: Long)
+
 interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
@@ -181,6 +185,13 @@ interface MatrixPort {
     suspend fun registerUnifiedPush(appId: String, pushKey: String, gatewayUrl: String, deviceName: String, lang: String, profileTag: String? = null): Boolean
     suspend fun unregisterUnifiedPush(appId: String, pushKey: String): Boolean
     suspend fun wakeSyncOnce(timeoutMs: Int = 2500): Boolean
+
+    suspend fun roomUnreadStats(roomId: String): UnreadStats?
+    suspend fun ownLastRead(roomId: String): Pair<String?, Long?>
+    fun observeOwnReceipt(roomId: String, observer: ReceiptsObserver): ULong
+    suspend fun markFullyReadAt(roomId: String, eventId: String): Boolean
+
+    suspend fun renderNotification(roomId: String, eventId: String): RenderedNotification?
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

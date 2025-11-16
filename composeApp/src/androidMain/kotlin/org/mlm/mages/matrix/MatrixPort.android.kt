@@ -410,12 +410,63 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return runCatching { client.downloadToPath(mxcUri, savePath, cb).path }
     }
     override suspend fun recoverWithKey(recoveryKey: String): Boolean = client.recoverWithKey(recoveryKey)
-    override suspend fun registerUnifiedPush(appId: String, pushKey: String, gatewayUrl: String, deviceName: String, lang: String, profileTag: String?): Boolean =
-        client.registerUnifiedpush(appId, pushKey, gatewayUrl, deviceName, lang, profileTag)
-    override suspend fun unregisterUnifiedPush(appId: String, pushKey: String): Boolean =
-        client.unregisterUnifiedpush(appId, pushKey)
-    override suspend fun wakeSyncOnce(timeoutMs: Int): Boolean =
-        client.wakeSyncOnce(timeoutMs.toUInt())
+
+    override suspend fun registerUnifiedPush(
+        appId: String,
+        pushKey: String,
+        gatewayUrl: String,
+        deviceName: String,
+        lang: String,
+        profileTag: String?,
+    ): Boolean = client.registerUnifiedpush(appId, pushKey, gatewayUrl, deviceName, lang, profileTag)
+
+    override suspend fun unregisterUnifiedPush(
+        appId: String,
+        pushKey: String,
+    ): Boolean = client.unregisterUnifiedpush(appId, pushKey)
+
+    override suspend fun wakeSyncOnce(timeoutMs: Int): Boolean = client.wakeSyncOnce(timeoutMs.toUInt())
+
+    // Unread parity
+    override suspend fun roomUnreadStats(roomId: String): UnreadStats? =
+        client.roomUnreadStats(roomId)?.let { UnreadStats(it.messages.toLong(), it.notifications.toLong(), it.mentions.toLong()) }
+
+    override suspend fun ownLastRead(roomId: String): Pair<String?, Long?> =
+        client.ownLastRead(roomId).let { it.eventId to it.tsMs?.toLong() }
+
+    override fun observeOwnReceipt(
+        roomId: String,
+        observer: ReceiptsObserver,
+    ): ULong {
+        val cb =
+            object : mages.ReceiptsObserver {
+                override fun onChanged() {
+                    observer.onChanged()
+                }
+            }
+        return client.observeOwnReceipt(roomId, cb) // mapped in Rust to receipt stream
+    }
+
+    override suspend fun markFullyReadAt(
+        roomId: String,
+        eventId: String,
+    ): Boolean = client.markFullyReadAt(roomId, eventId)
+
+    override suspend fun renderNotification(
+        roomId: String,
+        eventId: String,
+    ): RenderedNotification? =
+        client.renderNotification(roomId, eventId)?.let {
+            RenderedNotification(
+                roomId = it.roomId,
+                eventId = it.eventId,
+                roomName = it.roomName,
+                sender = it.sender,
+                body = it.body,
+                isNoisy = it.isNoisy,
+                hasMention = it.hasMention,
+            )
+        }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

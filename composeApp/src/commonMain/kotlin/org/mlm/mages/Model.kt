@@ -17,9 +17,3 @@ data class MessageEvent(
     val body: String,
     val timestamp: Long
 )
-
-@Serializable
-data class RoomsPayload(val rooms: List<RoomSummary>)
-
-@Serializable
-data class EventsPayload(val events: List<MessageEvent>)
