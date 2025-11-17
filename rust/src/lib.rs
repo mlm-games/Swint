@@ -57,10 +57,11 @@ use matrix_sdk::{
 };
 use matrix_sdk_ui::{
     encryption_sync_service::{EncryptionSyncService, WithLocking},
-    eyeball_im::VectorDiff,
+    eyeball_im::{self, VectorDiff},
     notification_client::{
         NotificationClient, NotificationEvent, NotificationProcessSetup, NotificationStatus,
     },
+    room_list_service::{RoomList, filters},
     sync_service::{State, SyncService},
     timeline::{
         EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
@@ -76,7 +77,6 @@ uniffi::setup_scaffolding!();
 const BACKOFF_BASE_MS: u64 = 1_000;
 const BACKOFF_MAX_MS: u64 = 60_000;
 const SEND_MAX_ATTEMPTS: i64 = 10;
-const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 20;
 
 // Types exposed to Kotlin
 #[derive(Clone, Record)]
@@ -228,6 +228,20 @@ pub trait VerificationInboxObserver: Send + Sync {
     fn on_error(&self, message: String);
 }
 
+#[derive(Clone, uniffi::Record)]
+pub struct RoomListEntry {
+    pub room_id: String,
+    pub name: String,
+    pub unread: u64,
+    pub last_ts: u64,
+}
+
+#[uniffi::export(callback_interface)]
+pub trait RoomListObserver: Send + Sync {
+    fn on_reset(&self, items: Vec<RoomListEntry>);
+    fn on_update(&self, item: RoomListEntry);
+}
+
 #[derive(Clone, Record)]
 pub struct MediaCacheStats {
     pub bytes: u64,
@@ -244,18 +258,6 @@ fn ensure_dir(d: &PathBuf) {
 
 fn file_len(path: &std::path::Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-}
-
-fn cache_size_bytes(dir: &PathBuf) -> u64 {
-    if !dir.exists() {
-        return 0;
-    }
-    walkdir::WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| file_len(e.path()))
-        .sum()
 }
 
 // Runtime
@@ -281,10 +283,6 @@ struct SessionInfo {
     access_token: String,
     refresh_token: Option<String>,
     homeserver: String,
-}
-
-fn default_store_dir() -> PathBuf {
-    std::env::temp_dir().join("mages_store")
 }
 
 fn session_file(dir: &PathBuf) -> PathBuf {
@@ -2265,7 +2263,7 @@ impl Client {
                 let items = tl.items().await;
                 items.iter().find_map(|it| {
                     it.as_event()
-                        .and_then(|ev| ev.event_id().map(|id| (id == e)))
+                        .and_then(|ev| ev.event_id().map(|id| id == e))
                         .and_then(|eq| if eq { Some(()) } else { None })
                         .and_then(|_| it.as_event().map(|ev| ev.timestamp().0.into()))
                 })
@@ -2335,6 +2333,167 @@ impl Client {
                 Err(_) => false,
             }
         })
+    }
+
+    pub fn observe_room_list(&self, observer: Box<dyn RoomListObserver>) -> u64 {
+        use futures_util::StreamExt;
+        use std::panic::AssertUnwindSafe;
+
+        let obs: std::sync::Arc<dyn RoomListObserver> = std::sync::Arc::from(observer);
+        let svc_slot = self.sync_service.clone();
+        let id = self.next_sub_id();
+
+        let h = RT.spawn(async move {
+            let svc = loop {
+                if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
+                    break s;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            };
+
+            let rls = svc.room_list_service();
+            let all = match rls.all_rooms().await {
+                Ok(list) => list,
+                Err(_) => return,
+            };
+
+            let (stream, controller) = all.entries_with_dynamic_adapters(50);
+            tokio::pin!(stream);
+
+            controller.set_filter(Box::new(
+                matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
+            ));
+
+            while let Some(diffs) = stream.next().await {
+                for diff in diffs {
+                    match diff {
+                        VectorDiff::Reset { values } => {
+                            let snapshot: Vec<_> = values
+                                .iter()
+                                .map(|room| RoomListEntry {
+                                    room_id: room.room_id().to_string(),
+                                    name: room
+                                        .cached_display_name()
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| room.room_id().to_string()),
+                                    unread: room.unread_notification_counts().notification_count
+                                        as u64,
+                                    last_ts: 0,
+                                })
+                                .collect();
+
+                            let obs_clone = obs.clone();
+                            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                                obs_clone.on_reset(snapshot)
+                            }));
+                        }
+                        VectorDiff::Set { value, .. }
+                        | VectorDiff::Insert { value, .. }
+                        | VectorDiff::PushBack { value }
+                        | VectorDiff::PushFront { value } => {
+                            let entry = RoomListEntry {
+                                room_id: value.room_id().to_string(),
+                                name: value
+                                    .cached_display_name()
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| value.room_id().to_string()),
+                                unread: value.unread_notification_counts().notification_count
+                                    as u64,
+                                last_ts: 0,
+                            };
+
+                            let obs_clone = obs.clone();
+                            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                                obs_clone.on_update(entry)
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+
+        self.timeline_subs.lock().unwrap().insert(id, h);
+        id
+    }
+
+    pub fn unobserve_room_list(&self, token: u64) -> bool {
+        if let Some(h) = self.timeline_subs.lock().unwrap().remove(&token) {
+            h.abort();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn fetch_notification(
+        &self,
+        room_id: String,
+        event_id: String,
+    ) -> Result<Option<RenderedNotification>, FfiError> {
+        let rid = ruma::OwnedRoomId::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+        let eid =
+            ruma::OwnedEventId::try_from(event_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+
+        let sync = {
+            let g = self.sync_service.lock().unwrap();
+            g.as_ref()
+                .cloned()
+                .ok_or_else(|| FfiError::Msg("SyncService not ready".into()))?
+        };
+
+        let nc = RT
+            .block_on(async {
+                NotificationClient::new(
+                    self.inner.clone(),
+                    NotificationProcessSetup::SingleProcess { sync_service: sync },
+                )
+                .await
+            })
+            .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+        let status = RT
+            .block_on(async { nc.get_notification(&rid, &eid).await })
+            .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+        match status {
+            NotificationStatus::Event(item) => {
+                let room_name = item.room_computed_display_name.clone();
+
+                let mut sender = item
+                    .sender_display_name
+                    .clone()
+                    .unwrap_or_else(|| item.event.sender().localpart().to_string());
+
+                let mut body = String::from("New event");
+                if let NotificationEvent::Timeline(ev) = &item.event {
+                    if let ruma::events::AnySyncTimelineEvent::MessageLike(
+                        ruma::events::AnySyncMessageLikeEvent::RoomMessage(m),
+                    ) = ev.as_ref()
+                    {
+                        if let Some(orig) = m.as_original() {
+                            sender = item
+                                .sender_display_name
+                                .clone()
+                                .unwrap_or_else(|| orig.sender.localpart().to_string());
+                            body = orig.content.body().to_string();
+                        }
+                    }
+                }
+
+                Ok(Some(RenderedNotification {
+                    room_id: rid.to_string(),
+                    event_id: eid.to_string(),
+                    room_name,
+                    sender,
+                    body,
+                    is_noisy: item.is_noisy.unwrap_or(false),
+                    has_mention: item.has_mention.unwrap_or(false),
+                }))
+            }
+            NotificationStatus::EventFilteredOut => Ok(None),
+            NotificationStatus::EventNotFound => Ok(None),
+        }
     }
 }
 
@@ -2736,17 +2895,13 @@ fn render_other_state(ev: &EventTimelineItem, s: &matrix_sdk_ui::timeline::Other
     match s.content() {
         A::RoomName(c) => {
             if let ruma::events::FullStateEventContent::Original { content, .. } = c {
-                if let name = &content.name {
-                    return format!("{actor} set the room name to “{name}”");
-                }
+                let name = &content.name;
             }
             format!("{actor} changed the room name")
         }
         A::RoomTopic(c) => {
             if let ruma::events::FullStateEventContent::Original { content, .. } = c {
-                if let topic = &content.topic {
-                    return format!("{actor} set the topic: {topic}");
-                }
+                let topic = &content.topic;
             }
             format!("{actor} changed the topic")
         }

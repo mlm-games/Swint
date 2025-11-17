@@ -194,6 +194,12 @@ interface MatrixPort {
     suspend fun renderNotification(roomId: String, eventId: String): RenderedNotification?
 
     suspend fun encryptionCatchupOnce(): Boolean
+
+    interface RoomListObserver { fun onReset(items: List<RoomListEntry>); fun onUpdate(item: RoomListEntry) }
+    data class RoomListEntry(val roomId: String, val name: String, val unread: Long, val lastTs: Long)
+    fun observeRoomList(observer: RoomListObserver): ULong
+    fun unobserveRoomList(token: ULong)
+
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

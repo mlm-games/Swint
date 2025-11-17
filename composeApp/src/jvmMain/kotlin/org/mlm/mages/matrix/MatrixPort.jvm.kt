@@ -469,6 +469,37 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
 
     override suspend fun encryptionCatchupOnce(): Boolean = client.encryptionCatchupOnce()
+
+    override fun observeRoomList(observer: MatrixPort.RoomListObserver): ULong {
+        val cb = object : mages.RoomListObserver {
+            override fun onReset(items: List<mages.RoomListEntry>) {
+                val mapped = items.map {
+                    MatrixPort.RoomListEntry(
+                        roomId = it.roomId,
+                        name = it.name,
+                        unread = it.unread.toLong(),
+                        lastTs = it.lastTs.toLong()
+                    )
+                }
+                observer.onReset(mapped)
+            }
+            override fun onUpdate(item: mages.RoomListEntry) {
+                observer.onUpdate(
+                    MatrixPort.RoomListEntry(
+                        roomId = item.roomId,
+                        name = item.name,
+                        unread = item.unread.toLong(),
+                        lastTs = item.lastTs.toLong()
+                    )
+                )
+            }
+        }
+        return client.observeRoomList(cb)
+    }
+
+    override fun unobserveRoomList(token: ULong) {
+        client.unobserveRoomList(token)
+    }
 }
 
 

@@ -29,11 +29,44 @@ class RoomsController(
     private var lastHeartbeatRefreshMs = 0L
     private fun actKey(roomId: String) = "room_last_activity_ts:$roomId"
 
+    private var roomListToken: ULong? = null
+
     init {
         observeConnection()
         observeSends()
         refreshRooms()
+        observeRoomList()
     }
+
+    private fun observeRoomList() {
+        roomListToken?.let { service.port.unobserveRoomList(it) }
+        roomListToken = service.port.observeRoomList(object : MatrixPort.RoomListObserver {
+            override fun onReset(items: List<MatrixPort.RoomListEntry>) {
+                _state.update {
+                    it.copy(
+                        rooms = items.map { e -> RoomSummary(e.roomId, e.name) },
+                        unread = items.associate { e -> e.roomId to e.unread.toInt() },
+                        lastActivity = items.associate { e -> e.roomId to e.lastTs }
+                    )
+                }
+            }
+            override fun onUpdate(item: MatrixPort.RoomListEntry) {
+                _state.update { st ->
+                    val updatedRooms = st.rooms.toMutableList().apply {
+                        val i = indexOfFirst { it.id == item.roomId }
+                        val rs = RoomSummary(item.roomId, item.name)
+                        if (i >= 0) set(i, rs) else add(rs)
+                    }
+                    st.copy(
+                        rooms = updatedRooms,
+                        unread = st.unread.toMutableMap().apply { put(item.roomId, item.unread.toInt()) },
+                        lastActivity = st.lastActivity.toMutableMap().apply { put(item.roomId, item.lastTs) }
+                    )
+                }
+            }
+        })
+    }
+
 
     private fun observeConnection() {
         connToken?.let { service.stopConnectionObserver(it) }
