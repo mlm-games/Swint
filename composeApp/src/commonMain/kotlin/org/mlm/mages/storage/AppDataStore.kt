@@ -32,3 +32,13 @@ suspend fun loadLong(ds: DataStore<Preferences>, key: String): Long? {
     val k = longPreferencesKey(key)
     return ds.data.map { it[k] }.first()
 }
+
+suspend fun saveBoolean(ds: DataStore<Preferences>, key: String, value: Boolean) {
+    val k = booleanPreferencesKey(key)
+    ds.edit { it[k] = value }
+}
+
+suspend fun loadBoolean(ds: DataStore<Preferences>, key: String): Boolean? {
+    val k = booleanPreferencesKey(key)
+    return ds.data.map { it[k] }.first()
+}

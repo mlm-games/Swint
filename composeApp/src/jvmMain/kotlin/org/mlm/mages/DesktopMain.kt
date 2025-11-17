@@ -1,22 +1,54 @@
 package org.mlm.mages
 
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.awt.ComposeWindow
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyShortcut
+import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import mages.composeapp.generated.resources.Res
+import mages.composeapp.generated.resources.ic_launcher_monochrome
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.DBusInterface
 import org.freedesktop.dbus.types.UInt32
 import org.freedesktop.dbus.types.Variant
+import org.jetbrains.compose.resources.painterResource
 import org.mlm.mages.matrix.createMatrixPort
 import org.mlm.mages.platform.MagesPaths
+import org.mlm.mages.storage.loadBoolean
 import org.mlm.mages.storage.loadString
 import org.mlm.mages.storage.provideAppDataStore
+import org.mlm.mages.storage.saveBoolean
+import java.awt.Frame
+import java.awt.event.WindowEvent
+import java.awt.event.WindowStateListener
 import java.io.IOException
+import javax.swing.SwingUtilities
+
+private const val PREF_START_IN_TRAY = "pref.startInTray"
+
+
 
 fun main() = application {
     val dataStore = provideAppDataStore()
+    val initialStartInTray = remember {
+        runBlocking { loadBoolean(dataStore, PREF_START_IN_TRAY) ?: false }
+    }
+    var startInTray by remember { mutableStateOf(initialStartInTray) }
+    var showWindow by remember { mutableStateOf(!startInTray) }
+    val scope = rememberCoroutineScope()
+
     var service: MatrixService? = null
 
     fun get(): MatrixService {
@@ -32,10 +64,52 @@ fun main() = application {
             return s
         }
     }
+    val windowState = rememberWindowState()
 
-    Window(onCloseRequest = ::exitApplication, title = "Mages") {
-        App(dataStore, get())
+    val trayIcon = painterResource(Res.drawable.ic_launcher_monochrome)
+
+    Tray(
+//        icon = painterResource("fastlane/android/metadata/en-US/images/icon.svg"), // fallback
+        icon = trayIcon,
+        tooltip = "Mages",
+        onAction = { showWindow = true },
+        menu = {
+            Item("Show",
+//                trayIcon, shortcut = KeyShortcut(Key.A, true) // TODO: Check why this doesn't build (most likely not supported for wayland yet)
+            ) { showWindow = true; }
+            Separator()
+            Item(if (startInTray) "✓ Minimize to tray on launch" else "Minimize to tray on launch") {
+                startInTray = !startInTray
+                scope.launch { saveBoolean(dataStore, PREF_START_IN_TRAY, startInTray) }
+            }
+            Separator()
+            Item("Quit") { exitApplication() }
+        }
+    )
+
+    // hide on close (go to tray)
+    if (showWindow) {
+        val windowState = rememberWindowState()
+        Window(
+            onCloseRequest = ::exitApplication,
+            state = windowState,
+            title = "Mages"
+        ) {
+            // Hide on minimize
+//            LaunchedEffect(Unit) {
+//                val composeWindow = SwingUtilities.getWindowAncestor(window.rootPane) as? ComposeWindow
+//                composeWindow?.addWindowStateListener { e ->
+//                    val minimized = (e.newState and Frame.ICONIFIED) == Frame.ICONIFIED
+//                    if (minimized) {
+//                        composeWindow.isVisible = false
+//                        showWindow = false
+//                    }
+//                }
+//            }
+            App(dataStore, get())
+        }
     }
+
     MagesPaths.init()
 }
 

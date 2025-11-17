@@ -47,6 +47,8 @@ kotlin {
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
+            implementation(compose.components.resources)
+
         }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
@@ -185,6 +187,11 @@ android {
 
 dependencies {
     debugImplementation(compose.uiTooling)
+}
+
+compose.resources {
+    publicResClass = true
+    generateResClass = auto
 }
 
 val cargoAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
