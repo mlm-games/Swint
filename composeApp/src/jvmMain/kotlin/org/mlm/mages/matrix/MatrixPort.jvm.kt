@@ -500,6 +500,20 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override fun unobserveRoomList(token: ULong) {
         client.unobserveRoomList(token)
     }
+
+    override suspend fun fetchNotification(roomId: String, eventId: String): RenderedNotification? {
+        return client.fetchNotification(roomId, eventId)?.let {
+            RenderedNotification(
+                roomId = it.roomId,
+                eventId = it.eventId,
+                roomName = it.roomName,
+                sender = it.sender,
+                body = it.body,
+                isNoisy = it.isNoisy,
+                hasMention = it.hasMention,
+            )
+        }
+    }
 }
 
 

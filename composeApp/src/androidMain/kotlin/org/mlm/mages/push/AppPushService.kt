@@ -50,31 +50,37 @@ class PushReceiver : BroadcastReceiver() {
             }
 
             "org.unifiedpush.android.connector.MESSAGE" -> {
-                val pending = goAsync()
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        val jsonStr: String? = intent.getStringExtra("message")
-                        val bytes: ByteArray? = intent.getByteArrayExtra("bytes")
-                        val raw = jsonStr ?: bytes?.toString(Charsets.UTF_8)
-                        val (roomId, eventId) =
-                            runCatching {
-                                val payload =
-                                    raw?.let {
-                                        kotlinx.serialization.json.Json
-                                            .decodeFromString<MatrixPushPayload>(it)
-                                    }
-                                payload?.roomId to payload?.eventId
-                            }.getOrNull() ?: (null to null)
+                val instance = intent.getStringExtra("instance") ?: return
+                val svc = MatrixProvider.get(context)
 
-                        if (!roomId.isNullOrBlank() && !eventId.isNullOrBlank()) {
-                            NotificationService.start(context, roomId, eventId)
-                        } else {
-                            // Works consistently even though it has a big delay, remove later if unneeded
-                            WakeSyncService.start(context)
+                val pairs = extractMatrixPushPayload(intent) // [(roomId, eventId)]
+                if (svc.isLoggedIn() && pairs.isNotEmpty()) {
+                    val pendingResult = goAsync()
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            // Ensure keys updated if needed
+                            runCatching { svc.port.encryptionCatchupOnce() }
+                            var shown = 0
+                            for ((roomId, eventId) in pairs) {
+                                // Try exact fetch/decrypt of the pushed event
+                                val notif = runCatching { svc.port.fetchNotification(roomId, eventId) }.getOrNull()
+                                if (notif != null) {
+                                    AndroidNotificationHelper.showSingleEvent(context, AndroidNotificationHelper.NotificationText(notif.sender, notif.body), roomId, eventId)
+                                    shown++
+                                }
+                                if (shown >= 3) break // avoid spamming on bundled pushes
+                            }
+                            if (shown == 0) {
+                                // Nothing fetched (e.g., E2EE keys missing) -> fall back to wake/sync path
+                                WakeSyncService.start(context)
+                            }
+                        } finally {
+                            pendingResult.finish()
                         }
-                    } finally {
-                        pending.finish()
                     }
+                } else {
+                    // No parsable push payload or not logged in -> fall back
+                    WakeSyncService.start(context)
                 }
             }
 
@@ -152,5 +158,50 @@ fun removeEndpoint(
 ) {
     context.getSharedPreferences(PUSH_PREFS, Context.MODE_PRIVATE).edit {
         remove(PREF_ENDPOINT + "_$instance")
+    }
+}
+
+private fun extractMatrixPushPayload(intent: Intent): List<Pair<String, String>> {
+    // Returns list of (roomId, eventId)
+    val raw = intent.getStringExtra("message")
+        ?: intent.getByteArrayExtra("bytes")?.toString(Charsets.UTF_8)
+        ?: return emptyList()
+
+    // Very tolerant parsing: try top-level event/room, else array field
+    return try {
+        val obj = org.json.JSONObject(raw)
+        val pairs = mutableListOf<Pair<String, String>>()
+        // Case A: top-level { "event_id": "...", "room_id": "..." }
+        if (obj.has("event_id") && obj.has("room_id")) {
+            val eid = obj.optString("event_id")
+            val rid = obj.optString("room_id")
+            if (eid.isNotBlank() && rid.isNotBlank()) pairs += rid to eid
+        }
+        // Case B: array (e.g., "events" | "notifications"): [{event_id, room_id}, ...]
+        val keys = arrayOf("events", "notifications", "notification")
+        for (k in keys) {
+            if (obj.has(k)) {
+                val arr = obj.optJSONArray(k)
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val it = arr.optJSONObject(i) ?: continue
+                        val eid = it.optString("event_id")
+                        val rid = it.optString("room_id")
+                        if (eid.isNotBlank() && rid.isNotBlank()) pairs += rid to eid
+                    }
+                } else {
+                    // Some gateways use an object "notification": { event_id, room_id }
+                    val it = obj.optJSONObject(k)
+                    if (it != null) {
+                        val eid = it.optString("event_id")
+                        val rid = it.optString("room_id")
+                        if (eid.isNotBlank() && rid.isNotBlank()) pairs += rid to eid
+                    }
+                }
+            }
+        }
+        pairs.distinct()
+    } catch (_: Throwable) {
+        emptyList()
     }
 }

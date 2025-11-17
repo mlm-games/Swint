@@ -16,7 +16,7 @@ import androidx.compose.ui.window.rememberWindowState
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import mages.composeapp.generated.resources.Res
-import mages.composeapp.generated.resources.ic_launcher_monochrome
+import mages.composeapp.generated.resources.ic_notif
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
@@ -66,7 +66,7 @@ fun main() = application {
     }
     val windowState = rememberWindowState()
 
-    val trayIcon = painterResource(Res.drawable.ic_launcher_monochrome)
+    val trayIcon = painterResource(Res.drawable.ic_notif)
 
     Tray(
 //        icon = painterResource("fastlane/android/metadata/en-US/images/icon.svg"), // fallback

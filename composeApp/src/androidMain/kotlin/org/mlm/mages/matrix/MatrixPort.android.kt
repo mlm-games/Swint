@@ -475,10 +475,10 @@ class RustMatrixPort(hs: String) : MatrixPort {
             override fun onReset(items: List<mages.RoomListEntry>) {
                 val mapped = items.map {
                     MatrixPort.RoomListEntry(
-                        roomId = it.room_id,
+                        roomId = it.roomId,
                         name = it.name,
                         unread = it.unread.toLong(),
-                        lastTs = it.last_ts.toLong()
+                        lastTs = it.lastTs.toLong()
                     )
                 }
                 observer.onReset(mapped)
@@ -486,10 +486,10 @@ class RustMatrixPort(hs: String) : MatrixPort {
             override fun onUpdate(item: mages.RoomListEntry) {
                 observer.onUpdate(
                     MatrixPort.RoomListEntry(
-                        roomId = item.room_id,
+                        roomId = item.roomId,
                         name = item.name,
                         unread = item.unread.toLong(),
-                        lastTs = item.last_ts.toLong()
+                        lastTs = item.lastTs.toLong()
                     )
                 )
             }
@@ -499,6 +499,20 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override fun unobserveRoomList(token: ULong) {
         client.unobserveRoomList(token)
+    }
+
+    override suspend fun fetchNotification(roomId: String, eventId: String): RenderedNotification? {
+        return client.fetchNotification(roomId, eventId)?.let {
+            RenderedNotification(
+                roomId = it.roomId,
+                eventId = it.eventId,
+                roomName = it.roomName,
+                sender = it.sender,
+                body = it.body,
+                isNoisy = it.isNoisy,
+                hasMention = it.hasMention,
+            )
+        }
     }
 }
 

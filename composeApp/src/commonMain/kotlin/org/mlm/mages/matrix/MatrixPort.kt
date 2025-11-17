@@ -200,6 +200,7 @@ interface MatrixPort {
     fun observeRoomList(observer: RoomListObserver): ULong
     fun unobserveRoomList(token: ULong)
 
+    suspend fun fetchNotification(roomId: String, eventId: String): RenderedNotification?
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort
