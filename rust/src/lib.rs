@@ -758,10 +758,13 @@ impl Client {
                 .collect();
             obs.on_reset(initial);
 
+            let mut items = items.clone();
+
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
                     match diff {
                         VectorDiff::PushBack { value } => {
+                            items.push_back(value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
@@ -770,6 +773,7 @@ impl Client {
                             }
                         }
                         VectorDiff::PushFront { value } => {
+                            items.push_front(value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
@@ -777,7 +781,8 @@ impl Client {
                                 }
                             }
                         }
-                        VectorDiff::Insert { index: _, value } => {
+                        VectorDiff::Insert { index, value } => {
+                            items.insert(index, value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
@@ -785,7 +790,10 @@ impl Client {
                                 }
                             }
                         }
-                        VectorDiff::Set { index: _, value } => {
+                        VectorDiff::Set { index, value } => {
+                            if index < items.len() {
+                                items[index] = value.clone();
+                            }
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
@@ -794,18 +802,18 @@ impl Client {
                             }
                         }
                         VectorDiff::Remove { index } => {
-                            // Best-effort: get the item id before removal
-                            if let Some(item) = tl.items().await.get(index) {
-                                let uid = item.unique_id().0.to_string();
+                            if index < items.len() {
+                                let uid = items[index].unique_id().0.to_string();
+                                items.remove(index);
                                 obs.on_remove(uid);
-                            } else {
-                                // Fallback: notify clear/reset in corner cases
                             }
                         }
                         VectorDiff::Clear {} => {
+                            items.clear();
                             obs.on_clear();
                         }
                         VectorDiff::Reset { values } => {
+                            items = values.clone();
                             let events = values
                                 .iter()
                                 .filter_map(|it| {
@@ -2295,7 +2303,7 @@ impl Client {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| obs.on_changed()));
             }
         });
-        self.connection_subs.lock().unwrap().insert(id, h);
+        self.receipts_subs.lock().unwrap().insert(id, h);
         id
     }
 

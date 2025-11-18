@@ -34,16 +34,6 @@ fun RoomsScreen(
         else state.rooms.filter { it.name.contains(state.roomSearchQuery, true) || it.id.contains(state.roomSearchQuery, true) }
     } // Can add as a setting too
 
-    val sortedFiltered = remember(filtered, state.lastActivity, state.lastOutgoing) {
-        filtered.sortedWith(
-            compareByDescending<RoomSummary> {
-                val a = state.lastActivity[it.id] ?: 0L
-                val o = state.lastOutgoing[it.id] ?: 0L
-                maxOf(a, o)
-            }.thenBy { it.name.lowercase() }
-        )
-    }
-
 
     Scaffold(
         topBar = {
@@ -91,7 +81,7 @@ fun RoomsScreen(
                 modifier = Modifier.fillMaxSize().padding(innerPadding),
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) {
-                items(sortedFiltered, key = { it.id }) { room ->
+                items(filtered.reversed(), key = { it.id }) { room ->
                     RoomCard(room = room, unreadCount = state.unread[room.id] ?: 0) { onOpen(room) }
                 }
             }
