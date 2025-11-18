@@ -34,11 +34,10 @@ class RoomsController(
     init {
         observeConnection()
         observeSends()
-        refreshRooms()
         observeRoomList()
     }
 
-    private fun observeRoomList() {
+    fun observeRoomList() {
         roomListToken?.let { service.port.unobserveRoomList(it) }
         roomListToken = service.port.observeRoomList(object : MatrixPort.RoomListObserver {
             override fun onReset(items: List<MatrixPort.RoomListEntry>) {

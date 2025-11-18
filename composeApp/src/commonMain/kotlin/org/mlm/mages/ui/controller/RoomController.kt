@@ -64,25 +64,9 @@ class RoomController(
                 .getOrDefault(emptyList())
             _state.update { it.copy(events = recent.sortedBy { e -> e.timestamp }) }
 
-            // If short, nudge one page, then briefly wait for diffs
-            if (_state.value.events.size < 40) {
-                val before = _state.value.events.size
+            if (recent.size < 40) {
                 val hitStart = service.paginateBack(_state.value.roomId, 50)
-                _state.update { it.copy(hitStart = hitStart || it.hitStart) }
-                withTimeoutOrNull(1200) {
-                    state.first { it.events.size > before || it.hitStart }
-                } ?: run {
-                    // fallback snapshot if diffs didn’t arrive in time
-                    val snap = service.loadRecent(_state.value.roomId, before + 50)
-                    _state.update {
-                        it.copy(
-                            events = snap
-                                .distinctBy { e -> e.itemId }
-                                .sortedBy { e -> e.timestamp }
-                        )
-                    }
-                    recomputeDerived()
-                }
+                _state.update { it.copy(hitStart = hitStart) }
             }
         }
     }

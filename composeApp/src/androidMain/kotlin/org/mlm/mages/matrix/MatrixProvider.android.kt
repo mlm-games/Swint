@@ -38,17 +38,14 @@ object MatrixProvider {
 
     @Volatile private var syncStarted = false
 
-    fun ensureSyncStarted(): MatrixPort.SyncStatus {
-        var st : MatrixPort.SyncStatus = MatrixPort.SyncStatus(MatrixPort.SyncPhase.Error, "Service cant be init")
-        val s = service ?: return st
+    fun ensureSyncStarted() {
+        val s = service ?: return
         if (!syncStarted && s.isLoggedIn()) {
             syncStarted = true
             s.startSupervisedSync(object : MatrixPort.SyncObserver {
                 override fun onState(status: MatrixPort.SyncStatus) {
-                    st = status
                 }
             })
         }
-        return st
     }
 }

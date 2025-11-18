@@ -166,10 +166,6 @@ android {
         }
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "2.0.0"
-    }
-
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
