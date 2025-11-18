@@ -365,6 +365,7 @@ pub struct Client {
     connection_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     inbox_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     receipts_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    call_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone, Enum)]
@@ -447,6 +448,7 @@ impl Client {
             connection_subs: Mutex::new(HashMap::new()),
             inbox_subs: Mutex::new(HashMap::new()),
             receipts_subs: Mutex::new(HashMap::new()),
+            call_subs: Mutex::new(HashMap::new()),
         };
 
         if !this.init_caches() {
@@ -1029,6 +1031,9 @@ impl Client {
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();
         }
+        for (_, h) in self.call_subs.lock().unwrap().drain() {
+            h.abort();
+        }
     }
 
     pub fn logout(&self) -> bool {
@@ -1445,12 +1450,12 @@ impl Client {
                 let _ = std::panic::catch_unwind(AssertUnwindSafe(|| obs.on_invite(invite)));
             }
         });
-        self.connection_subs.lock().unwrap().insert(id, h);
+        self.call_subs.lock().unwrap().insert(id, h);
         id
     }
 
     pub fn stop_call_inbox(&self, token: u64) -> bool {
-        if let Some(h) = self.connection_subs.lock().unwrap().remove(&token) {
+        if let Some(h) = self.call_subs.lock().unwrap().remove(&token) {
             h.abort();
             true
         } else {
@@ -2902,16 +2907,19 @@ fn render_other_state(ev: &EventTimelineItem, s: &matrix_sdk_ui::timeline::Other
     let actor = ev.sender().to_string();
     match s.content() {
         A::RoomName(c) => {
+            let mut name = "";
+
             if let ruma::events::FullStateEventContent::Original { content, .. } = c {
-                let name = &content.name;
+                name = &content.name;
             }
-            format!("{actor} changed the room name")
+            format!("{actor} changed the room name to {name}")
         }
         A::RoomTopic(c) => {
+            let mut topic = "";
             if let ruma::events::FullStateEventContent::Original { content, .. } = c {
-                let topic = &content.topic;
+                topic = &content.topic;
             }
-            format!("{actor} changed the topic")
+            format!("{actor} changed the topic to {topic}")
         }
         A::RoomAvatar(_) => format!("{actor} changed the room avatar"),
         A::RoomEncryption(_) => "Encryption enabled for this room".to_string(),
