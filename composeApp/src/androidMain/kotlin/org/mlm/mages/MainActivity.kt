@@ -11,13 +11,16 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.compose.runtime.remember
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixProvider
 import org.mlm.mages.platform.MagesPaths
 import org.mlm.mages.push.PREF_INSTANCE
 import org.mlm.mages.storage.provideAppDataStore
 import org.mlm.mages.push.PushManager
+import org.mlm.mages.push.PusherReconciler
 import org.unifiedpush.android.connector.UnifiedPush
 
 class MainActivity : ComponentActivity() {
@@ -42,11 +45,12 @@ class MainActivity : ComponentActivity() {
 
         val saved = UnifiedPush.getSavedDistributor(this)
         if (saved.isNullOrBlank()) {
-            // Use your helper UI to let user pick a distributor and then register
             PushManager.registerWithDialog(this, PREF_INSTANCE)
         } else {
-            // We have a distributor, request an endpoint
             UnifiedPush.register(this, PREF_INSTANCE)
+            lifecycleScope.launch {
+                runCatching { PusherReconciler.ensureServerPusherRegistered(this@MainActivity) }
+            }
         }
 
         setContent {

@@ -30,15 +30,20 @@
                     android:host="room" />
             </intent-filter>
         </activity>
-        <receiver
-            android:name=".push.PushReceiver"
-            android:exported="true">
+        <service
+            android:name=".push.AppPushService"
+            android:exported="false">
             <intent-filter>
-                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
-                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
-                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
             </intent-filter>
-        </receiver>
+        </service>
+        <service
+            android:name=".push.RaiseToForegroundService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.RAISE_TO_FOREGROUND" />
+            </intent-filter>
+        </service>
         <receiver
             android:name=".push.EmbeddedDistributor"
             android:exported="true">

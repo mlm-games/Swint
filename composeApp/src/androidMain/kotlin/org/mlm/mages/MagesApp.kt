@@ -2,9 +2,13 @@ package org.mlm.mages
 
 import android.app.Application
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixProvider
 import org.mlm.mages.platform.AppCtx
 import org.mlm.mages.platform.MagesPaths
+import org.mlm.mages.push.PusherReconciler
 import org.mlm.mages.push.WakeSyncScheduler
 
 class MagesApp : Application() {
@@ -15,5 +19,9 @@ class MagesApp : Application() {
         val svc = MatrixProvider.get(this)
         Log.println(Log.INFO, "Mages", "Sync started with status: ${MatrixProvider.ensureSyncStarted()}")
         WakeSyncScheduler.ensurePeriodic(this)
+
+        CoroutineScope(Dispatchers.Default).launch {
+            runCatching { PusherReconciler.ensureServerPusherRegistered(this@MagesApp) }
+        }
     }
 }

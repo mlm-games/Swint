@@ -17,3 +17,6 @@
 -dontwarn java.awt.**
 
 -keepattributes *Annotation*,Signature,InnerClasses
+
+-keep class org.mlm.mages.push.AppPushService { *; }
+-keep class org.mlm.mages.push.RaiseToForegroundService { *; }
