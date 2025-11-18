@@ -365,6 +365,7 @@ pub struct Client {
     connection_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     inbox_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     receipts_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    room_list_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     call_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
@@ -448,6 +449,7 @@ impl Client {
             connection_subs: Mutex::new(HashMap::new()),
             inbox_subs: Mutex::new(HashMap::new()),
             receipts_subs: Mutex::new(HashMap::new()),
+            room_list_subs: Mutex::new(HashMap::new()),
             call_subs: Mutex::new(HashMap::new()),
         };
 
@@ -765,6 +767,18 @@ impl Client {
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
                     match diff {
+                        VectorDiff::Append { values } => {
+                            for value in values {
+                                items.push_back(value.clone());
+                                let uid = value.unique_id().0.to_string();
+                                if let Some(ei) = value.as_event() {
+                                    if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid)
+                                    {
+                                        obs.on_insert(ev);
+                                    }
+                                }
+                            }
+                        }
                         VectorDiff::PushBack { value } => {
                             items.push_back(value.clone());
                             let uid = value.unique_id().0.to_string();
@@ -781,6 +795,16 @@ impl Client {
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
+                            }
+                        }
+                        VectorDiff::PopFront => {
+                            if let Some(item) = items.pop_front() {
+                                obs.on_remove(item.unique_id().0.to_string());
+                            }
+                        }
+                        VectorDiff::PopBack => {
+                            if let Some(item) = items.pop_back() {
+                                obs.on_remove(item.unique_id().0.to_string());
                             }
                         }
                         VectorDiff::Insert { index, value } => {
@@ -810,7 +834,14 @@ impl Client {
                                 obs.on_remove(uid);
                             }
                         }
-                        VectorDiff::Clear {} => {
+                        VectorDiff::Truncate { length } => {
+                            while items.len() > length {
+                                if let Some(item) = items.pop_back() {
+                                    obs.on_remove(item.unique_id().0.to_string());
+                                }
+                            }
+                        }
+                        VectorDiff::Clear => {
                             items.clear();
                             obs.on_clear();
                         }
@@ -827,7 +858,6 @@ impl Client {
                                 .collect::<Vec<_>>();
                             obs.on_reset(events);
                         }
-                        _ => {}
                     }
                 }
             }
@@ -985,7 +1015,10 @@ impl Client {
     }
 
     pub fn observe_sends(&self, observer: Box<dyn SendObserver>) -> u64 {
-        let id = self.send_obs_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = self
+            .send_obs_counter
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         self.send_observers
             .lock()
             .unwrap()
@@ -1031,15 +1064,19 @@ impl Client {
         for h in self.guards.lock().unwrap().drain(..) {
             h.abort();
         }
+        for (_, h) in self.receipts_subs.lock().unwrap().drain() {
+            h.abort();
+        }
+        for (_, h) in self.room_list_subs.lock().unwrap().drain() {
+            h.abort();
+        }
         for (_, h) in self.call_subs.lock().unwrap().drain() {
             h.abort();
         }
     }
 
     pub fn logout(&self) -> bool {
-        for h in self.guards.lock().unwrap().drain(..) {
-            h.abort();
-        }
+        self.shutdown();
         let _ = RT.block_on(async { self.inner.logout().await });
         let _ = std::fs::remove_file(session_file(&self.store_dir));
         reset_store_dir(&self.store_dir);
@@ -2357,17 +2394,30 @@ impl Client {
         let id = self.next_sub_id();
 
         let h = RT.spawn(async move {
-            let svc = loop {
-                if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
-                    break s;
+            // Wait for sync service
+            let svc = {
+                let mut attempts = 0;
+                loop {
+                    if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
+                        break s;
+                    }
+                    attempts += 1;
+                    if attempts > 100 {
+                        // 20 seconds timeout
+                        eprintln!("observe_room_list: SyncService not available after timeout");
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             };
 
             let rls = svc.room_list_service();
             let all = match rls.all_rooms().await {
                 Ok(list) => list,
-                Err(_) => return,
+                Err(e) => {
+                    eprintln!("observe_room_list: failed to get all_rooms: {e}");
+                    return;
+                }
             };
 
             let (stream, controller) = all.entries_with_dynamic_adapters(50);
@@ -2426,12 +2476,12 @@ impl Client {
             }
         });
 
-        self.timeline_subs.lock().unwrap().insert(id, h);
+        self.room_list_subs.lock().unwrap().insert(id, h);
         id
     }
 
     pub fn unobserve_room_list(&self, token: u64) -> bool {
-        if let Some(h) = self.timeline_subs.lock().unwrap().remove(&token) {
+        if let Some(h) = self.room_list_subs.lock().unwrap().remove(&token) {
             h.abort();
             true
         } else {
