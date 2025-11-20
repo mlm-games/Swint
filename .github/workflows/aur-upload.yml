@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'Version name (e.g., v0.6.0)'
+        description: 'Version name (e.g., 0.7.0)'
         required: true
       increment_pkgrel:
         description: 'Increment pkgrel (for same version updates)'
