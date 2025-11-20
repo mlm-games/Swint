@@ -28,7 +28,6 @@ class LoginController(
         scope.launch {
             runCatching { service.init(_state.value.homeserver) }
             if (service.isLoggedIn()) {
-                service.startSendWorker()
                 withContext(Dispatchers.Main) { onLoggedIn() }
             }
         }
@@ -53,7 +52,6 @@ class LoginController(
                     org.mlm.mages.storage.saveString(dataStore, "homeserver", _state.value.homeserver)
                     org.mlm.mages.storage.saveLong(dataStore, "notif:baseline_ms", kotlin.time.Clock.System.now().toEpochMilliseconds())
                 }
-                service.startSendWorker()
                 _state.update { it.copy(isBusy = false) }
                 withContext(Dispatchers.Main) { onLoggedIn() }
             }.onFailure { t ->

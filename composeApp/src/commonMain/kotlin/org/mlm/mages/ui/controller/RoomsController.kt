@@ -33,7 +33,6 @@ class RoomsController(
 
     init {
         observeConnection()
-        observeSends()
         observeRoomList()
     }
 
@@ -92,21 +91,6 @@ class RoomsController(
     }
 
     private fun key(roomId: String) = "room_read_ts:$roomId"
-
-    private fun observeSends() {
-        sendsJob?.cancel()
-        sendsJob = scope.launch {
-            service.observeSends().collect { upd ->
-                val now = service.nowMs()
-                _state.update { st ->
-                    val m = st.lastOutgoing.toMutableMap()
-                    m[upd.roomId] = now
-                    st.copy(lastOutgoing = m)
-                }
-                runCatching { saveLong(dataStore, actKey(upd.roomId), now) }
-            }
-        }
-    }
 
     fun refreshRooms() {
         scope.launch {

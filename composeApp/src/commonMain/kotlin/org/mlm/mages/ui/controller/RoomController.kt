@@ -43,7 +43,6 @@ class RoomController(
         observeTimeline()
         observeTyping()
         observeReceipts()
-        observeOutbox()
         updateMyUserId()
         scope.launch {
             dmPeer = runCatching { service.port.dmPeerUserId(_state.value.roomId) }.getOrNull()
@@ -97,31 +96,6 @@ class RoomController(
                     }
                 }
                 recomputeDerived()
-            }
-        }
-    }
-
-    private fun observeOutbox() {
-        scope.launch {
-            val rid = _state.value.roomId
-            val byTxn = LinkedHashMap<String, SendIndicator>()
-            service.observeSends().collectLatest { upd ->
-                if (upd.roomId != rid) return@collectLatest
-                val indicator = SendIndicator(
-                    txnId = upd.txnId,
-                    attempts = upd.attempts,
-                    state = upd.state,
-                    error = upd.error
-                )
-                byTxn[upd.txnId] = indicator
-                // Drop Sent items from the visible chip list to keep it small
-                val visible = byTxn.values.filter { it.state != SendState.Sent }
-                _state.update {
-                    it.copy(
-                        outbox = visible,
-                        pendingSendCount = visible.size
-                    )
-                }
             }
         }
     }
@@ -198,8 +172,9 @@ class RoomController(
                 if (ok) _state.update { it.copy(input = "", replyingTo = null) }
                 else _state.update { it.copy(error = "Reply failed") }
             } else {
-                runCatching { service.enqueueText(s.roomId, text, null) }
-                _state.update { it.copy(input = "") }
+                val ok = service.sendMessage(s.roomId, text)
+                if (ok) _state.update { it.copy(input = "") }
+                else _state.update { it.copy(error = "Send failed") }
             }
         }
         recomputeReadStatuses()

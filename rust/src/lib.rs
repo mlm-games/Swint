@@ -74,10 +74,6 @@ use std::panic::AssertUnwindSafe;
 // UniFFI macro-first setup
 uniffi::setup_scaffolding!();
 
-const BACKOFF_BASE_MS: u64 = 1_000;
-const BACKOFF_MAX_MS: u64 = 60_000;
-const SEND_MAX_ATTEMPTS: i64 = 10;
-
 // Types exposed to Kotlin
 #[derive(Clone, Record)]
 pub struct RoomSummary {
@@ -400,14 +396,6 @@ pub trait TimelineDiffObserver: Send + Sync {
     fn on_remove(&self, item_id: String);
     fn on_clear(&self);
     fn on_reset(&self, events: Vec<MessageEvent>);
-}
-
-struct QueuedItem {
-    id: i64,
-    room_id: String,
-    body: String,
-    txn_id: String,
-    attempts: i64,
 }
 
 #[uniffi::export]
@@ -1944,86 +1932,98 @@ impl Client {
     }
 
     pub fn enqueue_text(&self, room_id: String, body: String, txn_id: Option<String>) -> String {
+        // Keep behavior: return a txn id immediately, but now we send directly via the SDK.
         let txn = txn_id.unwrap_or_else(|| format!("mages-{}", now_ms()));
 
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return txn;
-        };
+        let client = self.inner.clone();
+        let tx = self.send_tx.clone();
 
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO queued_sends(room_id, body, txn_id, attempts, next_try_ms)
-            VALUES (?1, ?2, ?3, 0, 0)",
-            (&room_id, &body, &txn),
-        );
-
-        // Notify observers
-        let _ = self.send_tx.send(SendUpdate {
+        // Emit a Sending update to any observers (best-effort).
+        let _ = tx.send(SendUpdate {
             room_id: room_id.clone(),
             txn_id: txn.clone(),
             attempts: 0,
-            state: SendState::Enqueued,
+            state: SendState::Sending,
             event_id: None,
             error: None,
+        });
+
+        let txc = txn.clone();
+        RT.spawn(async move {
+            use matrix_sdk::ruma::events::room::message::RoomMessageEventContent as Msg;
+
+            let rid = match OwnedRoomId::try_from(room_id.clone()) {
+                Ok(r) => r,
+                Err(_) => {
+                    let _ = tx.send(SendUpdate {
+                        room_id,
+                        txn_id: txc.clone(),
+                        attempts: 0,
+                        state: SendState::Failed,
+                        event_id: None,
+                        error: Some("bad room id".into()),
+                    });
+                    return;
+                }
+            };
+
+            let Some(timeline) = get_timeline_for(&client, &rid).await else {
+                let _ = tx.send(SendUpdate {
+                    room_id: rid.to_string(),
+                    txn_id: txc.clone(),
+                    attempts: 0,
+                    state: SendState::Failed,
+                    event_id: None,
+                    error: Some("room/timeline not found".into()),
+                });
+                return;
+            };
+
+            match timeline.send(Msg::text_plain(body).into()).await {
+                Ok(_) => {
+                    // We don’t have the remote event id here; leave None.
+                    let _ = tx.send(SendUpdate {
+                        room_id: rid.to_string(),
+                        txn_id: txc.clone(),
+                        attempts: 0,
+                        state: SendState::Sent,
+                        event_id: None,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(SendUpdate {
+                        room_id: rid.to_string(),
+                        txn_id: txc.clone(),
+                        attempts: 0,
+                        state: SendState::Failed,
+                        event_id: None,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
         });
 
         txn
     }
 
     pub fn start_send_worker(&self) {
-        let client = self.inner.clone();
-        let dir = self.store_dir.clone();
-        let tx = self.send_tx.clone();
-
-        let h = RT.spawn(async move {
-            loop {
-                if let Err(e) = drain_once(&client, &dir, &tx).await {
-                    eprintln!("send worker error: {e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                }
-            }
-        });
-        self.guards.lock().unwrap().push(h);
+        // No-op: SDK handles sending/retries internally; worker removed.
     }
 
-    pub fn cancel_txn(&self, txn_id: String) -> bool {
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return false;
-        };
-        conn.execute("DELETE FROM queued_sends WHERE txn_id = ?1", [txn_id])
-            .ok()
-            .map(|n| n > 0)
-            .unwrap_or(false)
+    pub fn cancel_txn(&self, _txn_id: String) -> bool {
+        // Not needed without a custom queue
+        false
     }
 
-    pub fn retry_txn_now(&self, txn_id: String) -> bool {
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return false;
-        };
-        conn.execute(
-            "UPDATE queued_sends SET next_try_ms = 0 WHERE txn_id = ?1",
-            [txn_id],
-        )
-        .ok()
-        .map(|n| n > 0)
-        .unwrap_or(false)
+    pub fn retry_txn_now(&self, _txn_id: String) -> bool {
+        // Same.
+        false
     }
 
     pub fn pending_sends(&self) -> u32 {
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return 0;
-        };
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM queued_sends", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .unwrap_or(0);
-
-        count.try_into().unwrap_or(0)
+        // No queue anymore.
+        0
     }
 
     pub fn cache_messages(&self, room_id: String, messages: Vec<MessageEvent>) -> bool {
@@ -2603,148 +2603,6 @@ impl Client {
 
 // ---------- Helpers ----------
 
-fn open_queue_db(path: &PathBuf) -> Result<rusqlite::Connection, rusqlite::Error> {
-    let conn = rusqlite::Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-    Ok(conn)
-}
-
-fn fetch_due_item(store_dir: &PathBuf, now: i64) -> Result<Option<QueuedItem>, String> {
-    use rusqlite::OptionalExtension;
-    let path = queue_db_path(store_dir);
-    let conn = open_queue_db(&path).map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, room_id, body, txn_id, attempts FROM queued_sends 
-             WHERE next_try_ms <= ?1 ORDER BY id LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let row = stmt
-        .query_row([now], |r| {
-            Ok(QueuedItem {
-                id: r.get::<_, i64>(0)?,
-                room_id: r.get::<_, String>(1)?,
-                body: r.get::<_, String>(2)?,
-                txn_id: r.get::<_, String>(3)?,
-                attempts: r.get::<_, i64>(4)?,
-            })
-        })
-        .optional()
-        .map_err(|e| e.to_string())?;
-
-    Ok(row)
-}
-
-fn delete_item(store_dir: &PathBuf, id: i64) -> Result<(), String> {
-    let path = queue_db_path(store_dir);
-    let conn = open_queue_db(&path).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM queued_sends WHERE id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn backoff_item(store_dir: &PathBuf, id: i64, attempts: i64, now: i64) -> Result<(), String> {
-    let attempts = attempts.clamp(1, 10) as u64;
-    let backoff = (BACKOFF_BASE_MS.saturating_mul(attempts)).min(BACKOFF_MAX_MS) as i64;
-    let next = now.saturating_add(backoff);
-
-    let path = queue_db_path(store_dir);
-    let conn = open_queue_db(&path).map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE queued_sends SET attempts = attempts + 1, next_try_ms = ?1 WHERE id = ?2",
-        (next, id),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-async fn drain_once(
-    client: &SdkClient,
-    store_dir: &PathBuf,
-    tx: &tokio::sync::mpsc::UnboundedSender<SendUpdate>,
-) -> Result<(), String> {
-    use matrix_sdk::ruma::OwnedTransactionId;
-    use std::time::Duration;
-
-    let now = now_unix_ms();
-    let due = fetch_due_item(store_dir, now)?;
-    let Some(item) = due else {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        return Ok(());
-    };
-
-    let rid = OwnedRoomId::try_from(item.room_id.clone()).map_err(|_| "bad room id".to_string())?;
-    let Some(room) = client.get_room(&rid) else {
-        let _ = delete_item(store_dir, item.id);
-        let _ = tx.send(SendUpdate {
-            room_id: rid.to_string(),
-            txn_id: item.txn_id.clone(),
-            attempts: item.attempts as u32,
-            state: SendState::Failed,
-            event_id: None,
-            error: Some("room not found".to_string()),
-        });
-        return Ok(());
-    };
-
-    let _ = tx.send(SendUpdate {
-        room_id: rid.to_string(),
-        txn_id: item.txn_id.clone(),
-        attempts: item.attempts as u32,
-        state: SendState::Sending,
-        event_id: None,
-        error: None,
-    });
-
-    let txn_id: OwnedTransactionId = item.txn_id.clone().into();
-
-    let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
-        item.body.clone(),
-    );
-
-    match room.send(content).with_transaction_id(txn_id).await {
-        Ok(resp) => {
-            let _ = delete_item(store_dir, item.id);
-
-            let _ = tx.send(SendUpdate {
-                room_id: rid.to_string(),
-                txn_id: item.txn_id.clone(),
-                attempts: item.attempts as u32,
-                state: SendState::Sent,
-                event_id: Some(resp.event_id.to_string()),
-                error: None,
-            });
-        }
-        Err(err) => {
-            if item.attempts + 1 >= SEND_MAX_ATTEMPTS {
-                let _ = delete_item(store_dir, item.id);
-                let _ = tx.send(SendUpdate {
-                    room_id: rid.to_string(),
-                    txn_id: item.txn_id.clone(),
-                    attempts: (item.attempts + 1) as u32,
-                    state: SendState::Failed,
-                    event_id: None,
-                    error: Some(err.to_string()),
-                });
-            } else {
-                let _ = backoff_item(store_dir, item.id, item.attempts + 1, now);
-                let _ = tx.send(SendUpdate {
-                    room_id: rid.to_string(),
-                    txn_id: item.txn_id.clone(),
-                    attempts: (item.attempts + 1) as u32,
-                    state: SendState::Retrying,
-                    event_id: None,
-                    error: Some(err.to_string()),
-                });
-                tokio::time::sleep(Duration::from_millis(400)).await;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
     let room = client.get_room(room_id)?;
     room.timeline().await.ok()
@@ -2876,16 +2734,6 @@ async fn attach_sas_stream(
             _ => {}
         }
     }
-}
-
-fn queue_db_path(dir: &PathBuf) -> PathBuf {
-    dir.join("send_queue.sqlite3")
-}
-
-fn now_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    dur.as_millis() as i64
 }
 
 fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
