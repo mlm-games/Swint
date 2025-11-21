@@ -90,8 +90,14 @@ interface MatrixPort {
     fun startSendWorker()
     fun observeSends(): Flow<SendUpdate>
 
-    suspend fun mediaCacheStats(): Pair<Long, Long>
-    suspend fun mediaCacheEvict(maxBytes: Long): Long
+    suspend fun setMediaRetentionPolicy(
+        maxCacheSizeBytes: Long? = null,
+        maxFileSizeBytes: Long? = null,
+        lastAccessExpirySecs: Long? = null,
+        cleanupFrequencySecs: Long? = null,
+    ): Boolean
+    suspend fun mediaCacheClean(): Boolean
+
     suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String>
 
     interface VerificationInboxObserver {

@@ -19,7 +19,7 @@ use matrix_sdk::{
     Client as SdkClient, Room, RoomMemberships, SessionTokens,
     authentication::matrix::MatrixSession,
     config::SyncSettings,
-    media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
+    media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
     ruma::{
         OwnedMxcUri,
         api::client::push::{Pusher, PusherIds, PusherInit, PusherKind},
@@ -238,22 +238,12 @@ pub trait RoomListObserver: Send + Sync {
     fn on_update(&self, item: RoomListEntry);
 }
 
-#[derive(Clone, Record)]
-pub struct MediaCacheStats {
-    pub bytes: u64,
-    pub files: u64,
-}
-
 fn cache_dir(dir: &PathBuf) -> PathBuf {
     dir.join("media_cache")
 }
 
 fn ensure_dir(d: &PathBuf) {
     let _ = std::fs::create_dir_all(d);
-}
-
-fn file_len(path: &std::path::Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 // Runtime
@@ -325,15 +315,6 @@ impl From<std::io::Error> for FfiError {
     fn from(e: std::io::Error) -> Self {
         FfiError::Msg(e.to_string())
     }
-}
-
-#[derive(Clone, Record)]
-pub struct PaginationState {
-    pub room_id: String,
-    pub prev_batch: Option<String>,
-    pub next_batch: Option<String>,
-    pub at_start: bool,
-    pub at_end: bool,
 }
 
 struct VerifFlow {
@@ -441,10 +422,6 @@ impl Client {
             call_subs: Mutex::new(HashMap::new()),
         };
 
-        if !this.init_caches() {
-            panic!("Failed to initialize local caches");
-        }
-
         {
             let client = this.inner.clone();
             let svc_slot = this.sync_service.clone();
@@ -483,24 +460,6 @@ impl Client {
                 }
             });
             this.guards.lock().unwrap().push(h);
-        }
-
-        {
-            let path = this.store_dir.join("send_queue.sqlite3");
-            if let Ok(conn) = rusqlite::Connection::open(&path) {
-                let _ = conn.execute_batch(
-                    "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=NORMAL;
-                 CREATE TABLE IF NOT EXISTS queued_sends(
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id TEXT NOT NULL,
-                    body TEXT NOT NULL,
-                    txn_id TEXT NOT NULL UNIQUE,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    next_try_ms INTEGER NOT NULL DEFAULT 0
-                );",
-                );
-            }
         }
 
         RT.block_on(async {
@@ -1109,63 +1068,56 @@ impl Client {
         })
     }
 
-    pub fn media_cache_stats(&self) -> MediaCacheStats {
-        let dir = cache_dir(&self.store_dir);
-        if !dir.exists() {
-            return MediaCacheStats { bytes: 0, files: 0 };
-        }
-        let mut files = 0u64;
-        let mut bytes = 0u64;
-        for entry in walkdir::WalkDir::new(&dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_file() {
-                files += 1;
-                bytes += file_len(entry.path());
+    /// Configure the SDK's media retention policy and apply it immediately.
+    /// Any `None` will keep the SDK default for that parameter.
+    pub fn set_media_retention_policy(
+        &self,
+        max_cache_size_bytes: Option<u64>,
+        max_file_size_bytes: Option<u64>,
+        last_access_expiry_secs: Option<u64>,
+        cleanup_frequency_secs: Option<u64>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            use std::time::Duration;
+            let mut policy = MediaRetentionPolicy::new();
+            if max_cache_size_bytes.is_some() {
+                policy = policy.with_max_cache_size(max_cache_size_bytes);
             }
-        }
-        MediaCacheStats { bytes, files }
+            if max_file_size_bytes.is_some() {
+                policy = policy.with_max_file_size(max_file_size_bytes);
+            }
+            if last_access_expiry_secs.is_some() {
+                policy = policy
+                    .with_last_access_expiry(last_access_expiry_secs.map(Duration::from_secs));
+            }
+            if cleanup_frequency_secs.is_some() {
+                policy =
+                    policy.with_cleanup_frequency(cleanup_frequency_secs.map(Duration::from_secs));
+            }
+
+            self.inner
+                .media()
+                .set_media_retention_policy(policy)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            // Apply right away.
+            self.inner
+                .media()
+                .clean_up_media_cache()
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
     }
 
-    pub fn media_cache_evict(&self, max_bytes: u64) -> u64 {
-        use std::time::UNIX_EPOCH;
-        let dir = cache_dir(&self.store_dir);
-        if !dir.exists() {
-            return 0;
-        }
-
-        let mut entries: Vec<(std::path::PathBuf, u64, u64)> = walkdir::WalkDir::new(&dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter_map(|e| {
-                let p = e.into_path();
-                let md = std::fs::metadata(&p).ok()?;
-                let mtime = md
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let size = md.len();
-                Some((p, mtime, size))
-            })
-            .collect();
-
-        entries.sort_by_key(|t| t.1);
-
-        let mut total = entries.iter().map(|e| e.2).sum::<u64>();
-        let mut removed = 0u64;
-        for (p, _, sz) in entries {
-            if total <= max_bytes {
-                break;
-            }
-            let _ = std::fs::remove_file(p);
-            total = total.saturating_sub(sz);
-            removed = removed.saturating_add(1);
-        }
-        removed
+    /// Run a cleanup of the SDK's media cache with the current policy.
+    pub fn media_cache_clean(&self) -> Result<(), FfiError> {
+        RT.block_on(async {
+            self.inner
+                .media()
+                .clean_up_media_cache()
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
     }
 
     pub fn thumbnail_to_cache(
@@ -1201,7 +1153,7 @@ impl Client {
         let out = dir.join(safe_name);
 
         let bytes = RT
-            .block_on(async { self.inner.media().get_media_content(&req, false).await })
+            .block_on(async { self.inner.media().get_media_content(&req, true).await })
             .map_err(|e| FfiError::Msg(e.to_string()))?;
 
         std::fs::write(&out, &bytes)?;
@@ -1568,7 +1520,7 @@ impl Client {
             let bytes = self
                 .inner
                 .media()
-                .get_media_content(&req, false)
+                .get_media_content(&req, true)
                 .await
                 .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
 
@@ -2026,137 +1978,6 @@ impl Client {
         0
     }
 
-    pub fn cache_messages(&self, room_id: String, messages: Vec<MessageEvent>) -> bool {
-        let path = self.store_dir.join("message_cache.sqlite3");
-
-        let result = (|| -> Result<(), rusqlite::Error> {
-            let mut conn = rusqlite::Connection::open(path)?;
-            let tx = conn.transaction()?;
-
-            for msg in messages {
-                tx.execute(
-                    "INSERT OR REPLACE INTO messages(event_id, room_id, sender, body, timestamp_ms, received_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (
-                        &msg.event_id,
-                        &msg.room_id,
-                        &msg.sender,
-                        &msg.body,
-                        msg.timestamp_ms,
-                        now_ms(),
-                    ),
-                )?;
-            }
-            tx.commit()
-        })();
-
-        result.is_ok()
-    }
-
-    pub fn get_cached_messages(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {
-        let path = self.store_dir.join("message_cache.sqlite3");
-
-        let result = (|| -> Result<Vec<MessageEvent>, rusqlite::Error> {
-            let conn = rusqlite::Connection::open(path)?;
-            let mut stmt = conn.prepare(
-                "SELECT event_id, room_id, sender, body, timestamp_ms 
-                FROM messages WHERE room_id = ?1 
-                ORDER BY timestamp_ms DESC LIMIT ?2",
-            )?;
-
-            let messages = stmt
-                .query_map([&room_id, &limit.to_string()], |row| {
-                    let eid: String = row.get(0)?;
-                    Ok(MessageEvent {
-                        item_id: eid.clone(),
-                        event_id: eid,
-                        room_id: row.get(1)?,
-                        sender: row.get(2)?,
-                        body: row.get(3)?,
-                        timestamp_ms: row.get(4)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-
-            Ok(messages)
-        })();
-
-        result.unwrap_or_else(|_| vec![])
-    }
-
-    pub fn init_caches(&self) -> bool {
-        let cache_db = self.store_dir.join("message_cache.sqlite3");
-
-        match rusqlite::Connection::open(&cache_db) {
-            Ok(conn) => {
-                let result = conn.execute_batch(
-                    "PRAGMA journal_mode=WAL;
-                     PRAGMA synchronous=NORMAL;
-                     CREATE TABLE IF NOT EXISTS messages(
-                        event_id TEXT PRIMARY KEY,
-                        room_id TEXT NOT NULL,
-                        sender TEXT NOT NULL,
-                        body TEXT NOT NULL,
-                        timestamp_ms INTEGER NOT NULL,
-                        received_at INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_room_messages ON messages(room_id, timestamp_ms DESC, event_id);
-                    
-                    CREATE TABLE IF NOT EXISTS pagination_tokens(
-                        room_id TEXT PRIMARY KEY,
-                        prev_batch TEXT,
-                        next_batch TEXT,
-                        at_start BOOLEAN DEFAULT 0,
-                        at_end BOOLEAN DEFAULT 0,
-                        updated_at INTEGER NOT NULL
-                    );"
-                );
-                result.is_ok()
-            }
-            Err(_) => false,
-        }
-    }
-
-    pub fn save_pagination_state(&self, state: PaginationState) -> bool {
-        let path = self.store_dir.join("message_cache.sqlite3");
-        let Ok(conn) = rusqlite::Connection::open(path) else {
-            return false;
-        };
-
-        conn.execute(
-            "INSERT OR REPLACE INTO pagination_tokens(room_id, prev_batch, next_batch, at_start, at_end, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            (
-                &state.room_id,
-                &state.prev_batch,
-                &state.next_batch,
-                state.at_start,
-                state.at_end,
-                now_ms(),
-            ),
-        )
-        .is_ok()
-    }
-
-    pub fn get_pagination_state(&self, room_id: String) -> Option<PaginationState> {
-        let path = self.store_dir.join("message_cache.sqlite3");
-        let conn = rusqlite::Connection::open(path).ok()?;
-
-        conn.query_row(
-            "SELECT prev_batch, next_batch, at_start, at_end FROM pagination_tokens WHERE room_id = ?1",
-            [&room_id],
-            |row| {
-                Ok(PaginationState {
-                    room_id: room_id.clone(),
-                    prev_batch: row.get(0)?,
-                    next_batch: row.get(1)?,
-                    at_start: row.get(2)?,
-                    at_end: row.get(3)?,
-                })
-            },
-        )
-        .ok()
-    }
     /// Register/Update HTTP pusher for UnifiedPush/Matrix gateway (e.g. ntfy)
     pub fn register_unifiedpush(
         &self,

@@ -81,11 +81,3 @@ data class SecurityUiState(
     val sasOtherDevice: String? = null,
     val sasError: String? = null
 )
-data class MediaCacheUiState(
-    val bytes: Long = 0,
-    val files: Map<String, Long> = emptyMap(),
-    val offlineBanner: String? = null,
-    val syncBanner: String? = null,
-    val isBusy: Boolean = false,
-    val error: String? = null
-)

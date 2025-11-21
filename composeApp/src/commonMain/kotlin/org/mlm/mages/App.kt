@@ -91,7 +91,6 @@ fun App(
                 val controller = remember {
                     SecurityController(
                         service,
-                        onOpenMediaCache = { nav.push(Route.MediaCache) },
                     )
                 }
                 val ui by controller.state.collectAsState()
@@ -110,7 +109,6 @@ fun App(
                     onCloseRecovery = controller::closeRecoveryDialog,
                     onChangeRecoveryKey = controller::setRecoveryKey,
                     onSubmitRecoveryKey = controller::submitRecoveryKey,
-                    onOpenMediaCache = { nav.push(Route.MediaCache) },
                     selectedTab = selectedTab,
                     onSelectTab = { selectedTab = it },
                     onLogout = {
@@ -120,17 +118,6 @@ fun App(
                             if (ok) { nav.replace(Route.Login)}
                         }
                     }
-                )
-            }
-            Route.MediaCache -> {
-                val controller = remember { MediaCacheController(service) }
-                val ui by controller.state.collectAsState()
-                MediaCacheScreen(
-                    state = ui,
-                    onBack = { nav.pop() },
-                    onRefresh = controller::refresh,
-                    onClearKeep = controller::clearKeep,
-                    onClearAll = controller::clearAll
                 )
             }
         }

@@ -10,7 +10,6 @@ sealed interface Route {
     data class Room(val roomId: String, val name: String) : Route
 
     data object Security : Route
-    data object MediaCache : Route
 }
 
 class Navigator(initial: Route) {
