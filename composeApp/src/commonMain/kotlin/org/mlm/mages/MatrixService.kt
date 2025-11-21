@@ -106,4 +106,7 @@ class MatrixService(val port: MatrixPort) {
     suspend fun startUserSas(userId: String, observer: VerificationObserver) =
         port.startUserSas(userId, observer)
 
+        suspend fun retryByTxn(roomId: String, txnId: String) =
+        runCatching { port.retryByTxn(roomId, txnId) }.getOrElse { false }
+
 }

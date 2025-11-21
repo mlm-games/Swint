@@ -113,6 +113,8 @@ interface MatrixPort {
         fun onConnectionChange(state: ConnectionState)
     }
 
+    suspend fun retryByTxn(roomId: String, txnId: String): Boolean
+
     fun stopTypingObserver(token: ULong)
 
     suspend fun paginateBack(roomId: String, count: Int): Boolean

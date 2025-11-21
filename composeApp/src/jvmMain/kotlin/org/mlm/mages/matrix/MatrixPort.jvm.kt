@@ -339,6 +339,10 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun retryTxnNow(txnId: String): Boolean =
         client.retryTxnNow(txnId)
 
+    override suspend fun retryByTxn(roomId: String, txnId: String): Boolean {
+        return client.retryByTxn(roomId, txnId)
+    }
+
     override suspend fun pendingSends(): UInt =
         client.pendingSends()
 
@@ -468,6 +472,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
             )
         }
     }
+
+
 
     override fun roomListSetUnreadOnly(
         token: ULong,

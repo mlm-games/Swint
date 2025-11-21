@@ -465,7 +465,7 @@ fun MessageActionSheet(
                 }
             )
 
-            if (isMine) {
+            if (isMine && event.sendState != SendState.Failed) {
                 MessageActionItem(
                     icon = Icons.Default.Edit,
                     text = "Edit",
@@ -475,6 +475,17 @@ fun MessageActionSheet(
                     }
                 )
 
+                MessageActionItem(
+                    icon = Icons.Default.Delete,
+                    text = "Delete",
+                    color = MaterialTheme.colorScheme.error,
+                    onClick = {
+                        onDelete()
+                        onDismiss()
+                    }
+                )
+            } else if (isMine) {
+                // Still show delete for failed ones
                 MessageActionItem(
                     icon = Icons.Default.Delete,
                     text = "Delete",

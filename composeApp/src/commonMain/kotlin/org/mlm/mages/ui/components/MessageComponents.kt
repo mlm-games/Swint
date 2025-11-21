@@ -6,6 +6,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -159,7 +160,7 @@ fun MessageBubble(
                                 MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
                             )
                             org.mlm.mages.matrix.SendState.Failed -> Triple(
-                                Icons.Default.Close,
+                                Icons.Default.Error,
                                 "Failed",
                                 MaterialTheme.colorScheme.error
                             )
@@ -181,6 +182,26 @@ fun MessageBubble(
                         }
                         Icon(imageVector = icon, contentDescription = desc, tint = tint, modifier = Modifier.size(12.dp))
 
+                    }
+                }
+
+                if (isMine && sendState == org.mlm.mages.matrix.SendState.Failed) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = "Failed",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "Failed to send. Long-press to retry.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
                     }
                 }
             }

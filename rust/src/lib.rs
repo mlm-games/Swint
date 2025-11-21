@@ -350,6 +350,7 @@ pub struct Client {
     receipts_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     room_list_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     room_list_cmds: Mutex<HashMap<u64, tokio::sync::mpsc::UnboundedSender<RoomListCmd>>>,
+    send_handles_by_txn: Mutex<HashMap<String, matrix_sdk::send_queue::SendHandle>>,
     call_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
@@ -427,6 +428,7 @@ impl Client {
             receipts_subs: Mutex::new(HashMap::new()),
             room_list_subs: Mutex::new(HashMap::new()),
             room_list_cmds: Mutex::new(HashMap::new()),
+            send_handles_by_txn: Mutex::new(HashMap::new()),
             call_subs: Mutex::new(HashMap::new()),
         };
 
@@ -996,7 +998,22 @@ impl Client {
                 return false;
             };
 
-            timeline.send(Msg::text_plain(body).into()).await.is_ok()
+            match timeline.send(Msg::text_plain(body.clone()).into()).await {
+                Ok(handle) => {
+                    if let Some(latest) = timeline.latest_event().await {
+                        if latest.event_id().is_none() {
+                            if let Some(txn) = latest.transaction_id() {
+                                self.send_handles_by_txn
+                                    .lock()
+                                    .unwrap()
+                                    .insert(txn.to_string(), handle.clone());
+                            }
+                        }
+                    }
+                    true
+                }
+                Err(_) => false,
+            }
         })
     }
 
@@ -1892,79 +1909,96 @@ impl Client {
     }
 
     pub fn enqueue_text(&self, room_id: String, body: String, txn_id: Option<String>) -> String {
-        // Keep behavior: return a txn id immediately, but now we send directly via the SDK.
-        let txn = txn_id.unwrap_or_else(|| format!("mages-{}", now_ms()));
+        let client_txn = txn_id.unwrap_or_else(|| format!("mages-{}", now_ms()));
 
-        let client = self.inner.clone();
         let tx = self.send_tx.clone();
-
-        // Emit a Sending update to any observers (best-effort).
-        let _ = tx.send(SendUpdate {
-            room_id: room_id.clone(),
-            txn_id: txn.clone(),
-            attempts: 0,
-            state: SendState::Sending,
-            event_id: None,
-            error: None,
-        });
-
-        let txc = txn.clone();
+        let client = self.inner.clone();
+        let mut handles = self.send_handles_by_txn.lock().unwrap().clone();
+        let txn_id = client_txn.clone();
         RT.spawn(async move {
             use matrix_sdk::ruma::events::room::message::RoomMessageEventContent as Msg;
+            // Emit "Sending" (best-effort continuity with previous observer).
+            let _ = tx.send(SendUpdate {
+                room_id: room_id.clone(),
+                txn_id: txn_id.clone(),
+                attempts: 0,
+                state: SendState::Sending,
+                event_id: None,
+                error: None,
+            });
 
-            let rid = match OwnedRoomId::try_from(room_id.clone()) {
-                Ok(r) => r,
-                Err(_) => {
-                    let _ = tx.send(SendUpdate {
-                        room_id,
-                        txn_id: txc.clone(),
-                        attempts: 0,
-                        state: SendState::Failed,
-                        event_id: None,
-                        error: Some("bad room id".into()),
-                    });
-                    return;
-                }
+            let Ok(rid) = OwnedRoomId::try_from(room_id.clone()) else {
+                let _ = tx.send(SendUpdate {
+                    room_id,
+                    txn_id: txn_id,
+                    attempts: 0,
+                    state: SendState::Failed,
+                    event_id: None,
+                    error: Some("bad room id".into()),
+                });
+                return;
             };
 
-            let Some(timeline) = get_timeline_for(&client, &rid).await else {
+            if let Some(timeline) = get_timeline_for(&client, &rid).await {
+                match timeline.send(Msg::text_plain(body.clone()).into()).await {
+                    Ok(handle) => {
+                        // Map protocol txn id (if we can see it now) -> handle, for future precise retry.
+                        if let Some(latest) = timeline.latest_event().await {
+                            if latest.event_id().is_none() {
+                                if let Some(proto_txn) = latest.transaction_id() {
+                                    handles.insert(proto_txn.to_string(), handle);
+                                }
+                            }
+                        }
+                        let _ = tx.send(SendUpdate {
+                            room_id: rid.to_string(),
+                            txn_id: txn_id,
+                            attempts: 0,
+                            state: SendState::Sent,
+                            event_id: None,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(SendUpdate {
+                            room_id: rid.to_string(),
+                            txn_id: txn_id,
+                            attempts: 0,
+                            state: SendState::Failed,
+                            event_id: None,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+            } else {
                 let _ = tx.send(SendUpdate {
                     room_id: rid.to_string(),
-                    txn_id: txc.clone(),
+                    txn_id: txn_id,
                     attempts: 0,
                     state: SendState::Failed,
                     event_id: None,
                     error: Some("room/timeline not found".into()),
                 });
-                return;
-            };
-
-            match timeline.send(Msg::text_plain(body).into()).await {
-                Ok(_) => {
-                    // We don’t have the remote event id here; leave None.
-                    let _ = tx.send(SendUpdate {
-                        room_id: rid.to_string(),
-                        txn_id: txc.clone(),
-                        attempts: 0,
-                        state: SendState::Sent,
-                        event_id: None,
-                        error: None,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(SendUpdate {
-                        room_id: rid.to_string(),
-                        txn_id: txc.clone(),
-                        attempts: 0,
-                        state: SendState::Failed,
-                        event_id: None,
-                        error: Some(e.to_string()),
-                    });
-                }
             }
         });
 
-        txn
+        client_txn
+    }
+
+    pub fn retry_by_txn(&self, _room_id: String, txn_id: String) -> bool {
+        RT.block_on(async {
+            if let Some(handle) = self
+                .send_handles_by_txn
+                .lock()
+                .unwrap()
+                .get(&txn_id)
+                .cloned()
+            {
+                handle.unwedge().await.is_ok()
+            } else {
+                false
+            }
+        })
     }
 
     pub fn start_send_worker(&self) {

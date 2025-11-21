@@ -273,14 +273,17 @@ class RoomController(
     }
 
     fun retry(ev: MessageEvent) {
-        // Only meaningful for failed local echoes and text messages
         if (ev.body.isBlank()) return
         scope.launch {
-            val ok = service.sendMessage(_state.value.roomId, ev.body.trim())
-            if (!ok) {
-                _state.update { it.copy(error = "Retry failed") }
-            }
+            val rid = _state.value.roomId
+            val triedPrecise = ev.txnId?.let { txn ->
+                service.retryByTxn(rid, txn)
+            } ?: false
+
+            val ok = if (triedPrecise) true else service.sendMessage(rid, ev.body.trim())
+            if (!ok) _state.update { it.copy(error = "Retry failed") }
         }
+
     }
 
 
