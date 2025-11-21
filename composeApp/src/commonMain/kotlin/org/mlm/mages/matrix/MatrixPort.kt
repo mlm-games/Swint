@@ -90,13 +90,13 @@ interface MatrixPort {
     fun startSendWorker()
     fun observeSends(): Flow<SendUpdate>
 
-    suspend fun setMediaRetentionPolicy(
-        maxCacheSizeBytes: Long? = null,
-        maxFileSizeBytes: Long? = null,
-        lastAccessExpirySecs: Long? = null,
-        cleanupFrequencySecs: Long? = null,
-    ): Boolean
-    suspend fun mediaCacheClean(): Boolean
+//    suspend fun setMediaRetentionPolicy(
+//        maxCacheSizeBytes: Long? = null,
+//        maxFileSizeBytes: Long? = null,
+//        lastAccessExpirySecs: Long? = null,
+//        cleanupFrequencySecs: Long? = null,
+//    ): Boolean
+//    suspend fun mediaCacheClean(): Boolean
 
     suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String>
 
@@ -104,12 +104,6 @@ interface MatrixPort {
         fun onRequest(flowId: String, fromUser: String, fromDevice: String)
         fun onError(message: String)
     }
-    suspend fun initCaches(): Boolean
-    suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean
-    suspend fun getCachedMessages(roomId: String, limit: Int): List<MessageEvent>
-    suspend fun savePaginationState(state: PaginationState): Boolean
-    suspend fun getPaginationState(roomId: String): PaginationState?
-
     fun observeConnection(observer: ConnectionObserver): ULong
     fun stopConnectionObserver(token: ULong)
 
@@ -207,6 +201,9 @@ interface MatrixPort {
     fun unobserveRoomList(token: ULong)
 
     suspend fun fetchNotification(roomId: String, eventId: String): RenderedNotification?
+
+    fun roomListSetUnreadOnly(token: ULong, unreadOnly: Boolean): Boolean
+
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

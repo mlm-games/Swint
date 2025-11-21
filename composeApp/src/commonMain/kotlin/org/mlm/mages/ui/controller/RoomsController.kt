@@ -217,5 +217,10 @@ class RoomsController(
         _state.update { it.copy(roomSearchQuery = q) }
     }
 
+    fun setUnreadOnly(unreadOnly: Boolean) {
+        val tok = roomListToken ?: return
+        service.port.roomListSetUnreadOnly(tok, unreadOnly)
+    }
+
     fun open(room: RoomSummary) = onOpenRoom(room)
 }

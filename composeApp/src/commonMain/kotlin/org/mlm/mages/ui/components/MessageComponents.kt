@@ -54,6 +54,7 @@ fun MessageBubble(
     grouped: Boolean,
     reactions: Set<String> = emptySet(),
     eventId: String? = null,
+    sendState: org.mlm.mages.matrix.SendState? = null,
     onLongPress: (() -> Unit)? = null,
     onReact: ((String) -> Unit)? = null,
     showTicks: Boolean = false,
@@ -149,16 +150,37 @@ fun MessageBubble(
                     )
                     if (isMine && showTicks) {
                         Spacer(Modifier.width(6.dp))
-                        val isPending = eventId.isNullOrBlank()
-                        Icon(
-                            imageVector = if (isPending) Icons.Default.Schedule else Icons.Default.Check,
-                            contentDescription = if (isPending) "Sending" else "Sent",
-                            tint = if (isPending)
+                        val (icon, desc, tint) = when (sendState) {
+                            org.mlm.mages.matrix.SendState.Sending,
+                            org.mlm.mages.matrix.SendState.Enqueued,
+                            org.mlm.mages.matrix.SendState.Retrying -> Triple(
+                                Icons.Default.Schedule,
+                                "Sending",
                                 MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
-                            else
-                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-                            modifier = Modifier.size(12.dp)
-                        )
+                            )
+                            org.mlm.mages.matrix.SendState.Failed -> Triple(
+                                Icons.Default.Close,
+                                "Failed",
+                                MaterialTheme.colorScheme.error
+                            )
+                            org.mlm.mages.matrix.SendState.Sent -> Triple(
+                                Icons.Default.Check,
+                                "Sent",
+                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                            )
+                            null -> {
+                                // Fallback to old heuristic (eventId present -> sent)
+                                val isPending = eventId.isNullOrBlank()
+                                if (isPending)
+                                    Triple(Icons.Default.Schedule, "Sending",
+                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f))
+                                else
+                                    Triple(Icons.Default.Check, "Sent",
+                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                            }
+                        }
+                        Icon(imageVector = icon, contentDescription = desc, tint = tint, modifier = Modifier.size(12.dp))
+
                     }
                 }
             }

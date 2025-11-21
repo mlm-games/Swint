@@ -35,6 +35,7 @@ fun RoomScreen(
     onReact: (MessageEvent, String) -> Unit,
     onPaginateBack: () -> Unit,
     onMarkReadHere: (MessageEvent) -> Unit,
+    onRetry: (MessageEvent) -> Unit,
     onSendAttachment: (AttachmentData) -> Unit,
     onCancelUpload: () -> Unit,
     onDelete: (MessageEvent) -> Unit,
@@ -286,7 +287,8 @@ fun RoomScreen(
             onEdit = { onEdit(ev) },
             onDelete = { onDelete(ev) },
             onReact = { emoji -> onReact(ev, emoji) },
-            onMarkReadHere = { onMarkReadHere(ev) }
+            onMarkReadHere = { onMarkReadHere(ev) },
+            onRetry = { onRetry(ev) }
         )
     }
 }

@@ -339,7 +339,8 @@ fun MessageActionSheet(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onReact: (String) -> Unit,
-    onMarkReadHere: () -> Unit
+    onMarkReadHere: () -> Unit,
+    onRetry: (() -> Unit)? = null
 ) {
     val clipboard = LocalClipboardManager.current
     val quickReactions = listOf("👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "💀")
@@ -426,6 +427,17 @@ fun MessageActionSheet(
             Spacer(modifier = Modifier.height(8.dp))
 
             // Actions
+            if (isMine && event.sendState == SendState.Failed && onRetry != null) {
+                MessageActionItem(
+                    icon = Icons.Default.Refresh,
+                    text = "Retry send",
+                    onClick = {
+                        onRetry()
+                        onDismiss()
+                    }
+                )
+            }
+
             MessageActionItem(
                 icon = Icons.Default.ContentCopy,
                 text = "Copy",

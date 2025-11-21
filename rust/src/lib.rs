@@ -64,7 +64,7 @@ use matrix_sdk_ui::{
     room_list_service::{RoomList, filters},
     sync_service::{State, SyncService},
     timeline::{
-        EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
+        EventSendState, EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
         TimelineEventItemId, TimelineItem, TimelineItemContent,
     },
 };
@@ -103,6 +103,8 @@ pub struct MessageEvent {
     pub sender: String,
     pub body: String,
     pub timestamp_ms: u64,
+    pub send_state: Option<SendState>,
+    pub txn_id: Option<String>,
 }
 
 #[derive(Clone, Record)]
@@ -184,6 +186,10 @@ pub struct UnreadStats {
     pub messages: u64,
     pub notifications: u64,
     pub mentions: u64,
+}
+
+enum RoomListCmd {
+    SetUnreadOnly(bool),
 }
 
 #[derive(uniffi::Record, Clone)]
@@ -343,6 +349,7 @@ pub struct Client {
     inbox_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     receipts_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     room_list_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    room_list_cmds: Mutex<HashMap<u64, tokio::sync::mpsc::UnboundedSender<RoomListCmd>>>,
     call_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
@@ -419,6 +426,7 @@ impl Client {
             inbox_subs: Mutex::new(HashMap::new()),
             receipts_subs: Mutex::new(HashMap::new()),
             room_list_subs: Mutex::new(HashMap::new()),
+            room_list_cmds: Mutex::new(HashMap::new()),
             call_subs: Mutex::new(HashMap::new()),
         };
 
@@ -2214,97 +2222,132 @@ impl Client {
         let svc_slot = self.sync_service.clone();
         let id = self.next_sub_id();
 
-        let h = RT.spawn(async move {
-            // Wait for sync service
-            let svc = {
-                let mut attempts = 0;
-                loop {
-                    if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
-                        break s;
-                    }
-                    attempts += 1;
-                    if attempts > 100 {
-                        // 20 seconds timeout
-                        eprintln!("observe_room_list: SyncService not available after timeout");
-                        return;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-            };
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<RoomListCmd>();
+        let id_for_map = id;
+        self.room_list_cmds
+            .lock()
+            .unwrap()
+            .insert(id_for_map, cmd_tx);
 
-            let rls = svc.room_list_service();
-            let all = match rls.all_rooms().await {
-                Ok(list) => list,
-                Err(e) => {
-                    eprintln!("observe_room_list: failed to get all_rooms: {e}");
+        let h = RT.spawn(async move {
+        // Wait for sync service
+        let svc = {
+            let mut attempts = 0;
+            loop {
+                if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
+                    break s;
+                }
+                attempts += 1;
+                if attempts > 100 {
+                    eprintln!("observe_room_list: SyncService not available after timeout");
                     return;
                 }
-            };
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        };
 
-            let (stream, controller) = all.entries_with_dynamic_adapters(50);
-            tokio::pin!(stream);
+        let rls = svc.room_list_service();
+        let all = match rls.all_rooms().await {
+            Ok(list) => list,
+            Err(e) => {
+                eprintln!("observe_room_list: failed to get all_rooms: {e}");
+                return;
+            }
+        };
 
-            controller.set_filter(Box::new(
-                matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
-            ));
+        let (stream, controller) = all.entries_with_dynamic_adapters(50);
+        tokio::pin!(stream);
 
-            while let Some(diffs) = stream.next().await {
-                for diff in diffs {
-                    match diff {
-                        VectorDiff::Reset { values } => {
-                            let snapshot: Vec<_> = values
-                                .iter()
-                                .map(|room| RoomListEntry {
-                                    room_id: room.room_id().to_string(),
-                                    name: room
-                                        .cached_display_name()
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| room.room_id().to_string()),
-                                    unread: room.unread_notification_counts().notification_count
-                                        as u64,
-                                    last_ts: 0,
-                                })
-                                .collect();
+        controller.set_filter(Box::new(
+            matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
+        ));
 
-                            let obs_clone = obs.clone();
-                            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
-                                obs_clone.on_reset(snapshot)
-                            }));
+        loop {
+            tokio::select! {
+                // Apply filter updates.
+                Some(cmd) = cmd_rx.recv() => {
+                    match cmd {
+                        RoomListCmd::SetUnreadOnly(unread_only) => {
+                            if unread_only {
+                                controller.set_filter(Box::new(filters::new_filter_all(vec![
+                                    Box::new(filters::new_filter_non_left()),
+                                    Box::new(filters::new_filter_unread()),
+                                ])));
+                            } else {
+                                controller.set_filter(Box::new(filters::new_filter_non_left()));
+                            }
                         }
-                        VectorDiff::Set { value, .. }
-                        | VectorDiff::Insert { value, .. }
-                        | VectorDiff::PushBack { value }
-                        | VectorDiff::PushFront { value } => {
-                            let entry = RoomListEntry {
-                                room_id: value.room_id().to_string(),
-                                name: value
-                                    .cached_display_name()
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_else(|| value.room_id().to_string()),
-                                unread: value.unread_notification_counts().notification_count
-                                    as u64,
-                                last_ts: 0,
-                            };
-
-                            let obs_clone = obs.clone();
-                            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
-                                obs_clone.on_update(entry)
-                            }));
-                        }
-                        _ => {}
                     }
                 }
+                // Forward room list diffs.
+                Some(diffs) = stream.next() => {
+                    for diff in diffs {
+                        match diff {
+                            VectorDiff::Reset { values } => {
+                                let snapshot: Vec<_> = values
+                                    .iter()
+                                    .map(|room| RoomListEntry {
+                                        room_id: room.room_id().to_string(),
+                                        name: room
+                                            .cached_display_name()
+                                            .map(|n| n.to_string())
+                                            .unwrap_or_else(|| room.room_id().to_string()),
+                                        unread: room.unread_notification_counts().notification_count
+                                            as u64,
+                                        last_ts: 0,
+                                    })
+                                    .collect();
+
+                                let obs_clone = obs.clone();
+                                let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                                    obs_clone.on_reset(snapshot)
+                                }));
+                            }
+                            VectorDiff::Set { value, .. }
+                            | VectorDiff::Insert { value, .. }
+                            | VectorDiff::PushBack { value }
+                            | VectorDiff::PushFront { value } => {
+                                let entry = RoomListEntry {
+                                    room_id: value.room_id().to_string(),
+                                    name: value
+                                        .cached_display_name()
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| value.room_id().to_string()),
+                                    unread: value.unread_notification_counts().notification_count
+                                        as u64,
+                                    last_ts: 0,
+                                };
+
+                                let obs_clone = obs.clone();
+                                let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                                    obs_clone.on_update(entry)
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                else => break,
             }
-        });
+        }
+    });
 
         self.room_list_subs.lock().unwrap().insert(id, h);
         id
     }
-
     pub fn unobserve_room_list(&self, token: u64) -> bool {
+        self.room_list_cmds.lock().unwrap().remove(&token);
         if let Some(h) = self.room_list_subs.lock().unwrap().remove(&token) {
             h.abort();
             true
+        } else {
+            false
+        }
+    }
+
+    pub fn room_list_set_unread_only(&self, token: u64, unread_only: bool) -> bool {
+        if let Some(tx) = self.room_list_cmds.lock().unwrap().get(&token).cloned() {
+            tx.send(RoomListCmd::SetUnreadOnly(unread_only)).is_ok()
         } else {
             false
         }
@@ -2432,6 +2475,13 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<T
 fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
+    let txn_id = ev.transaction_id().map(|t| t.to_string());
+    let send_state = match ev.send_state() {
+        Some(EventSendState::NotSentYet { .. }) => Some(SendState::Sending),
+        Some(EventSendState::SendingFailed { .. }) => Some(SendState::Failed),
+        Some(EventSendState::Sent { .. }) => Some(SendState::Sent),
+        None => None,
+    };
 
     // Prefer message text; otherwise render state/membership/profile/etc.
     let body = if let Some(msg) = ev.content().as_message() {
@@ -2447,12 +2497,21 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         sender: ev.sender().to_string(),
         body,
         timestamp_ms: ts,
+        send_state,
+        txn_id,
     })
 }
 
 fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
+    let txn_id = ev.transaction_id().map(|t| t.to_string());
+    let send_state = match ev.send_state() {
+        Some(EventSendState::NotSentYet { .. }) => Some(SendState::Sending),
+        Some(EventSendState::SendingFailed { .. }) => Some(SendState::Failed),
+        Some(EventSendState::Sent { event_id }) => Some(SendState::Sent),
+        None => None,
+    };
 
     let body = if let Some(msg) = ev.content().as_message() {
         render_message_text(msg)
@@ -2467,6 +2526,8 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
         sender: ev.sender().to_string(),
         body,
         timestamp_ms: ts,
+        send_state,
+        txn_id,
     })
 }
 

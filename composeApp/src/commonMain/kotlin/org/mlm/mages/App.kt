@@ -84,6 +84,7 @@ fun App(
                     onSendAttachment = controller::sendAttachment,
                     onCancelUpload = controller::cancelAttachmentUpload,
                     onDelete = controller::delete,
+                    onRetry = controller::retry
                 )
             }
             Route.Security -> {

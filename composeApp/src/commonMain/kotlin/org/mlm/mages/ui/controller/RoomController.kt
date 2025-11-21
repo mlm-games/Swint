@@ -29,6 +29,7 @@ class RoomController(
 
     private var typingToken: ULong? = null
     private var receiptsToken: ULong? = null
+    private var ownReceiptToken: ULong? = null
     private var dmPeer: String? = null
     private var uploadJob: Job? = null
     private var typingJob: Job? = null
@@ -42,6 +43,7 @@ class RoomController(
         loadInitial()
         observeTimeline()
         observeTyping()
+        observeOwnReceipt()
         observeReceipts()
         updateMyUserId()
         scope.launch {
@@ -69,6 +71,25 @@ class RoomController(
             }
         }
     }
+
+    private fun observeOwnReceipt() {
+        // Set initial divider from SDK
+        scope.launch {
+            runCatching { service.port.ownLastRead(_state.value.roomId) }
+                .onSuccess { (_, ts) -> _state.update { it.copy(lastReadTs = ts) } }
+        }
+        // Subscribe to changes in our own read receipt
+        ownReceiptToken?.let { service.port.stopReceiptsObserver(it) }
+        ownReceiptToken = service.port.observeOwnReceipt(_state.value.roomId, object : ReceiptsObserver {
+            override fun onChanged() {
+                scope.launch {
+                    runCatching { service.port.ownLastRead(_state.value.roomId) }
+                        .onSuccess { (_, ts) -> _state.update { it.copy(lastReadTs = ts) } }
+                }
+            }
+        })
+    }
+
 
     private fun observeTimeline() {
         scope.launch {
@@ -251,6 +272,18 @@ class RoomController(
         }
     }
 
+    fun retry(ev: MessageEvent) {
+        // Only meaningful for failed local echoes and text messages
+        if (ev.body.isBlank()) return
+        scope.launch {
+            val ok = service.sendMessage(_state.value.roomId, ev.body.trim())
+            if (!ok) {
+                _state.update { it.copy(error = "Retry failed") }
+            }
+        }
+    }
+
+
     fun paginateBack() {
         val s = _state.value
         if (s.isPaginatingBack || s.hitStart) return
@@ -289,13 +322,7 @@ class RoomController(
     fun markReadHere(ev: MessageEvent) {
         scope.launch {
             service.markReadAt(ev.roomId, ev.eventId)
-            saveLastRead(ev.timestamp)
         }
-    }
-
-    private suspend fun saveLastRead(ts: Long) {
-        saveLong(dataStore, key(_state.value.roomId), ts)
-        _state.update { it.copy(lastReadTs = ts) }
     }
 
     fun delete(ev: MessageEvent) {

@@ -16,4 +16,7 @@ data class MessageEvent(
     val sender: String,
     val body: String,
     val timestamp: Long
+    val sendState: org.mlm.mages.matrix.SendState? = null,
+    val txnId: String? = null
+
 )
