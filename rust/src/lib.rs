@@ -105,6 +105,9 @@ pub struct MessageEvent {
     pub timestamp_ms: u64,
     pub send_state: Option<SendState>,
     pub txn_id: Option<String>,
+    pub reply_to_event_id: Option<String>,
+    pub reply_to_sender: Option<String>,
+    pub reply_to_body: Option<String>,
 }
 
 #[derive(Clone, Record)]
@@ -1508,23 +1511,34 @@ impl Client {
         filename: Option<String>,
         progress: Option<Box<dyn ProgressObserver>>,
     ) -> bool {
-        match read_all(&path) {
-            Ok(bytes) => {
-                let name = filename
-                    .or_else(|| {
-                        std::path::Path::new(&path)
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .map(|s| s.to_owned())
-                    })
-                    .unwrap_or_else(|| "file".to_string());
-                self.send_attachment_bytes(room_id, name, mime, bytes, progress)
+        use matrix_sdk_ui::timeline::{AttachmentConfig, AttachmentSource};
+        RT.block_on(async {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let Some(tl) = get_timeline_for(&self.inner, &rid).await else {
+                return false;
+            };
+
+            // Parse MIME (fallback to application/octet-stream)
+            let parsed: Mime = mime.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
+
+            // Stream directly from disk (AttachmentSource::File reads size + filename)
+            let fut = tl.send_attachment(
+                std::path::PathBuf::from(&path),
+                parsed,
+                AttachmentConfig::default(),
+            );
+            let res = fut.await;
+
+            if let Some(p) = progress {
+                if let Ok(md) = std::fs::metadata(&path) {
+                    let sz = md.len();
+                    p.on_progress(sz, Some(sz));
+                }
             }
-            Err(e) => {
-                eprintln!("read file error {path}: {e}");
-                false
-            }
-        }
+            res.is_ok()
+        })
     }
 
     pub fn download_to_path(
@@ -2517,12 +2531,42 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         None => None,
     };
 
-    // Prefer message text; otherwise render state/membership/profile/etc.
-    let body = if let Some(msg) = ev.content().as_message() {
-        render_message_text(msg)
-    } else {
-        render_timeline_text(ev)
-    };
+    let mut reply_to_event_id: Option<String> = None;
+    let mut reply_to_sender: Option<String> = None;
+    let mut reply_to_body: Option<String> = None;
+    let mut body = String::new();
+
+    match ev.content() {
+        TimelineItemContent::MsgLike(ml) => {
+            // Reply details
+            if let Some(details) = &ml.in_reply_to {
+                reply_to_event_id = Some(details.event_id.to_string());
+                // If embedded event details are available, surface sender/body
+                if let matrix_sdk_ui::timeline::TimelineDetails::Ready(embed) = &details.event {
+                    reply_to_sender = Some(embed.sender.to_string());
+                    // If replied content is a message, extract its body
+                    if let Some(m) = embed.content.as_message() {
+                        reply_to_body = Some(m.body().to_owned());
+                    }
+                }
+            }
+            // Message body for this event (strip fallback if we have a reply)
+            if let Some(msg) = ml.as_message() {
+                let raw = msg.body();
+                body = if reply_to_event_id.is_some() {
+                    strip_reply_fallback(raw)
+                } else {
+                    render_message_text(&msg)
+                };
+            } else {
+                body = render_timeline_text(ev);
+            }
+        }
+        _ => {
+            // Non message-like: use existing renderer
+            body = render_timeline_text(ev);
+        }
+    }
 
     Some(MessageEvent {
         item_id: format!("{:?}", ev.identifier()),
@@ -2533,6 +2577,9 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         timestamp_ms: ts,
         send_state,
         txn_id,
+        reply_to_event_id,
+        reply_to_sender,
+        reply_to_body,
     })
 }
 
@@ -2547,11 +2594,34 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
         None => None,
     };
 
-    let body = if let Some(msg) = ev.content().as_message() {
-        render_message_text(msg)
-    } else {
-        render_timeline_text(ev)
-    };
+    let mut reply_to_event_id: Option<String> = None;
+    let mut reply_to_sender: Option<String> = None;
+    let mut reply_to_body: Option<String> = None;
+    let mut body = String::new();
+    match ev.content() {
+        TimelineItemContent::MsgLike(ml) => {
+            if let Some(details) = &ml.in_reply_to {
+                reply_to_event_id = Some(details.event_id.to_string());
+                if let matrix_sdk_ui::timeline::TimelineDetails::Ready(embed) = &details.event {
+                    reply_to_sender = Some(embed.sender.to_string());
+                    if let Some(m) = embed.content.as_message() {
+                        reply_to_body = Some(m.body().to_owned());
+                    }
+                }
+            }
+            if let Some(msg) = ml.as_message() {
+                let raw = msg.body();
+                body = if reply_to_event_id.is_some() {
+                    strip_reply_fallback(raw)
+                } else {
+                    render_message_text(&msg)
+                };
+            } else {
+                body = render_timeline_text(ev);
+            }
+        }
+        _ => body = render_timeline_text(ev),
+    }
 
     Some(MessageEvent {
         item_id: uid.to_string(),
@@ -2562,6 +2632,9 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
         timestamp_ms: ts,
         send_state,
         txn_id,
+        reply_to_event_id,
+        reply_to_sender,
+        reply_to_body,
     })
 }
 
@@ -2662,6 +2735,37 @@ fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
         s.push_str(" \n(edited)");
     }
     s
+}
+
+fn strip_reply_fallback(body: &str) -> String {
+    let mut lines = body.lines();
+    let mut consumed = 0usize;
+    // Consume leading quoted lines (starting with '>')
+    for l in body.lines() {
+        if l.starts_with('>') {
+            consumed += 1;
+        } else {
+            break;
+        }
+    }
+    // Optionally consume a single blank line after the quote block
+    let remaining: Vec<&str> = body.lines().collect();
+    let mut start = consumed;
+    if start < remaining.len() && remaining[start].trim().is_empty() && consumed > 0 {
+        start += 1;
+    }
+    remaining[start..]
+        .join("\n")
+        .if_empty_then(|| body.to_owned())
+}
+
+trait IfEmptyThen {
+    fn if_empty_then<F: FnOnce() -> String>(self, f: F) -> String;
+}
+impl IfEmptyThen for String {
+    fn if_empty_then<F: FnOnce() -> String>(self, f: F) -> String {
+        if self.trim().is_empty() { f() } else { self }
+    }
 }
 
 fn render_membership_change(

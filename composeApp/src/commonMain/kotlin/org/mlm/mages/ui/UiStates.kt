@@ -21,6 +21,7 @@ data class RoomsUiState(
     val unread: Map<String, Int> = emptyMap(),
     val offlineBanner: String? = null,
     val syncBanner: String? = null,
+    val unreadOnly: Boolean = false,
     val isBusy: Boolean = false,
     val error: String? = null,
 
@@ -32,7 +33,6 @@ data class RoomUiState(
     val roomName: String,
     val myUserId: String? = null,
     val events: List<MessageEvent> = emptyList(),
-    val outbox: List<SendIndicator> = emptyList(),
     val input: String = "",
     val replyingTo: MessageEvent? = null,
     val editing: MessageEvent? = null,
@@ -40,7 +40,6 @@ data class RoomUiState(
     val isPaginatingBack: Boolean = false,
     val hitStart: Boolean = false,
     val isOffline: Boolean = false,
-    val pendingSendCount: Int = 0,
     val currentAttachment: AttachmentData? = null,
     val isUploadingAttachment: Boolean = false,
     val attachmentProgress: Float = 0f,

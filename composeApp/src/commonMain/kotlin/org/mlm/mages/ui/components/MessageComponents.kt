@@ -55,13 +55,14 @@ fun MessageBubble(
     grouped: Boolean,
     reactions: Set<String> = emptySet(),
     eventId: String? = null,
+    replyPreview: String? = null,
     sendState: org.mlm.mages.matrix.SendState? = null,
     onLongPress: (() -> Unit)? = null,
     onReact: ((String) -> Unit)? = null,
     showTicks: Boolean = false,
     lastReadByOthersTs: Long? = null,
 ) {
-    val (replyPreview, bodyShown) = remember(body) { parseReplyFallback(body) }
+    val bodyShown = body
 
     Column(
         modifier = Modifier

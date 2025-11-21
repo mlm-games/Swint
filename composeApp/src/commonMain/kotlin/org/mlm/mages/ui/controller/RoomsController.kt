@@ -65,6 +65,13 @@ class RoomsController(
         })
     }
 
+    fun toggleUnreadOnly() {
+        val tok = roomListToken ?: return
+        val next = !_state.value.unreadOnly
+        _state.update { it.copy(unreadOnly = next) }
+        service.port.roomListSetUnreadOnly(tok, next)
+    }
+
 
     private fun observeConnection() {
         connToken?.let { service.stopConnectionObserver(it) }

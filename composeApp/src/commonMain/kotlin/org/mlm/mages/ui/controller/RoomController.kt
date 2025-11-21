@@ -36,10 +36,6 @@ class RoomController(
 
 
     init {
-        scope.launch {
-            val ts = runCatching { loadLong(dataStore, key(_state.value.roomId)) }.getOrNull()
-            _state.update { it.copy(lastReadTs = ts) }
-        }
         loadInitial()
         observeTimeline()
         observeTyping()
@@ -50,9 +46,6 @@ class RoomController(
             dmPeer = runCatching { service.port.dmPeerUserId(_state.value.roomId) }.getOrNull()
         }
     }
-
-    private fun key(roomId: String) = "room_read_ts:$roomId"
-
 
     private fun updateMyUserId() {
         _state.update { it.copy(myUserId = service.port.whoami()) }
