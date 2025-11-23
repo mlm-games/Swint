@@ -1,5 +1,6 @@
 package org.mlm.mages.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -20,10 +21,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,12 +38,14 @@ import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import org.mlm.mages.AttachmentKind
+import org.mlm.mages.platform.loadImageBitmapFromPath
 
 @Composable
 fun MessageBubble(
@@ -57,12 +58,14 @@ fun MessageBubble(
     eventId: String? = null,
     replyPreview: String? = null,
     sendState: org.mlm.mages.matrix.SendState? = null,
+    thumbPath: String? = null,
+    attachmentKind: AttachmentKind? = null,
+    durationMs: Long? = null,
     onLongPress: (() -> Unit)? = null,
     onReact: ((String) -> Unit)? = null,
-    showTicks: Boolean = false,
+    onOpenAttachment: (() -> Unit)? = null,
     lastReadByOthersTs: Long? = null,
 ) {
-    val bodyShown = body
 
     Column(
         modifier = Modifier
@@ -134,9 +137,48 @@ fun MessageBubble(
                     Spacer(Modifier.height(8.dp))
                 }
 
+                if (thumbPath != null && (attachmentKind == AttachmentKind.Image || attachmentKind == AttachmentKind.Video)) {
+                    val bmp = loadImageBitmapFromPath(thumbPath)
+                    if (bmp != null) {
+                        Box(
+                            modifier = Modifier
+                                .widthIn(max = 280.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = onOpenAttachment != null) { onOpenAttachment?.invoke() }
+                        ) {
+                            Image(
+                                bitmap = bmp,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (attachmentKind == AttachmentKind.Video && durationMs != null) {
+                                DurationBadge(
+                                    durationMs,
+                                    Modifier.align(Alignment.BottomEnd).padding(6.dp)
+                                )
+                            }
+                        }
+                        if (body.isNotBlank()) Spacer(Modifier.height(6.dp))
+                    } else {
+                        // Fallback placeholder
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.widthIn(max = 280.dp)
+                        ) {
+                            Text(
+                                text = if (attachmentKind == AttachmentKind.Video) "Video" else "Image",
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        if (body.isNotBlank()) Spacer(Modifier.height(6.dp))
+                    }
+                }
+
                 // Message content with markdown
                 MarkdownText(
-                    text = bodyShown,
+                    text = body,
                     color = if (isMine)
                         MaterialTheme.colorScheme.onPrimaryContainer
                     else MaterialTheme.colorScheme.onSurfaceVariant
@@ -150,40 +192,6 @@ fun MessageBubble(
                             MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     )
-                    if (isMine && showTicks) {
-                        Spacer(Modifier.width(6.dp))
-                        val (icon, desc, tint) = when (sendState) {
-                            org.mlm.mages.matrix.SendState.Sending,
-                            org.mlm.mages.matrix.SendState.Enqueued,
-                            org.mlm.mages.matrix.SendState.Retrying -> Triple(
-                                Icons.Default.Schedule,
-                                "Sending",
-                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
-                            )
-                            org.mlm.mages.matrix.SendState.Failed -> Triple(
-                                Icons.Default.Error,
-                                "Failed",
-                                MaterialTheme.colorScheme.error
-                            )
-                            org.mlm.mages.matrix.SendState.Sent -> Triple(
-                                Icons.Default.Check,
-                                "Sent",
-                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                            )
-                            null -> {
-                                // Fallback to old heuristic (eventId present -> sent)
-                                val isPending = eventId.isNullOrBlank()
-                                if (isPending)
-                                    Triple(Icons.Default.Schedule, "Sending",
-                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f))
-                                else
-                                    Triple(Icons.Default.Check, "Sent",
-                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
-                            }
-                        }
-                        Icon(imageVector = icon, contentDescription = desc, tint = tint, modifier = Modifier.size(12.dp))
-
-                    }
                 }
 
                 if (isMine && sendState == org.mlm.mages.matrix.SendState.Failed) {
@@ -446,5 +454,25 @@ fun formatBytes(bytes: Long): String {
         bytes < 1024 * 1024 -> "${bytes / 1024} KB"
         bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
         else -> "${bytes / (1024 * 1024 * 1024)} GB"
+    }
+}
+@Composable
+private fun DurationBadge(ms: Long, modifier: Modifier = Modifier) {
+    val secs = (ms / 1000).toInt()
+    val h = secs / 3600
+    val m = (secs % 3600) / 60
+    val s = secs % 60
+    val txt = if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+    Surface(
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+        shape = RoundedCornerShape(6.dp),
+        modifier = modifier
+    ) {
+        Text(
+            txt,
+            color = MaterialTheme.colorScheme.surface,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
     }
 }

@@ -108,6 +108,27 @@ pub struct MessageEvent {
     pub reply_to_event_id: Option<String>,
     pub reply_to_sender: Option<String>,
     pub reply_to_body: Option<String>,
+    pub attachment: Option<AttachmentInfo>,
+}
+
+#[derive(Clone, Enum)]
+pub enum AttachmentKind {
+    Image,
+    Video,
+    File,
+}
+
+#[derive(Clone, Record)]
+pub struct AttachmentInfo {
+    pub kind: AttachmentKind,
+    pub mxc_uri: String,
+    pub mime: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    /// Provided when available, else UI uses `mxc_uri` to request a thumbnail.
+    pub thumbnail_mxc_uri: Option<String>,
 }
 
 #[derive(Clone, Record)]
@@ -709,6 +730,10 @@ impl Client {
             let Ok(tl) = room.timeline().await else {
                 return;
             };
+
+            // Wrap Timeline in Arc immediately after obtaining it
+            let tl = Arc::new(tl);
+
             let (items, mut stream) = tl.subscribe().await;
 
             // Initial snapshot
@@ -722,6 +747,18 @@ impl Client {
                 .collect();
             obs.on_reset(initial);
 
+            for it in items.iter() {
+                if let Some(ev) = it.as_event() {
+                    if let Some(eid) = missing_reply_event_id(ev) {
+                        // Now clone the Arc (simpler syntax)
+                        let tlc = tl.clone();
+                        RT.spawn(async move {
+                            let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                        });
+                    }
+                }
+            }
+
             let mut items = items.clone();
 
             while let Some(diffs) = stream.next().await {
@@ -732,6 +769,12 @@ impl Client {
                                 items.push_back(value.clone());
                                 let uid = value.unique_id().0.to_string();
                                 if let Some(ei) = value.as_event() {
+                                    if let Some(eid) = missing_reply_event_id(ei) {
+                                        let tlc = tl.clone();
+                                        RT.spawn(async move {
+                                            let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                        });
+                                    }
                                     if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid)
                                     {
                                         obs.on_insert(ev);
@@ -743,6 +786,12 @@ impl Client {
                             items.push_back(value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
@@ -752,6 +801,12 @@ impl Client {
                             items.push_front(value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
@@ -771,6 +826,12 @@ impl Client {
                             items.insert(index, value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
@@ -782,6 +843,12 @@ impl Client {
                             }
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_update(ev);
                                 }
@@ -812,6 +879,13 @@ impl Client {
                                 .filter_map(|it| {
                                     let uid = it.unique_id().0.to_string();
                                     it.as_event().and_then(|ei| {
+                                        if let Some(eid) = missing_reply_event_id(ei) {
+                                            let tlc = tl.clone();
+                                            RT.spawn(async move {
+                                                let _ =
+                                                    tlc.fetch_details_for_event(eid.as_ref()).await;
+                                            });
+                                        }
                                         map_event_with_uid(ei, room_id.as_str(), &uid)
                                     })
                                 })
@@ -2393,6 +2467,53 @@ impl Client {
         }
     }
 
+    /// Download full media into the SDK's cache dir and return its path.
+    /// filename_hint is used to derive a friendly name/extension.
+    pub fn download_to_cache_file(
+        &self,
+        mxc_uri: String,
+        filename_hint: Option<String>,
+    ) -> Result<DownloadResult, FfiError> {
+        let dir = cache_dir(&self.store_dir);
+        ensure_dir(&dir);
+
+        // Safe-ish filename
+        fn sanitize(name: &str) -> String {
+            let mut s = String::with_capacity(name.len());
+            for ch in name.chars() {
+                if ch.is_ascii_alphanumeric() || "-_.".contains(ch) {
+                    s.push(ch);
+                } else {
+                    s.push('_');
+                }
+            }
+            s.trim_matches('_').to_string()
+        }
+        let hint = filename_hint
+            .as_ref()
+            .map(|h| sanitize(h))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "file.bin".to_string());
+        let fname = format!("dl_{}_{}", now_ms(), hint);
+        let out = dir.join(fname);
+
+        let mxc: OwnedMxcUri = mxc_uri.into();
+        let req = MediaRequestParameters {
+            source: MediaSource::Plain(mxc),
+            format: MediaFormat::File,
+        };
+
+        let bytes = RT
+            .block_on(async { self.inner.media().get_media_content(&req, true).await })
+            .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
+
+        std::fs::write(&out, &bytes)?;
+        Ok(DownloadResult {
+            path: out.to_string_lossy().to_string(),
+            bytes: bytes.len() as u64,
+        })
+    }
+
     pub fn room_list_set_unread_only(&self, token: u64, unread_only: bool) -> bool {
         if let Some(tx) = self.room_list_cmds.lock().unwrap().get(&token).cloned() {
             tx.send(RoomListCmd::SetUnreadOnly(unread_only)).is_ok()
@@ -2534,7 +2655,8 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let mut reply_to_event_id: Option<String> = None;
     let mut reply_to_sender: Option<String> = None;
     let mut reply_to_body: Option<String> = None;
-    let mut body = String::new();
+    let attachment: Option<AttachmentInfo> = None;
+    let body;
 
     match ev.content() {
         TimelineItemContent::MsgLike(ml) => {
@@ -2580,6 +2702,7 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         reply_to_event_id,
         reply_to_sender,
         reply_to_body,
+        attachment,
     })
 }
 
@@ -2597,7 +2720,9 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
     let mut reply_to_event_id: Option<String> = None;
     let mut reply_to_sender: Option<String> = None;
     let mut reply_to_body: Option<String> = None;
-    let mut body = String::new();
+    let body;
+    let mut attachment: Option<AttachmentInfo> = None;
+
     match ev.content() {
         TimelineItemContent::MsgLike(ml) => {
             if let Some(details) = &ml.in_reply_to {
@@ -2610,6 +2735,94 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
                 }
             }
             if let Some(msg) = ml.as_message() {
+                use matrix_sdk::ruma::events::room::message::MessageType as MT;
+                let mt = msg.msgtype();
+                match mt {
+                    MT::Image(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Image,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    MT::Video(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, dur, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.duration.map(|d| d.as_millis() as u64),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Video,
+                                mxc_uri: mxc_uri.clone(),
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: dur,
+                                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc_uri.clone())),
+                            });
+                        }
+                    }
+                    MT::File(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::File,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: None,
+                                height: None,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
                 let raw = msg.body();
                 body = if reply_to_event_id.is_some() {
                     strip_reply_fallback(raw)
@@ -2635,6 +2848,7 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
         reply_to_event_id,
         reply_to_sender,
         reply_to_body,
+        attachment,
     })
 }
 
@@ -2738,7 +2952,7 @@ fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
 }
 
 fn strip_reply_fallback(body: &str) -> String {
-    let mut lines = body.lines();
+    let lines = body.lines();
     let mut consumed = 0usize;
     // Consume leading quoted lines (starting with '>')
     for l in body.lines() {
@@ -2849,4 +3063,24 @@ fn render_other_state(ev: &EventTimelineItem, s: &matrix_sdk_ui::timeline::Other
             format!("{actor} updated state: {ty}")
         }
     }
+}
+
+fn mxc_from_media_source(src: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {
+    use matrix_sdk::ruma::events::room::MediaSource as MS;
+    match src {
+        MS::Plain(mxc) => Some(mxc.to_string()),
+        MS::Encrypted(file) => Some(file.url.to_string()),
+    }
+}
+
+fn missing_reply_event_id(ev: &EventTimelineItem) -> Option<matrix_sdk::ruma::OwnedEventId> {
+    if let TimelineItemContent::MsgLike(ml) = ev.content() {
+        if let Some(details) = &ml.in_reply_to {
+            use matrix_sdk_ui::timeline::TimelineDetails::*;
+            if !matches!(details.event, Ready(_)) {
+                return Some(details.event_id.clone());
+            }
+        }
+    }
+    None
 }

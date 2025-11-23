@@ -115,6 +115,8 @@ interface MatrixPort {
 
     suspend fun retryByTxn(roomId: String, txnId: String): Boolean
 
+    suspend fun downloadToCacheFile(mxcUri: String, filenameHint: String? = null): Result<String>
+
     fun stopTypingObserver(token: ULong)
 
     suspend fun paginateBack(roomId: String, count: Int): Boolean

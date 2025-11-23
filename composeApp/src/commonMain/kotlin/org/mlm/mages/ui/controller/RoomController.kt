@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import org.mlm.mages.AttachmentKind
 import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.matrix.MatrixPort
@@ -14,7 +15,6 @@ import org.mlm.mages.storage.loadLong
 import org.mlm.mages.storage.saveLong
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.AttachmentData
-import org.mlm.mages.ui.components.SendIndicator
 
 class RoomController(
     private val service: MatrixService,
@@ -110,6 +110,7 @@ class RoomController(
                     }
                 }
                 recomputeDerived()
+                prefetchThumbnails(diff)
             }
         }
     }
@@ -323,5 +324,55 @@ class RoomController(
 
     fun delete(ev: MessageEvent) {
         scope.launch { service.redact(_state.value.roomId, ev.eventId, null) }
+    }
+
+    private fun prefetchThumbnails(diff: TimelineDiff<MessageEvent>) {
+        val roomId = _state.value.roomId
+        fun want(ev: MessageEvent): Boolean {
+            val a = ev.attachment ?: return false
+            return when (a.kind) {
+                AttachmentKind.Image, AttachmentKind.Video -> true
+                AttachmentKind.File -> a.thumbnailMxcUri != null // only if server provides
+            }
+        }
+        val events = when (diff) {
+            is TimelineDiff.Reset -> diff.items
+            is TimelineDiff.Insert -> listOf(diff.item)
+            is TimelineDiff.Update -> listOf(diff.item)
+            else -> emptyList()
+        }.filter(::want)
+
+        if (events.isEmpty()) return
+        events.forEach { ev ->
+            val a = ev.attachment ?: return@forEach
+            // pick the best MXC for thumb
+            val mxc = a.thumbnailMxcUri ?: a.mxcUri
+            // Skip if we already have one
+            if (_state.value.thumbByEvent.containsKey(ev.eventId)) return@forEach
+            scope.launch {
+                val res = service.thumbnailToCache(mxc, 320, 320, true)
+                res.onSuccess { path ->
+                    _state.update { st ->
+                        st.copy(thumbByEvent = st.thumbByEvent + (ev.eventId to path))
+                    }
+                }
+            }
+        }
+    }
+
+    fun openAttachment(ev: MessageEvent, onOpen: (String, String?) -> Unit) {
+        val a = ev.attachment ?: return
+        scope.launch {
+            val nameHint = run {
+                val ext = a.mime?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                val base = ev.eventId.ifBlank { "file" }
+                if (ext != null) "$base.$ext" else base
+            }
+            val res = service.downloadToCacheFile(a.mxcUri, nameHint)
+            res.onSuccess { path -> onOpen(path, a.mime) }
+                .onFailure { t ->
+                    _state.update { it.copy(error = t.message ?: "Download failed") }
+                }
+        }
     }
 }

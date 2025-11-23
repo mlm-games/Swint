@@ -5,7 +5,6 @@ import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.DeviceSummary
 import org.mlm.mages.matrix.SasPhase
 import org.mlm.mages.ui.components.AttachmentData
-import org.mlm.mages.ui.components.SendIndicator
 
 
 data class LoginUiState(
@@ -50,7 +49,7 @@ data class RoomUiState(
     val isDm: Boolean = false,
     val lastIncomingFromOthersTs: Long? = null,
     val lastOutgoingRead: Boolean = false,
-
+    val thumbByEvent: Map<String, String> = emptyMap(),
 )
 data class VerificationRequestUi(
     val flowId: String,

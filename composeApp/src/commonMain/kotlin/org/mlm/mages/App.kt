@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.nav.*
+import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.ui.MainTheme
 import org.mlm.mages.ui.controller.*
 import org.mlm.mages.ui.screens.*
@@ -68,6 +69,7 @@ fun App(
             is Route.Room -> {
                 val controller = remember(r.roomId) { RoomController(service, dataStore, r.roomId, r.name) }
                 val ui by controller.state.collectAsState()
+                val openExternal = rememberFileOpener()
                 RoomScreen(
                     state = ui,
                     onBack = { nav.pop() },
@@ -84,7 +86,12 @@ fun App(
                     onSendAttachment = controller::sendAttachment,
                     onCancelUpload = controller::cancelAttachmentUpload,
                     onDelete = controller::delete,
-                    onRetry = controller::retry
+                    onRetry = controller::retry,
+                    onOpenAttachment = { event ->
+                        controller.openAttachment(event) { path, mime ->
+                            openExternal(path, mime) // platform-resolved
+                        }
+                    }
                 )
             }
             Route.Security -> {

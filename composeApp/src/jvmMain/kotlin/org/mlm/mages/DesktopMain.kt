@@ -1,14 +1,10 @@
 package org.mlm.mages
 
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.awt.ComposeWindow
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyShortcut
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -30,11 +26,7 @@ import org.mlm.mages.storage.loadBoolean
 import org.mlm.mages.storage.loadString
 import org.mlm.mages.storage.provideAppDataStore
 import org.mlm.mages.storage.saveBoolean
-import java.awt.Frame
-import java.awt.event.WindowEvent
-import java.awt.event.WindowStateListener
 import java.io.IOException
-import javax.swing.SwingUtilities
 
 private const val PREF_START_IN_TRAY = "pref.startInTray"
 

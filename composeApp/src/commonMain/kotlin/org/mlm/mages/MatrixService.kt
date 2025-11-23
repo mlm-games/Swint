@@ -109,4 +109,7 @@ class MatrixService(val port: MatrixPort) {
         suspend fun retryByTxn(roomId: String, txnId: String) =
         runCatching { port.retryByTxn(roomId, txnId) }.getOrElse { false }
 
+    suspend fun downloadToCacheFile(mxc: String, filenameHint: String? = null): Result<String> =
+                port.downloadToCacheFile(mxc, filenameHint)
+
 }

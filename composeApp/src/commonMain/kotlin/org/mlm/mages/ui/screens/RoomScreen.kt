@@ -19,6 +19,8 @@ import org.mlm.mages.MessageEvent
 import org.mlm.mages.platform.rememberFilePicker
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.*
+import java.awt.Desktop
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +41,7 @@ fun RoomScreen(
     onSendAttachment: (AttachmentData) -> Unit,
     onCancelUpload: () -> Unit,
     onDelete: (MessageEvent) -> Unit,
+    onOpenAttachment: (MessageEvent) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
@@ -228,9 +231,6 @@ fun RoomScreen(
                             // No record: show once at the top
                             UnreadDivider()
                         }
-                        val showTicks = state.isDm &&
-                                (event.sender == state.myUserId) &&
-                                ((events.lastIndex - index) < 12)
 
                         MessageBubble(
                             isMine = (event.sender == state.myUserId),
@@ -242,8 +242,11 @@ fun RoomScreen(
                             eventId = event.eventId,
                             onLongPress = { sheetEvent = event },
                             onReact = { emoji -> onReact(event, emoji) },
-                            showTicks = showTicks,
                             lastReadByOthersTs = state.lastIncomingFromOthersTs,
+                            thumbPath = state.thumbByEvent[event.eventId],
+                            attachmentKind = event.attachment?.kind,
+                            durationMs = event.attachment?.durationMs,
+                            onOpenAttachment = { onOpenAttachment(event) },
                         )
                         Spacer(Modifier.height(2.dp))
 
