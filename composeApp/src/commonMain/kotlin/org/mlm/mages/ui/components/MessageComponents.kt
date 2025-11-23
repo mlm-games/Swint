@@ -57,6 +57,7 @@ fun MessageBubble(
     reactions: Set<String> = emptySet(),
     eventId: String? = null,
     replyPreview: String? = null,
+    replySender: String? = null,
     sendState: org.mlm.mages.matrix.SendState? = null,
     thumbPath: String? = null,
     attachmentKind: AttachmentKind? = null,
@@ -126,7 +127,12 @@ fun MessageBubble(
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                text = replyPreview,
+                                text = buildString {
+                                    if (!replySender.isNullOrBlank()) {
+                                        append(replySender)
+                                        append(": ")
+                                    }
+                                    append(replyPreview) },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,

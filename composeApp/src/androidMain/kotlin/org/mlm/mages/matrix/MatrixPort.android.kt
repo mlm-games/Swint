@@ -347,7 +347,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         mxcUri: String,
         filenameHint: String?
     ): Result<String> {
-        return client.downloadToCacheFile(mxcUri, filenameHint)
+        return runCatching { client.downloadToCacheFile(mxcUri, filenameHint).path }
     }
 
     override suspend fun pendingSends(): UInt =
@@ -479,6 +479,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
             )
         }
     }
+
+
 
     override fun roomListSetUnreadOnly(
         token: ULong,

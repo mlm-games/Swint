@@ -63,7 +63,8 @@ fun App(
                     onRefresh = controller::refreshRooms,
                     onSearch = controller::setSearchQuery,
                     onOpen = { controller.open(it) },
-                    onOpenSecurity = { nav.push(Route.Security) }
+                    onOpenSecurity = { nav.push(Route.Security) },
+                    onToggleUnreadOnly = {controller.toggleUnreadOnly()}
                 )
             }
             is Route.Room -> {

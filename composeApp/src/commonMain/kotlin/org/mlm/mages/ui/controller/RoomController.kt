@@ -2,17 +2,22 @@ package org.mlm.mages.ui.controller
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.mlm.mages.AttachmentKind
 import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
-import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.ReceiptsObserver
-import org.mlm.mages.matrix.SendState
 import org.mlm.mages.matrix.TimelineDiff
-import org.mlm.mages.storage.loadLong
-import org.mlm.mages.storage.saveLong
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.AttachmentData
 

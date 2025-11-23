@@ -343,6 +343,13 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.retryByTxn(roomId, txnId)
     }
 
+    override suspend fun downloadToCacheFile(
+        mxcUri: String,
+        filenameHint: String?
+    ): Result<String> {
+        return runCatching { client.downloadToCacheFile(mxcUri, filenameHint).path }
+    }
+
     override suspend fun pendingSends(): UInt =
         client.pendingSends()
 
