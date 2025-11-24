@@ -5,7 +5,6 @@ import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.DeviceSummary
 import org.mlm.mages.matrix.SasPhase
 import org.mlm.mages.ui.components.AttachmentData
-import org.mlm.mages.ui.components.SendIndicator
 
 
 data class LoginUiState(
@@ -21,6 +20,7 @@ data class RoomsUiState(
     val unread: Map<String, Int> = emptyMap(),
     val offlineBanner: String? = null,
     val syncBanner: String? = null,
+    val unreadOnly: Boolean = false,
     val isBusy: Boolean = false,
     val error: String? = null,
 
@@ -32,7 +32,6 @@ data class RoomUiState(
     val roomName: String,
     val myUserId: String? = null,
     val events: List<MessageEvent> = emptyList(),
-    val outbox: List<SendIndicator> = emptyList(),
     val input: String = "",
     val replyingTo: MessageEvent? = null,
     val editing: MessageEvent? = null,
@@ -40,7 +39,6 @@ data class RoomUiState(
     val isPaginatingBack: Boolean = false,
     val hitStart: Boolean = false,
     val isOffline: Boolean = false,
-    val pendingSendCount: Int = 0,
     val currentAttachment: AttachmentData? = null,
     val isUploadingAttachment: Boolean = false,
     val attachmentProgress: Float = 0f,
@@ -51,7 +49,7 @@ data class RoomUiState(
     val isDm: Boolean = false,
     val lastIncomingFromOthersTs: Long? = null,
     val lastOutgoingRead: Boolean = false,
-
+    val thumbByEvent: Map<String, String> = emptyMap(),
 )
 data class VerificationRequestUi(
     val flowId: String,
@@ -80,12 +78,4 @@ data class SecurityUiState(
     val sasOtherUser: String? = null,
     val sasOtherDevice: String? = null,
     val sasError: String? = null
-)
-data class MediaCacheUiState(
-    val bytes: Long = 0,
-    val files: Map<String, Long> = emptyMap(),
-    val offlineBanner: String? = null,
-    val syncBanner: String? = null,
-    val isBusy: Boolean = false,
-    val error: String? = null
 )

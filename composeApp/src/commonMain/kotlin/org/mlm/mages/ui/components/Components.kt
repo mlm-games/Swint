@@ -47,22 +47,6 @@ fun Avatar(initials: String, size: Dp = 36.dp, color: Color = MaterialTheme.colo
     }
 }
 
-// Lightweight fallback reply parser: looks for quoted lines ("> ") then a blank line.
-fun parseReplyFallback(body: String): Pair<String?, String> {
-    val lines = body.lines()
-    if (lines.isEmpty()) return null to body
-    val quoteLines = mutableListOf<String>()
-    var idx = 0
-    while (idx < lines.size && lines[idx].startsWith(">")) {
-        quoteLines += lines[idx].removePrefix(">").trim()
-        idx++
-    }
-    if (idx < lines.size && lines[idx].isBlank() && quoteLines.isNotEmpty()) idx++ // skip blank after quote
-    val rest = lines.drop(idx).joinToString("\n").ifBlank { body }
-    val preview = quoteLines.firstOrNull()
-    return preview to rest
-}
-
 @Composable
 fun ReactionBar(emojis: Set<String>, onClick: ((String) -> Unit)? = null) {
     if (emojis.isEmpty()) return
@@ -126,32 +110,6 @@ fun UnreadDivider() {
             )
         }
         HorizontalDivider(modifier = Modifier.weight(1f))
-    }
-}
-
-@Composable
-fun OutboxChips(items: List<SendIndicator>) { // Old
-    if (items.isEmpty()) return
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        items.forEach { ind ->
-            val label = when (ind.state) {
-                SendState.Enqueued -> "Queued"
-                SendState.Sending -> "Sending"
-                SendState.Retrying -> "Retry ${ind.attempts}"
-                SendState.Sent -> "Sent"
-                SendState.Failed -> "Failed"
-            }
-            AssistChip(
-                onClick = {},
-                enabled = ind.state != SendState.Sent,
-                label = { Text(if (ind.error != null && ind.state == SendState.Failed) "$label: ${ind.error}" else label) }
-            )
-        }
     }
 }
 

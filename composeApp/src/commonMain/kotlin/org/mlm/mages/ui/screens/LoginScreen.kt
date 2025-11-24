@@ -39,7 +39,8 @@ fun LoginScreen(
     onChangeHomeserver: (String) -> Unit,
     onChangeUser: (String) -> Unit,
     onChangePass: (String) -> Unit,
-    onSubmit: () -> Unit
+    onSubmit: () -> Unit,
+    onSso: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
     var passwordVisible by remember { mutableStateOf(false) }
@@ -151,6 +152,9 @@ fun LoginScreen(
                             focusedLeadingIconColor = MaterialTheme.colorScheme.primary
                         )
                     )
+                    Button(onClick = onSso, enabled = !state.isBusy, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                        Text("Continue with SSO")
+                    }
 
                     AnimatedVisibility(visible = showAdvanced) {
                         OutlinedTextField(

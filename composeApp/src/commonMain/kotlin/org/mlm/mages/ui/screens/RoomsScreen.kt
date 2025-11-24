@@ -27,12 +27,20 @@ fun RoomsScreen(
     onRefresh: () -> Unit,
     onSearch: (String) -> Unit,
     onOpen: (RoomSummary) -> Unit,
-    onOpenSecurity: () -> Unit
+    onOpenSecurity: () -> Unit,
+    onToggleUnreadOnly: () -> Unit,
 ) {
-    val filtered = remember(state.rooms, state.roomSearchQuery) {
-        if (state.roomSearchQuery.isBlank()) state.rooms
-        else state.rooms.filter { it.name.contains(state.roomSearchQuery, true) || it.id.contains(state.roomSearchQuery, true) }
-    } // Can add as a setting too
+    val filtered = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
+        val q = state.roomSearchQuery.trim()
+        var list = if (q.isBlank()) state.rooms
+        else state.rooms.filter {
+            it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true)
+        }
+        if (state.unreadOnly) {
+            list = list.filter { (state.unread[it.id] ?: 0) > 0 }
+        }
+        list
+    }
 
 
     Scaffold(
@@ -64,6 +72,17 @@ fun RoomsScreen(
                     singleLine = true,
                     shape = MaterialTheme.shapes.large
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    FilterChip(
+                        selected = state.unreadOnly,
+                        onClick = onToggleUnreadOnly,
+                        label = { Text("Unread only") }
+                    )
+                }
             }
         }
     ) { innerPadding ->

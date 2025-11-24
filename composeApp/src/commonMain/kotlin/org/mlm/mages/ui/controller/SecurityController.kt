@@ -13,7 +13,6 @@ import org.mlm.mages.ui.VerificationRequestUi
 
 class SecurityController(
     private val service: MatrixService,
-    private val onOpenMediaCache: (() -> Unit)? = null
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -177,8 +176,4 @@ class SecurityController(
             }
         }
     }
-
-    fun openMediaCache() { onOpenMediaCache?.invoke() }
-
-
 }

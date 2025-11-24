@@ -43,7 +43,6 @@ fun SecurityScreen(
     onCloseRecovery: () -> Unit,
     onChangeRecoveryKey: (String) -> Unit,
     onSubmitRecoveryKey: () -> Unit,
-    onOpenMediaCache: (() -> Unit)? = null,
     selectedTab: Int,
     onSelectTab: (Int) -> Unit,
     onLogout: () -> Unit,
@@ -89,7 +88,6 @@ fun SecurityScreen(
                     )
                     1 -> RecoveryTab(
                         onOpenRecovery = onOpenRecovery,
-                        onOpenMediaCache = onOpenMediaCache,
                         onLogout = onLogout
                     )
                     else -> PrivacyTab()
@@ -262,7 +260,6 @@ private fun DeviceCard(
 @Composable
 private fun RecoveryTab(
     onOpenRecovery: () -> Unit,
-    onOpenMediaCache: (() -> Unit)?,
     onLogout: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -295,10 +292,6 @@ private fun RecoveryTab(
                 SecurityOption(Icons.Default.Backup, "Backup Keys", "Export your encryption keys") { /* TODO */ }
                 Divider(Modifier.padding(vertical = 8.dp))
                 SecurityOption(Icons.Default.History, "Session History", "View all active sessions") { /* TODO */ }
-                Divider(Modifier.padding(vertical = 8.dp))
-                SecurityOption(Icons.Default.CleaningServices, "Media Cache", "Manage cached media") {
-                    onOpenMediaCache?.invoke()
-                }
                 Divider(Modifier.padding(vertical = 8.dp))
                 SecurityOption(
                     icon = Icons.AutoMirrored.Filled.Logout,

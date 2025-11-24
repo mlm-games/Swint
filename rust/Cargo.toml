@@ -16,9 +16,13 @@ matrix-sdk = { version = "0.14.0", default-features = false, features = [
     "e2e-encryption",
     "sqlite",
     "rustls-tls",
+    "sso-login",
+    "automatic-room-key-forwarding",
+    "bundled-sqlite",
 ] }
-rusqlite = { version = "0.37.0", features = ["bundled"] }
-matrix-sdk-ui = { version = "0.14.0", default-features = false }
+matrix-sdk-ui = { version = "0.14.0", default-features = false, features = [
+    "rustls-tls",
+] }
 futures-util = "0.3"
 
 
@@ -32,7 +36,6 @@ tracing = "0.1"
 thiserror = "2"
 mime = "0.3"
 rand = "0.9.2"
-walkdir = "2.5.0"
 
 [build-dependencies]
 uniffi = { version = "0.29.4", features = ["build"] }

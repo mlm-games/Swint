@@ -70,14 +70,6 @@ import kotlin.time.Duration.Companion.days
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
-data class SendIndicator(
-    val txnId: String,
-    val attempts: Int,
-    val state: SendState,
-    val error: String? = null
-)
-
-
 @Composable
 fun EmptyStateView(
     icon: ImageVector,
@@ -205,62 +197,6 @@ fun formatTypingText(users: List<String>): String {
     }
 }
 
-// Send status indicator chip
-@Composable
-fun SendStatusChip(indicator: SendIndicator) {
-    val (icon, label, color) = when (indicator.state) {
-        SendState.Enqueued -> Triple(
-            Icons.Default.Schedule,
-            "Queued",
-            MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        SendState.Sending -> Triple(
-            Icons.Default.Upload,
-            "Sending",
-            MaterialTheme.colorScheme.primary
-        )
-        SendState.Retrying -> Triple(
-            Icons.Default.Refresh,
-            "Retry ${indicator.attempts}",
-            MaterialTheme.colorScheme.tertiary
-        )
-        SendState.Sent -> Triple(
-            Icons.Default.Check,
-            "Sent",
-            MaterialTheme.colorScheme.primary
-        )
-        SendState.Failed -> Triple(
-            Icons.Default.Error,
-            indicator.error?.take(20) ?: "Failed",
-            MaterialTheme.colorScheme.error
-        )
-    }
-
-    AssistChip(
-        onClick = { },
-        enabled = indicator.state != SendState.Sent,
-        leadingIcon = {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = color
-            )
-        },
-        label = {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall
-            )
-        },
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = color.copy(alpha = 0.1f),
-            labelColor = color,
-            leadingIconContentColor = color
-        )
-    )
-}
-
 // Empty room view
 @Composable
 fun EmptyRoomView() {
@@ -339,7 +275,8 @@ fun MessageActionSheet(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onReact: (String) -> Unit,
-    onMarkReadHere: () -> Unit
+    onMarkReadHere: () -> Unit,
+    onRetry: (() -> Unit)? = null
 ) {
     val clipboard = LocalClipboardManager.current
     val quickReactions = listOf("👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "💀")
@@ -426,6 +363,17 @@ fun MessageActionSheet(
             Spacer(modifier = Modifier.height(8.dp))
 
             // Actions
+            if (isMine && event.sendState == SendState.Failed && onRetry != null) {
+                MessageActionItem(
+                    icon = Icons.Default.Refresh,
+                    text = "Retry send",
+                    onClick = {
+                        onRetry()
+                        onDismiss()
+                    }
+                )
+            }
+
             MessageActionItem(
                 icon = Icons.Default.ContentCopy,
                 text = "Copy",
@@ -453,7 +401,7 @@ fun MessageActionSheet(
                 }
             )
 
-            if (isMine) {
+            if (isMine && event.sendState != SendState.Failed) {
                 MessageActionItem(
                     icon = Icons.Default.Edit,
                     text = "Edit",
@@ -463,6 +411,17 @@ fun MessageActionSheet(
                     }
                 )
 
+                MessageActionItem(
+                    icon = Icons.Default.Delete,
+                    text = "Delete",
+                    color = MaterialTheme.colorScheme.error,
+                    onClick = {
+                        onDelete()
+                        onDismiss()
+                    }
+                )
+            } else if (isMine) {
+                // Still show delete for failed ones
                 MessageActionItem(
                     icon = Icons.Default.Delete,
                     text = "Delete",

@@ -17,9 +17,9 @@ use thiserror::Error;
 
 use matrix_sdk::{
     Client as SdkClient, Room, RoomMemberships, SessionTokens,
-    authentication::matrix::MatrixSession,
+    authentication::{matrix::MatrixSession, oauth::OAuthError},
     config::SyncSettings,
-    media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
+    media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
     ruma::{
         OwnedMxcUri,
         api::client::push::{Pusher, PusherIds, PusherInit, PusherKind},
@@ -64,7 +64,7 @@ use matrix_sdk_ui::{
     room_list_service::{RoomList, filters},
     sync_service::{State, SyncService},
     timeline::{
-        EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
+        EventSendState, EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
         TimelineEventItemId, TimelineItem, TimelineItemContent,
     },
 };
@@ -73,10 +73,6 @@ use std::panic::AssertUnwindSafe;
 
 // UniFFI macro-first setup
 uniffi::setup_scaffolding!();
-
-const BACKOFF_BASE_MS: u64 = 1_000;
-const BACKOFF_MAX_MS: u64 = 60_000;
-const SEND_MAX_ATTEMPTS: i64 = 10;
 
 // Types exposed to Kotlin
 #[derive(Clone, Record)]
@@ -107,6 +103,32 @@ pub struct MessageEvent {
     pub sender: String,
     pub body: String,
     pub timestamp_ms: u64,
+    pub send_state: Option<SendState>,
+    pub txn_id: Option<String>,
+    pub reply_to_event_id: Option<String>,
+    pub reply_to_sender: Option<String>,
+    pub reply_to_body: Option<String>,
+    pub attachment: Option<AttachmentInfo>,
+}
+
+#[derive(Clone, Enum)]
+pub enum AttachmentKind {
+    Image,
+    Video,
+    File,
+}
+
+#[derive(Clone, Record)]
+pub struct AttachmentInfo {
+    pub kind: AttachmentKind,
+    pub mxc_uri: String,
+    pub mime: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    /// Provided when available, else UI uses `mxc_uri` to request a thumbnail.
+    pub thumbnail_mxc_uri: Option<String>,
 }
 
 #[derive(Clone, Record)]
@@ -190,6 +212,10 @@ pub struct UnreadStats {
     pub mentions: u64,
 }
 
+enum RoomListCmd {
+    SetUnreadOnly(bool),
+}
+
 #[derive(uniffi::Record, Clone)]
 pub struct OwnReceipt {
     pub event_id: Option<String>,
@@ -242,22 +268,12 @@ pub trait RoomListObserver: Send + Sync {
     fn on_update(&self, item: RoomListEntry);
 }
 
-#[derive(Clone, Record)]
-pub struct MediaCacheStats {
-    pub bytes: u64,
-    pub files: u64,
-}
-
 fn cache_dir(dir: &PathBuf) -> PathBuf {
     dir.join("media_cache")
 }
 
 fn ensure_dir(d: &PathBuf) {
     let _ = std::fs::create_dir_all(d);
-}
-
-fn file_len(path: &std::path::Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 // Runtime
@@ -331,15 +347,6 @@ impl From<std::io::Error> for FfiError {
     }
 }
 
-#[derive(Clone, Record)]
-pub struct PaginationState {
-    pub room_id: String,
-    pub prev_batch: Option<String>,
-    pub next_batch: Option<String>,
-    pub at_start: bool,
-    pub at_end: bool,
-}
-
 struct VerifFlow {
     sas: SasVerification,
     other_user: OwnedUserId,
@@ -366,6 +373,8 @@ pub struct Client {
     inbox_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     receipts_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     room_list_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    room_list_cmds: Mutex<HashMap<u64, tokio::sync::mpsc::UnboundedSender<RoomListCmd>>>,
+    send_handles_by_txn: Mutex<HashMap<String, matrix_sdk::send_queue::SendHandle>>,
     call_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
@@ -400,14 +409,6 @@ pub trait TimelineDiffObserver: Send + Sync {
     fn on_remove(&self, item_id: String);
     fn on_clear(&self);
     fn on_reset(&self, events: Vec<MessageEvent>);
-}
-
-struct QueuedItem {
-    id: i64,
-    room_id: String,
-    body: String,
-    txn_id: String,
-    attempts: i64,
 }
 
 #[uniffi::export]
@@ -450,12 +451,10 @@ impl Client {
             inbox_subs: Mutex::new(HashMap::new()),
             receipts_subs: Mutex::new(HashMap::new()),
             room_list_subs: Mutex::new(HashMap::new()),
+            room_list_cmds: Mutex::new(HashMap::new()),
+            send_handles_by_txn: Mutex::new(HashMap::new()),
             call_subs: Mutex::new(HashMap::new()),
         };
-
-        if !this.init_caches() {
-            panic!("Failed to initialize local caches");
-        }
 
         {
             let client = this.inner.clone();
@@ -495,24 +494,6 @@ impl Client {
                 }
             });
             this.guards.lock().unwrap().push(h);
-        }
-
-        {
-            let path = this.store_dir.join("send_queue.sqlite3");
-            if let Ok(conn) = rusqlite::Connection::open(&path) {
-                let _ = conn.execute_batch(
-                    "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=NORMAL;
-                 CREATE TABLE IF NOT EXISTS queued_sends(
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id TEXT NOT NULL,
-                    body TEXT NOT NULL,
-                    txn_id TEXT NOT NULL UNIQUE,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    next_try_ms INTEGER NOT NULL DEFAULT 0
-                );",
-                );
-            }
         }
 
         RT.block_on(async {
@@ -749,6 +730,10 @@ impl Client {
             let Ok(tl) = room.timeline().await else {
                 return;
             };
+
+            // Wrap Timeline in Arc immediately after obtaining it
+            let tl = Arc::new(tl);
+
             let (items, mut stream) = tl.subscribe().await;
 
             // Initial snapshot
@@ -762,6 +747,18 @@ impl Client {
                 .collect();
             obs.on_reset(initial);
 
+            for it in items.iter() {
+                if let Some(ev) = it.as_event() {
+                    if let Some(eid) = missing_reply_event_id(ev) {
+                        // Now clone the Arc (simpler syntax)
+                        let tlc = tl.clone();
+                        RT.spawn(async move {
+                            let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                        });
+                    }
+                }
+            }
+
             let mut items = items.clone();
 
             while let Some(diffs) = stream.next().await {
@@ -772,6 +769,12 @@ impl Client {
                                 items.push_back(value.clone());
                                 let uid = value.unique_id().0.to_string();
                                 if let Some(ei) = value.as_event() {
+                                    if let Some(eid) = missing_reply_event_id(ei) {
+                                        let tlc = tl.clone();
+                                        RT.spawn(async move {
+                                            let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                        });
+                                    }
                                     if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid)
                                     {
                                         obs.on_insert(ev);
@@ -783,6 +786,12 @@ impl Client {
                             items.push_back(value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
@@ -792,6 +801,12 @@ impl Client {
                             items.push_front(value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
@@ -811,6 +826,12 @@ impl Client {
                             items.insert(index, value.clone());
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_insert(ev);
                                 }
@@ -822,6 +843,12 @@ impl Client {
                             }
                             let uid = value.unique_id().0.to_string();
                             if let Some(ei) = value.as_event() {
+                                if let Some(eid) = missing_reply_event_id(ei) {
+                                    let tlc = tl.clone();
+                                    RT.spawn(async move {
+                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+                                    });
+                                }
                                 if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
                                     obs.on_update(ev);
                                 }
@@ -852,6 +879,13 @@ impl Client {
                                 .filter_map(|it| {
                                     let uid = it.unique_id().0.to_string();
                                     it.as_event().and_then(|ei| {
+                                        if let Some(eid) = missing_reply_event_id(ei) {
+                                            let tlc = tl.clone();
+                                            RT.spawn(async move {
+                                                let _ =
+                                                    tlc.fetch_details_for_event(eid.as_ref()).await;
+                                            });
+                                        }
                                         map_event_with_uid(ei, room_id.as_str(), &uid)
                                     })
                                 })
@@ -1041,7 +1075,22 @@ impl Client {
                 return false;
             };
 
-            timeline.send(Msg::text_plain(body).into()).await.is_ok()
+            match timeline.send(Msg::text_plain(body.clone()).into()).await {
+                Ok(handle) => {
+                    if let Some(latest) = timeline.latest_event().await {
+                        if latest.event_id().is_none() {
+                            if let Some(txn) = latest.transaction_id() {
+                                self.send_handles_by_txn
+                                    .lock()
+                                    .unwrap()
+                                    .insert(txn.to_string(), handle.clone());
+                            }
+                        }
+                    }
+                    true
+                }
+                Err(_) => false,
+            }
         })
     }
 
@@ -1121,63 +1170,56 @@ impl Client {
         })
     }
 
-    pub fn media_cache_stats(&self) -> MediaCacheStats {
-        let dir = cache_dir(&self.store_dir);
-        if !dir.exists() {
-            return MediaCacheStats { bytes: 0, files: 0 };
-        }
-        let mut files = 0u64;
-        let mut bytes = 0u64;
-        for entry in walkdir::WalkDir::new(&dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_file() {
-                files += 1;
-                bytes += file_len(entry.path());
+    /// Configure the SDK's media retention policy and apply it immediately.
+    /// Any `None` will keep the SDK default for that parameter.
+    pub fn set_media_retention_policy(
+        &self,
+        max_cache_size_bytes: Option<u64>,
+        max_file_size_bytes: Option<u64>,
+        last_access_expiry_secs: Option<u64>,
+        cleanup_frequency_secs: Option<u64>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            use std::time::Duration;
+            let mut policy = MediaRetentionPolicy::new();
+            if max_cache_size_bytes.is_some() {
+                policy = policy.with_max_cache_size(max_cache_size_bytes);
             }
-        }
-        MediaCacheStats { bytes, files }
+            if max_file_size_bytes.is_some() {
+                policy = policy.with_max_file_size(max_file_size_bytes);
+            }
+            if last_access_expiry_secs.is_some() {
+                policy = policy
+                    .with_last_access_expiry(last_access_expiry_secs.map(Duration::from_secs));
+            }
+            if cleanup_frequency_secs.is_some() {
+                policy =
+                    policy.with_cleanup_frequency(cleanup_frequency_secs.map(Duration::from_secs));
+            }
+
+            self.inner
+                .media()
+                .set_media_retention_policy(policy)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            // Apply right away.
+            self.inner
+                .media()
+                .clean_up_media_cache()
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
     }
 
-    pub fn media_cache_evict(&self, max_bytes: u64) -> u64 {
-        use std::time::UNIX_EPOCH;
-        let dir = cache_dir(&self.store_dir);
-        if !dir.exists() {
-            return 0;
-        }
-
-        let mut entries: Vec<(std::path::PathBuf, u64, u64)> = walkdir::WalkDir::new(&dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter_map(|e| {
-                let p = e.into_path();
-                let md = std::fs::metadata(&p).ok()?;
-                let mtime = md
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let size = md.len();
-                Some((p, mtime, size))
-            })
-            .collect();
-
-        entries.sort_by_key(|t| t.1);
-
-        let mut total = entries.iter().map(|e| e.2).sum::<u64>();
-        let mut removed = 0u64;
-        for (p, _, sz) in entries {
-            if total <= max_bytes {
-                break;
-            }
-            let _ = std::fs::remove_file(p);
-            total = total.saturating_sub(sz);
-            removed = removed.saturating_add(1);
-        }
-        removed
+    /// Run a cleanup of the SDK's media cache with the current policy.
+    pub fn media_cache_clean(&self) -> Result<(), FfiError> {
+        RT.block_on(async {
+            self.inner
+                .media()
+                .clean_up_media_cache()
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
     }
 
     pub fn thumbnail_to_cache(
@@ -1213,7 +1255,7 @@ impl Client {
         let out = dir.join(safe_name);
 
         let bytes = RT
-            .block_on(async { self.inner.media().get_media_content(&req, false).await })
+            .block_on(async { self.inner.media().get_media_content(&req, true).await })
             .map_err(|e| FfiError::Msg(e.to_string()))?;
 
         std::fs::write(&out, &bytes)?;
@@ -1543,23 +1585,34 @@ impl Client {
         filename: Option<String>,
         progress: Option<Box<dyn ProgressObserver>>,
     ) -> bool {
-        match read_all(&path) {
-            Ok(bytes) => {
-                let name = filename
-                    .or_else(|| {
-                        std::path::Path::new(&path)
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .map(|s| s.to_owned())
-                    })
-                    .unwrap_or_else(|| "file".to_string());
-                self.send_attachment_bytes(room_id, name, mime, bytes, progress)
+        use matrix_sdk_ui::timeline::{AttachmentConfig, AttachmentSource};
+        RT.block_on(async {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let Some(tl) = get_timeline_for(&self.inner, &rid).await else {
+                return false;
+            };
+
+            // Parse MIME (fallback to application/octet-stream)
+            let parsed: Mime = mime.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
+
+            // Stream directly from disk (AttachmentSource::File reads size + filename)
+            let fut = tl.send_attachment(
+                std::path::PathBuf::from(&path),
+                parsed,
+                AttachmentConfig::default(),
+            );
+            let res = fut.await;
+
+            if let Some(p) = progress {
+                if let Ok(md) = std::fs::metadata(&path) {
+                    let sz = md.len();
+                    p.on_progress(sz, Some(sz));
+                }
             }
-            Err(e) => {
-                eprintln!("read file error {path}: {e}");
-                false
-            }
-        }
+            res.is_ok()
+        })
     }
 
     pub fn download_to_path(
@@ -1580,7 +1633,7 @@ impl Client {
             let bytes = self
                 .inner
                 .media()
-                .get_media_content(&req, false)
+                .get_media_content(&req, true)
                 .await
                 .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
 
@@ -1944,219 +1997,117 @@ impl Client {
     }
 
     pub fn enqueue_text(&self, room_id: String, body: String, txn_id: Option<String>) -> String {
-        let txn = txn_id.unwrap_or_else(|| format!("mages-{}", now_ms()));
+        let client_txn = txn_id.unwrap_or_else(|| format!("mages-{}", now_ms()));
 
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return txn;
-        };
+        let tx = self.send_tx.clone();
+        let client = self.inner.clone();
+        let mut handles = self.send_handles_by_txn.lock().unwrap().clone();
+        let txn_id = client_txn.clone();
+        RT.spawn(async move {
+            use matrix_sdk::ruma::events::room::message::RoomMessageEventContent as Msg;
+            // Emit "Sending" (best-effort continuity with previous observer).
+            let _ = tx.send(SendUpdate {
+                room_id: room_id.clone(),
+                txn_id: txn_id.clone(),
+                attempts: 0,
+                state: SendState::Sending,
+                event_id: None,
+                error: None,
+            });
 
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO queued_sends(room_id, body, txn_id, attempts, next_try_ms)
-            VALUES (?1, ?2, ?3, 0, 0)",
-            (&room_id, &body, &txn),
-        );
+            let Ok(rid) = OwnedRoomId::try_from(room_id.clone()) else {
+                let _ = tx.send(SendUpdate {
+                    room_id,
+                    txn_id: txn_id,
+                    attempts: 0,
+                    state: SendState::Failed,
+                    event_id: None,
+                    error: Some("bad room id".into()),
+                });
+                return;
+            };
 
-        // Notify observers
-        let _ = self.send_tx.send(SendUpdate {
-            room_id: room_id.clone(),
-            txn_id: txn.clone(),
-            attempts: 0,
-            state: SendState::Enqueued,
-            event_id: None,
-            error: None,
+            if let Some(timeline) = get_timeline_for(&client, &rid).await {
+                match timeline.send(Msg::text_plain(body.clone()).into()).await {
+                    Ok(handle) => {
+                        // Map protocol txn id (if we can see it now) -> handle, for future precise retry.
+                        if let Some(latest) = timeline.latest_event().await {
+                            if latest.event_id().is_none() {
+                                if let Some(proto_txn) = latest.transaction_id() {
+                                    handles.insert(proto_txn.to_string(), handle);
+                                }
+                            }
+                        }
+                        let _ = tx.send(SendUpdate {
+                            room_id: rid.to_string(),
+                            txn_id: txn_id,
+                            attempts: 0,
+                            state: SendState::Sent,
+                            event_id: None,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(SendUpdate {
+                            room_id: rid.to_string(),
+                            txn_id: txn_id,
+                            attempts: 0,
+                            state: SendState::Failed,
+                            event_id: None,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+            } else {
+                let _ = tx.send(SendUpdate {
+                    room_id: rid.to_string(),
+                    txn_id: txn_id,
+                    attempts: 0,
+                    state: SendState::Failed,
+                    event_id: None,
+                    error: Some("room/timeline not found".into()),
+                });
+            }
         });
 
-        txn
+        client_txn
+    }
+
+    pub fn retry_by_txn(&self, _room_id: String, txn_id: String) -> bool {
+        RT.block_on(async {
+            if let Some(handle) = self
+                .send_handles_by_txn
+                .lock()
+                .unwrap()
+                .get(&txn_id)
+                .cloned()
+            {
+                handle.unwedge().await.is_ok()
+            } else {
+                false
+            }
+        })
     }
 
     pub fn start_send_worker(&self) {
-        let client = self.inner.clone();
-        let dir = self.store_dir.clone();
-        let tx = self.send_tx.clone();
-
-        let h = RT.spawn(async move {
-            loop {
-                if let Err(e) = drain_once(&client, &dir, &tx).await {
-                    eprintln!("send worker error: {e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                }
-            }
-        });
-        self.guards.lock().unwrap().push(h);
+        // No-op: SDK handles sending/retries internally; worker removed.
     }
 
-    pub fn cancel_txn(&self, txn_id: String) -> bool {
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return false;
-        };
-        conn.execute("DELETE FROM queued_sends WHERE txn_id = ?1", [txn_id])
-            .ok()
-            .map(|n| n > 0)
-            .unwrap_or(false)
+    pub fn cancel_txn(&self, _txn_id: String) -> bool {
+        // Not needed without a custom queue
+        false
     }
 
-    pub fn retry_txn_now(&self, txn_id: String) -> bool {
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return false;
-        };
-        conn.execute(
-            "UPDATE queued_sends SET next_try_ms = 0 WHERE txn_id = ?1",
-            [txn_id],
-        )
-        .ok()
-        .map(|n| n > 0)
-        .unwrap_or(false)
+    pub fn retry_txn_now(&self, _txn_id: String) -> bool {
+        // Same.
+        false
     }
 
     pub fn pending_sends(&self) -> u32 {
-        let path = queue_db_path(&self.store_dir);
-        let Ok(conn) = open_queue_db(&path) else {
-            return 0;
-        };
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM queued_sends", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .unwrap_or(0);
-
-        count.try_into().unwrap_or(0)
+        // No queue anymore.
+        0
     }
 
-    pub fn cache_messages(&self, room_id: String, messages: Vec<MessageEvent>) -> bool {
-        let path = self.store_dir.join("message_cache.sqlite3");
-
-        let result = (|| -> Result<(), rusqlite::Error> {
-            let mut conn = rusqlite::Connection::open(path)?;
-            let tx = conn.transaction()?;
-
-            for msg in messages {
-                tx.execute(
-                    "INSERT OR REPLACE INTO messages(event_id, room_id, sender, body, timestamp_ms, received_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (
-                        &msg.event_id,
-                        &msg.room_id,
-                        &msg.sender,
-                        &msg.body,
-                        msg.timestamp_ms,
-                        now_ms(),
-                    ),
-                )?;
-            }
-            tx.commit()
-        })();
-
-        result.is_ok()
-    }
-
-    pub fn get_cached_messages(&self, room_id: String, limit: u32) -> Vec<MessageEvent> {
-        let path = self.store_dir.join("message_cache.sqlite3");
-
-        let result = (|| -> Result<Vec<MessageEvent>, rusqlite::Error> {
-            let conn = rusqlite::Connection::open(path)?;
-            let mut stmt = conn.prepare(
-                "SELECT event_id, room_id, sender, body, timestamp_ms 
-                FROM messages WHERE room_id = ?1 
-                ORDER BY timestamp_ms DESC LIMIT ?2",
-            )?;
-
-            let messages = stmt
-                .query_map([&room_id, &limit.to_string()], |row| {
-                    let eid: String = row.get(0)?;
-                    Ok(MessageEvent {
-                        item_id: eid.clone(),
-                        event_id: eid,
-                        room_id: row.get(1)?,
-                        sender: row.get(2)?,
-                        body: row.get(3)?,
-                        timestamp_ms: row.get(4)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-
-            Ok(messages)
-        })();
-
-        result.unwrap_or_else(|_| vec![])
-    }
-
-    pub fn init_caches(&self) -> bool {
-        let cache_db = self.store_dir.join("message_cache.sqlite3");
-
-        match rusqlite::Connection::open(&cache_db) {
-            Ok(conn) => {
-                let result = conn.execute_batch(
-                    "PRAGMA journal_mode=WAL;
-                     PRAGMA synchronous=NORMAL;
-                     CREATE TABLE IF NOT EXISTS messages(
-                        event_id TEXT PRIMARY KEY,
-                        room_id TEXT NOT NULL,
-                        sender TEXT NOT NULL,
-                        body TEXT NOT NULL,
-                        timestamp_ms INTEGER NOT NULL,
-                        received_at INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_room_messages ON messages(room_id, timestamp_ms DESC, event_id);
-                    
-                    CREATE TABLE IF NOT EXISTS pagination_tokens(
-                        room_id TEXT PRIMARY KEY,
-                        prev_batch TEXT,
-                        next_batch TEXT,
-                        at_start BOOLEAN DEFAULT 0,
-                        at_end BOOLEAN DEFAULT 0,
-                        updated_at INTEGER NOT NULL
-                    );"
-                );
-                result.is_ok()
-            }
-            Err(_) => false,
-        }
-    }
-
-    pub fn save_pagination_state(&self, state: PaginationState) -> bool {
-        let path = self.store_dir.join("message_cache.sqlite3");
-        let Ok(conn) = rusqlite::Connection::open(path) else {
-            return false;
-        };
-
-        conn.execute(
-            "INSERT OR REPLACE INTO pagination_tokens(room_id, prev_batch, next_batch, at_start, at_end, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            (
-                &state.room_id,
-                &state.prev_batch,
-                &state.next_batch,
-                state.at_start,
-                state.at_end,
-                now_ms(),
-            ),
-        )
-        .is_ok()
-    }
-
-    pub fn get_pagination_state(&self, room_id: String) -> Option<PaginationState> {
-        let path = self.store_dir.join("message_cache.sqlite3");
-        let conn = rusqlite::Connection::open(path).ok()?;
-
-        conn.query_row(
-            "SELECT prev_batch, next_batch, at_start, at_end FROM pagination_tokens WHERE room_id = ?1",
-            [&room_id],
-            |row| {
-                Ok(PaginationState {
-                    room_id: room_id.clone(),
-                    prev_batch: row.get(0)?,
-                    next_batch: row.get(1)?,
-                    at_start: row.get(2)?,
-                    at_end: row.get(3)?,
-                })
-            },
-        )
-        .ok()
-    }
     /// Register/Update HTTP pusher for UnifiedPush/Matrix gateway (e.g. ntfy)
     pub fn register_unifiedpush(
         &self,
@@ -2393,97 +2344,179 @@ impl Client {
         let svc_slot = self.sync_service.clone();
         let id = self.next_sub_id();
 
-        let h = RT.spawn(async move {
-            // Wait for sync service
-            let svc = {
-                let mut attempts = 0;
-                loop {
-                    if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
-                        break s;
-                    }
-                    attempts += 1;
-                    if attempts > 100 {
-                        // 20 seconds timeout
-                        eprintln!("observe_room_list: SyncService not available after timeout");
-                        return;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-            };
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<RoomListCmd>();
+        let id_for_map = id;
+        self.room_list_cmds
+            .lock()
+            .unwrap()
+            .insert(id_for_map, cmd_tx);
 
-            let rls = svc.room_list_service();
-            let all = match rls.all_rooms().await {
-                Ok(list) => list,
-                Err(e) => {
-                    eprintln!("observe_room_list: failed to get all_rooms: {e}");
+        let h = RT.spawn(async move {
+        // Wait for sync service
+        let svc = {
+            let mut attempts = 0;
+            loop {
+                if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
+                    break s;
+                }
+                attempts += 1;
+                if attempts > 100 {
+                    eprintln!("observe_room_list: SyncService not available after timeout");
                     return;
                 }
-            };
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        };
 
-            let (stream, controller) = all.entries_with_dynamic_adapters(50);
-            tokio::pin!(stream);
+        let rls = svc.room_list_service();
+        let all = match rls.all_rooms().await {
+            Ok(list) => list,
+            Err(e) => {
+                eprintln!("observe_room_list: failed to get all_rooms: {e}");
+                return;
+            }
+        };
 
-            controller.set_filter(Box::new(
-                matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
-            ));
+        let (stream, controller) = all.entries_with_dynamic_adapters(50);
+        tokio::pin!(stream);
 
-            while let Some(diffs) = stream.next().await {
-                for diff in diffs {
-                    match diff {
-                        VectorDiff::Reset { values } => {
-                            let snapshot: Vec<_> = values
-                                .iter()
-                                .map(|room| RoomListEntry {
-                                    room_id: room.room_id().to_string(),
-                                    name: room
-                                        .cached_display_name()
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| room.room_id().to_string()),
-                                    unread: room.unread_notification_counts().notification_count
-                                        as u64,
-                                    last_ts: 0,
-                                })
-                                .collect();
+        controller.set_filter(Box::new(
+            matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
+        ));
 
-                            let obs_clone = obs.clone();
-                            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
-                                obs_clone.on_reset(snapshot)
-                            }));
+        loop {
+            tokio::select! {
+                // Apply filter updates.
+                Some(cmd) = cmd_rx.recv() => {
+                    match cmd {
+                        RoomListCmd::SetUnreadOnly(unread_only) => {
+                            if unread_only {
+                                controller.set_filter(Box::new(filters::new_filter_all(vec![
+                                    Box::new(filters::new_filter_non_left()),
+                                    Box::new(filters::new_filter_unread()),
+                                ])));
+                            } else {
+                                controller.set_filter(Box::new(filters::new_filter_non_left()));
+                            }
                         }
-                        VectorDiff::Set { value, .. }
-                        | VectorDiff::Insert { value, .. }
-                        | VectorDiff::PushBack { value }
-                        | VectorDiff::PushFront { value } => {
-                            let entry = RoomListEntry {
-                                room_id: value.room_id().to_string(),
-                                name: value
-                                    .cached_display_name()
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_else(|| value.room_id().to_string()),
-                                unread: value.unread_notification_counts().notification_count
-                                    as u64,
-                                last_ts: 0,
-                            };
-
-                            let obs_clone = obs.clone();
-                            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
-                                obs_clone.on_update(entry)
-                            }));
-                        }
-                        _ => {}
                     }
                 }
+                // Forward room list diffs.
+                Some(diffs) = stream.next() => {
+                    for diff in diffs {
+                        match diff {
+                            VectorDiff::Reset { values } => {
+                                let snapshot: Vec<_> = values
+                                    .iter()
+                                    .map(|room| RoomListEntry {
+                                        room_id: room.room_id().to_string(),
+                                        name: room
+                                            .cached_display_name()
+                                            .map(|n| n.to_string())
+                                            .unwrap_or_else(|| room.room_id().to_string()),
+                                        unread: room.unread_notification_counts().notification_count
+                                            as u64,
+                                        last_ts: 0,
+                                    })
+                                    .collect();
+
+                                let obs_clone = obs.clone();
+                                let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                                    obs_clone.on_reset(snapshot)
+                                }));
+                            }
+                            VectorDiff::Set { value, .. }
+                            | VectorDiff::Insert { value, .. }
+                            | VectorDiff::PushBack { value }
+                            | VectorDiff::PushFront { value } => {
+                                let entry = RoomListEntry {
+                                    room_id: value.room_id().to_string(),
+                                    name: value
+                                        .cached_display_name()
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| value.room_id().to_string()),
+                                    unread: value.unread_notification_counts().notification_count
+                                        as u64,
+                                    last_ts: 0,
+                                };
+
+                                let obs_clone = obs.clone();
+                                let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                                    obs_clone.on_update(entry)
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                else => break,
             }
-        });
+        }
+    });
 
         self.room_list_subs.lock().unwrap().insert(id, h);
         id
     }
-
     pub fn unobserve_room_list(&self, token: u64) -> bool {
+        self.room_list_cmds.lock().unwrap().remove(&token);
         if let Some(h) = self.room_list_subs.lock().unwrap().remove(&token) {
             h.abort();
             true
+        } else {
+            false
+        }
+    }
+
+    /// Download full media into the SDK's cache dir and return its path.
+    /// filename_hint is used to derive a friendly name/extension.
+    pub fn download_to_cache_file(
+        &self,
+        mxc_uri: String,
+        filename_hint: Option<String>,
+    ) -> Result<DownloadResult, FfiError> {
+        let dir = cache_dir(&self.store_dir);
+        ensure_dir(&dir);
+
+        // Safe-ish filename
+        fn sanitize(name: &str) -> String {
+            let mut s = String::with_capacity(name.len());
+            for ch in name.chars() {
+                if ch.is_ascii_alphanumeric() || "-_.".contains(ch) {
+                    s.push(ch);
+                } else {
+                    s.push('_');
+                }
+            }
+            s.trim_matches('_').to_string()
+        }
+        let hint = filename_hint
+            .as_ref()
+            .map(|h| sanitize(h))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "file.bin".to_string());
+        let fname = format!("dl_{}_{}", now_ms(), hint);
+        let out = dir.join(fname);
+
+        let mxc: OwnedMxcUri = mxc_uri.into();
+        let req = MediaRequestParameters {
+            source: MediaSource::Plain(mxc),
+            format: MediaFormat::File,
+        };
+
+        let bytes = RT
+            .block_on(async { self.inner.media().get_media_content(&req, true).await })
+            .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
+
+        std::fs::write(&out, &bytes)?;
+        Ok(DownloadResult {
+            path: out.to_string_lossy().to_string(),
+            bytes: bytes.len() as u64,
+        })
+    }
+
+    pub fn room_list_set_unread_only(&self, token: u64, unread_only: bool) -> bool {
+        if let Some(tx) = self.room_list_cmds.lock().unwrap().get(&token).cloned() {
+            tx.send(RoomListCmd::SetUnreadOnly(unread_only)).is_ok()
         } else {
             false
         }
@@ -2558,6 +2591,30 @@ impl Client {
             NotificationStatus::EventNotFound => Ok(None),
         }
     }
+
+    /// SSO with built-in loopback server. Opens a browser and completes login.
+    pub fn login_sso_loopback(
+        &self,
+        opener: Box<dyn UrlOpener>,
+        device_name: Option<String>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            // 0.14.0: SSO API is on MatrixAuth
+            let sso = self
+                .inner
+                .matrix_auth()
+                .login_sso(move |sso_url: String| async move {
+                    let _ = opener.open(sso_url);
+                    Ok(())
+                });
+
+            sso.initial_device_display_name(device_name.as_deref().unwrap_or("Mages"))
+                .send()
+                .await
+                .map(|_| ())
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
 }
 
 impl Client {
@@ -2603,148 +2660,6 @@ impl Client {
 
 // ---------- Helpers ----------
 
-fn open_queue_db(path: &PathBuf) -> Result<rusqlite::Connection, rusqlite::Error> {
-    let conn = rusqlite::Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-    Ok(conn)
-}
-
-fn fetch_due_item(store_dir: &PathBuf, now: i64) -> Result<Option<QueuedItem>, String> {
-    use rusqlite::OptionalExtension;
-    let path = queue_db_path(store_dir);
-    let conn = open_queue_db(&path).map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, room_id, body, txn_id, attempts FROM queued_sends 
-             WHERE next_try_ms <= ?1 ORDER BY id LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let row = stmt
-        .query_row([now], |r| {
-            Ok(QueuedItem {
-                id: r.get::<_, i64>(0)?,
-                room_id: r.get::<_, String>(1)?,
-                body: r.get::<_, String>(2)?,
-                txn_id: r.get::<_, String>(3)?,
-                attempts: r.get::<_, i64>(4)?,
-            })
-        })
-        .optional()
-        .map_err(|e| e.to_string())?;
-
-    Ok(row)
-}
-
-fn delete_item(store_dir: &PathBuf, id: i64) -> Result<(), String> {
-    let path = queue_db_path(store_dir);
-    let conn = open_queue_db(&path).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM queued_sends WHERE id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn backoff_item(store_dir: &PathBuf, id: i64, attempts: i64, now: i64) -> Result<(), String> {
-    let attempts = attempts.clamp(1, 10) as u64;
-    let backoff = (BACKOFF_BASE_MS.saturating_mul(attempts)).min(BACKOFF_MAX_MS) as i64;
-    let next = now.saturating_add(backoff);
-
-    let path = queue_db_path(store_dir);
-    let conn = open_queue_db(&path).map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE queued_sends SET attempts = attempts + 1, next_try_ms = ?1 WHERE id = ?2",
-        (next, id),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-async fn drain_once(
-    client: &SdkClient,
-    store_dir: &PathBuf,
-    tx: &tokio::sync::mpsc::UnboundedSender<SendUpdate>,
-) -> Result<(), String> {
-    use matrix_sdk::ruma::OwnedTransactionId;
-    use std::time::Duration;
-
-    let now = now_unix_ms();
-    let due = fetch_due_item(store_dir, now)?;
-    let Some(item) = due else {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        return Ok(());
-    };
-
-    let rid = OwnedRoomId::try_from(item.room_id.clone()).map_err(|_| "bad room id".to_string())?;
-    let Some(room) = client.get_room(&rid) else {
-        let _ = delete_item(store_dir, item.id);
-        let _ = tx.send(SendUpdate {
-            room_id: rid.to_string(),
-            txn_id: item.txn_id.clone(),
-            attempts: item.attempts as u32,
-            state: SendState::Failed,
-            event_id: None,
-            error: Some("room not found".to_string()),
-        });
-        return Ok(());
-    };
-
-    let _ = tx.send(SendUpdate {
-        room_id: rid.to_string(),
-        txn_id: item.txn_id.clone(),
-        attempts: item.attempts as u32,
-        state: SendState::Sending,
-        event_id: None,
-        error: None,
-    });
-
-    let txn_id: OwnedTransactionId = item.txn_id.clone().into();
-
-    let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
-        item.body.clone(),
-    );
-
-    match room.send(content).with_transaction_id(txn_id).await {
-        Ok(resp) => {
-            let _ = delete_item(store_dir, item.id);
-
-            let _ = tx.send(SendUpdate {
-                room_id: rid.to_string(),
-                txn_id: item.txn_id.clone(),
-                attempts: item.attempts as u32,
-                state: SendState::Sent,
-                event_id: Some(resp.event_id.to_string()),
-                error: None,
-            });
-        }
-        Err(err) => {
-            if item.attempts + 1 >= SEND_MAX_ATTEMPTS {
-                let _ = delete_item(store_dir, item.id);
-                let _ = tx.send(SendUpdate {
-                    room_id: rid.to_string(),
-                    txn_id: item.txn_id.clone(),
-                    attempts: (item.attempts + 1) as u32,
-                    state: SendState::Failed,
-                    event_id: None,
-                    error: Some(err.to_string()),
-                });
-            } else {
-                let _ = backoff_item(store_dir, item.id, item.attempts + 1, now);
-                let _ = tx.send(SendUpdate {
-                    room_id: rid.to_string(),
-                    txn_id: item.txn_id.clone(),
-                    attempts: (item.attempts + 1) as u32,
-                    state: SendState::Retrying,
-                    event_id: None,
-                    error: Some(err.to_string()),
-                });
-                tokio::time::sleep(Duration::from_millis(400)).await;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
     let room = client.get_room(room_id)?;
     room.timeline().await.ok()
@@ -2753,13 +2668,137 @@ async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<T
 fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-
-    // Prefer message text; otherwise render state/membership/profile/etc.
-    let body = if let Some(msg) = ev.content().as_message() {
-        render_message_text(msg)
-    } else {
-        render_timeline_text(ev)
+    let txn_id = ev.transaction_id().map(|t| t.to_string());
+    let send_state = match ev.send_state() {
+        Some(EventSendState::NotSentYet { .. }) => Some(SendState::Sending),
+        Some(EventSendState::SendingFailed { .. }) => Some(SendState::Failed),
+        Some(EventSendState::Sent { .. }) => Some(SendState::Sent),
+        None => None,
     };
+
+    let mut reply_to_event_id: Option<String> = None;
+    let mut reply_to_sender: Option<String> = None;
+    let mut reply_to_body: Option<String> = None;
+    let mut attachment: Option<AttachmentInfo> = None;
+    let body;
+
+    match ev.content() {
+        TimelineItemContent::MsgLike(ml) => {
+            // Reply details
+            if let Some(details) = &ml.in_reply_to {
+                reply_to_event_id = Some(details.event_id.to_string());
+                if let matrix_sdk_ui::timeline::TimelineDetails::Ready(embed) = &details.event {
+                    reply_to_sender = Some(embed.sender.to_string());
+                    if let Some(m) = embed.content.as_message() {
+                        reply_to_body = Some(m.body().to_owned());
+                    }
+                }
+            }
+
+            if let Some(msg) = ml.as_message() {
+                use matrix_sdk::ruma::events::room::message::MessageType as MT;
+                let mt = msg.msgtype();
+                match mt {
+                    MT::Image(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Image,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    MT::Video(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, dur, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.duration.map(|d| d.as_millis() as u64),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Video,
+                                mxc_uri: mxc_uri.clone(),
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: dur,
+                                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc_uri.clone())),
+                            });
+                        }
+                    }
+                    MT::File(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::File,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: None,
+                                height: None,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
+                let raw = msg.body();
+                body = if reply_to_event_id.is_some() {
+                    strip_reply_fallback(raw)
+                } else {
+                    render_message_text(&msg)
+                };
+            } else {
+                body = render_timeline_text(ev);
+            }
+        }
+        _ => {
+            body = render_timeline_text(ev);
+        }
+    }
 
     Some(MessageEvent {
         item_id: format!("{:?}", ev.identifier()),
@@ -2768,18 +2807,144 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         sender: ev.sender().to_string(),
         body,
         timestamp_ms: ts,
+        send_state,
+        txn_id,
+        reply_to_event_id,
+        reply_to_sender,
+        reply_to_body,
+        attachment,
     })
 }
 
 fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-
-    let body = if let Some(msg) = ev.content().as_message() {
-        render_message_text(msg)
-    } else {
-        render_timeline_text(ev)
+    let txn_id = ev.transaction_id().map(|t| t.to_string());
+    let send_state = match ev.send_state() {
+        Some(EventSendState::NotSentYet { .. }) => Some(SendState::Sending),
+        Some(EventSendState::SendingFailed { .. }) => Some(SendState::Failed),
+        Some(EventSendState::Sent { event_id }) => Some(SendState::Sent),
+        None => None,
     };
+
+    let mut reply_to_event_id: Option<String> = None;
+    let mut reply_to_sender: Option<String> = None;
+    let mut reply_to_body: Option<String> = None;
+    let body;
+    let mut attachment: Option<AttachmentInfo> = None;
+
+    match ev.content() {
+        TimelineItemContent::MsgLike(ml) => {
+            if let Some(details) = &ml.in_reply_to {
+                reply_to_event_id = Some(details.event_id.to_string());
+                if let matrix_sdk_ui::timeline::TimelineDetails::Ready(embed) = &details.event {
+                    reply_to_sender = Some(embed.sender.to_string());
+                    if let Some(m) = embed.content.as_message() {
+                        reply_to_body = Some(m.body().to_owned());
+                    }
+                }
+            }
+            if let Some(msg) = ml.as_message() {
+                use matrix_sdk::ruma::events::room::message::MessageType as MT;
+                let mt = msg.msgtype();
+                match mt {
+                    MT::Image(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Image,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    MT::Video(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, dur, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.duration.map(|d| d.as_millis() as u64),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Video,
+                                mxc_uri: mxc_uri.clone(),
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: dur,
+                                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc_uri.clone())),
+                            });
+                        }
+                    }
+                    MT::File(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::File,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: None,
+                                height: None,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                let raw = msg.body();
+                body = if reply_to_event_id.is_some() {
+                    strip_reply_fallback(raw)
+                } else {
+                    render_message_text(&msg)
+                };
+            } else {
+                body = render_timeline_text(ev);
+            }
+        }
+        _ => body = render_timeline_text(ev),
+    }
 
     Some(MessageEvent {
         item_id: uid.to_string(),
@@ -2788,6 +2953,12 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
         sender: ev.sender().to_string(),
         body,
         timestamp_ms: ts,
+        send_state,
+        txn_id,
+        reply_to_event_id,
+        reply_to_sender,
+        reply_to_body,
+        attachment,
     })
 }
 
@@ -2878,16 +3049,6 @@ async fn attach_sas_stream(
     }
 }
 
-fn queue_db_path(dir: &PathBuf) -> PathBuf {
-    dir.join("send_queue.sqlite3")
-}
-
-fn now_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    dur.as_millis() as i64
-}
-
 fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
     let mut s = msg.body().to_owned();
     if s.trim().is_empty() {
@@ -2898,6 +3059,37 @@ fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
         s.push_str(" \n(edited)");
     }
     s
+}
+
+fn strip_reply_fallback(body: &str) -> String {
+    let lines = body.lines();
+    let mut consumed = 0usize;
+    // Consume leading quoted lines (starting with '>')
+    for l in body.lines() {
+        if l.starts_with('>') {
+            consumed += 1;
+        } else {
+            break;
+        }
+    }
+    // Optionally consume a single blank line after the quote block
+    let remaining: Vec<&str> = body.lines().collect();
+    let mut start = consumed;
+    if start < remaining.len() && remaining[start].trim().is_empty() && consumed > 0 {
+        start += 1;
+    }
+    remaining[start..]
+        .join("\n")
+        .if_empty_then(|| body.to_owned())
+}
+
+trait IfEmptyThen {
+    fn if_empty_then<F: FnOnce() -> String>(self, f: F) -> String;
+}
+impl IfEmptyThen for String {
+    fn if_empty_then<F: FnOnce() -> String>(self, f: F) -> String {
+        if self.trim().is_empty() { f() } else { self }
+    }
 }
 
 fn render_membership_change(
@@ -2981,4 +3173,29 @@ fn render_other_state(ev: &EventTimelineItem, s: &matrix_sdk_ui::timeline::Other
             format!("{actor} updated state: {ty}")
         }
     }
+}
+
+fn mxc_from_media_source(src: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {
+    use matrix_sdk::ruma::events::room::MediaSource as MS;
+    match src {
+        MS::Plain(mxc) => Some(mxc.to_string()),
+        MS::Encrypted(file) => Some(file.url.to_string()),
+    }
+}
+
+fn missing_reply_event_id(ev: &EventTimelineItem) -> Option<matrix_sdk::ruma::OwnedEventId> {
+    if let TimelineItemContent::MsgLike(ml) = ev.content() {
+        if let Some(details) = &ml.in_reply_to {
+            use matrix_sdk_ui::timeline::TimelineDetails::*;
+            if !matches!(details.event, Ready(_)) {
+                return Some(details.event_id.clone());
+            }
+        }
+    }
+    None
+}
+
+#[uniffi::export(callback_interface)]
+pub trait UrlOpener: Send + Sync {
+    fn open(&self, url: String) -> bool;
 }

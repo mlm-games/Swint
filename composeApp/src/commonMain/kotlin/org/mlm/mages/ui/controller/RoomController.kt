@@ -2,19 +2,24 @@ package org.mlm.mages.ui.controller
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import org.mlm.mages.AttachmentKind
 import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
-import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.ReceiptsObserver
-import org.mlm.mages.matrix.SendState
 import org.mlm.mages.matrix.TimelineDiff
-import org.mlm.mages.storage.loadLong
-import org.mlm.mages.storage.saveLong
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.AttachmentData
-import org.mlm.mages.ui.components.SendIndicator
 
 class RoomController(
     private val service: MatrixService,
@@ -29,29 +34,23 @@ class RoomController(
 
     private var typingToken: ULong? = null
     private var receiptsToken: ULong? = null
+    private var ownReceiptToken: ULong? = null
     private var dmPeer: String? = null
     private var uploadJob: Job? = null
     private var typingJob: Job? = null
 
 
     init {
-        scope.launch {
-            val ts = runCatching { loadLong(dataStore, key(_state.value.roomId)) }.getOrNull()
-            _state.update { it.copy(lastReadTs = ts) }
-        }
         loadInitial()
         observeTimeline()
         observeTyping()
+        observeOwnReceipt()
         observeReceipts()
-        observeOutbox()
         updateMyUserId()
         scope.launch {
             dmPeer = runCatching { service.port.dmPeerUserId(_state.value.roomId) }.getOrNull()
         }
     }
-
-    private fun key(roomId: String) = "room_read_ts:$roomId"
-
 
     private fun updateMyUserId() {
         _state.update { it.copy(myUserId = service.port.whoami()) }
@@ -64,12 +63,33 @@ class RoomController(
                 .getOrDefault(emptyList())
             _state.update { it.copy(events = recent.sortedBy { e -> e.timestamp }) }
 
+            prefetchThumbnailsForEvents(recent)
+
             if (recent.size < 40) {
                 val hitStart = service.paginateBack(_state.value.roomId, 50)
                 _state.update { it.copy(hitStart = hitStart) }
             }
         }
     }
+
+    private fun observeOwnReceipt() {
+        // Set initial divider from SDK
+        scope.launch {
+            runCatching { service.port.ownLastRead(_state.value.roomId) }
+                .onSuccess { (_, ts) -> _state.update { it.copy(lastReadTs = ts) } }
+        }
+        // Subscribe to changes in our own read receipt
+        ownReceiptToken?.let { service.port.stopReceiptsObserver(it) }
+        ownReceiptToken = service.port.observeOwnReceipt(_state.value.roomId, object : ReceiptsObserver {
+            override fun onChanged() {
+                scope.launch {
+                    runCatching { service.port.ownLastRead(_state.value.roomId) }
+                        .onSuccess { (_, ts) -> _state.update { it.copy(lastReadTs = ts) } }
+                }
+            }
+        })
+    }
+
 
     private fun observeTimeline() {
         scope.launch {
@@ -97,31 +117,7 @@ class RoomController(
                     }
                 }
                 recomputeDerived()
-            }
-        }
-    }
-
-    private fun observeOutbox() {
-        scope.launch {
-            val rid = _state.value.roomId
-            val byTxn = LinkedHashMap<String, SendIndicator>()
-            service.observeSends().collectLatest { upd ->
-                if (upd.roomId != rid) return@collectLatest
-                val indicator = SendIndicator(
-                    txnId = upd.txnId,
-                    attempts = upd.attempts,
-                    state = upd.state,
-                    error = upd.error
-                )
-                byTxn[upd.txnId] = indicator
-                // Drop Sent items from the visible chip list to keep it small
-                val visible = byTxn.values.filter { it.state != SendState.Sent }
-                _state.update {
-                    it.copy(
-                        outbox = visible,
-                        pendingSendCount = visible.size
-                    )
-                }
+                prefetchThumbnails(diff)
             }
         }
     }
@@ -198,8 +194,9 @@ class RoomController(
                 if (ok) _state.update { it.copy(input = "", replyingTo = null) }
                 else _state.update { it.copy(error = "Reply failed") }
             } else {
-                runCatching { service.enqueueText(s.roomId, text, null) }
-                _state.update { it.copy(input = "") }
+                val ok = service.sendMessage(s.roomId, text)
+                if (ok) _state.update { it.copy(input = "") }
+                else _state.update { it.copy(error = "Send failed") }
             }
         }
         recomputeReadStatuses()
@@ -276,6 +273,21 @@ class RoomController(
         }
     }
 
+    fun retry(ev: MessageEvent) {
+        if (ev.body.isBlank()) return
+        scope.launch {
+            val rid = _state.value.roomId
+            val triedPrecise = ev.txnId?.let { txn ->
+                service.retryByTxn(rid, txn)
+            } ?: false
+
+            val ok = if (triedPrecise) true else service.sendMessage(rid, ev.body.trim())
+            if (!ok) _state.update { it.copy(error = "Retry failed") }
+        }
+
+    }
+
+
     fun paginateBack() {
         val s = _state.value
         if (s.isPaginatingBack || s.hitStart) return
@@ -314,16 +326,57 @@ class RoomController(
     fun markReadHere(ev: MessageEvent) {
         scope.launch {
             service.markReadAt(ev.roomId, ev.eventId)
-            saveLastRead(ev.timestamp)
         }
-    }
-
-    private suspend fun saveLastRead(ts: Long) {
-        saveLong(dataStore, key(_state.value.roomId), ts)
-        _state.update { it.copy(lastReadTs = ts) }
     }
 
     fun delete(ev: MessageEvent) {
         scope.launch { service.redact(_state.value.roomId, ev.eventId, null) }
+    }
+
+    private fun prefetchThumbnails(diff: TimelineDiff<MessageEvent>) {
+        val events = when (diff) {
+            is TimelineDiff.Reset -> diff.items
+            is TimelineDiff.Insert -> listOf(diff.item)
+            is TimelineDiff.Update -> listOf(diff.item)
+            else -> emptyList()
+        }
+        prefetchThumbnailsForEvents(events)
+    }
+
+    private fun prefetchThumbnailsForEvents(events: List<MessageEvent>) {
+        events.forEach { ev ->
+            val a = ev.attachment ?: return@forEach
+            if (a.kind != AttachmentKind.Image && a.kind != AttachmentKind.Video && a.thumbnailMxcUri == null) {
+                return@forEach
+            }
+            // Skip if already cached
+            if (_state.value.thumbByEvent.containsKey(ev.eventId)) return@forEach
+
+            val mxc = a.thumbnailMxcUri ?: a.mxcUri
+            scope.launch {
+                val res = service.thumbnailToCache(mxc, 320, 320, true)
+                res.onSuccess { path ->
+                    _state.update { st ->
+                        st.copy(thumbByEvent = st.thumbByEvent + (ev.eventId to path))
+                    }
+                }
+            }
+        }
+    }
+
+    fun openAttachment(ev: MessageEvent, onOpen: (String, String?) -> Unit) {
+        val a = ev.attachment ?: return
+        scope.launch {
+            val nameHint = run {
+                val ext = a.mime?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                val base = ev.eventId.ifBlank { "file" }
+                if (ext != null) "$base.$ext" else base
+            }
+            val res = service.downloadToCacheFile(a.mxcUri, nameHint)
+            res.onSuccess { path -> onOpen(path, a.mime) }
+                .onFailure { t ->
+                    _state.update { it.copy(error = t.message ?: "Download failed") }
+                }
+        }
     }
 }

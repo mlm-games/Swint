@@ -16,25 +16,7 @@ class MatrixService(val port: MatrixPort) {
     fun isLoggedIn(): Boolean = port.isLoggedIn()
 
     fun observeSends(): Flow<SendUpdate> = port.observeSends()
-
-    suspend fun mediaCacheStats() = port.mediaCacheStats()
-    suspend fun mediaCacheEvict(maxBytes: Long) = port.mediaCacheEvict(maxBytes)
     suspend fun thumbnailToCache(mxc: String, w: Int, h: Int, crop: Boolean) = port.thumbnailToCache(mxc, w, h, crop)
-
-    suspend fun initCaches(): Boolean =
-        runCatching { port.initCaches() }.getOrElse { false }
-
-    suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean =
-        runCatching { port.cacheMessages(roomId, messages) }.getOrElse { false }
-
-    suspend fun getCachedMessages(roomId: String, limit: Int = 50): List<MessageEvent> =
-        runCatching { port.getCachedMessages(roomId, limit) }.getOrElse { emptyList() }
-
-    suspend fun savePaginationState(state: MatrixPort.PaginationState): Boolean =
-        runCatching { port.savePaginationState(state) }.getOrElse { false }
-
-    suspend fun getPaginationState(roomId: String): MatrixPort.PaginationState? =
-        runCatching { port.getPaginationState(roomId) }.getOrNull()
 
     fun startSupervisedSync(obs: MatrixPort.SyncObserver) = runCatching { port.startSupervisedSync(obs) }
 
@@ -123,5 +105,11 @@ class MatrixService(val port: MatrixPort) {
 
     suspend fun startUserSas(userId: String, observer: VerificationObserver) =
         port.startUserSas(userId, observer)
+
+        suspend fun retryByTxn(roomId: String, txnId: String) =
+        runCatching { port.retryByTxn(roomId, txnId) }.getOrElse { false }
+
+    suspend fun downloadToCacheFile(mxc: String, filenameHint: String? = null): Result<String> =
+                port.downloadToCacheFile(mxc, filenameHint)
 
 }

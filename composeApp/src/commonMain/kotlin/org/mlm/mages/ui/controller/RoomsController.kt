@@ -33,7 +33,6 @@ class RoomsController(
 
     init {
         observeConnection()
-        observeSends()
         observeRoomList()
     }
 
@@ -47,6 +46,23 @@ class RoomsController(
                         unread = items.associate { e -> e.roomId to e.unread.toInt() },
                         lastActivity = items.associate { e -> e.roomId to e.lastTs }
                     )
+                }
+                // Unread counts
+                scope.launch {
+                    val pairs = withContext(Dispatchers.Default) {
+                        coroutineScope {
+                            items.map { e ->
+                                async {
+                                    val cnt = runCatching { service.port.roomUnreadStats(e.roomId)?.messages?.toInt() ?: 0 }
+                                        .getOrDefault(0)
+                                    e.roomId to cnt
+                                }
+                            }.awaitAll()
+                        }
+                    }
+                    _state.update { st ->
+                        st.copy(unread = st.unread.toMutableMap().apply { pairs.forEach { (rid, cnt) -> put(rid, cnt) } })
+                    }
                 }
             }
             override fun onUpdate(item: MatrixPort.RoomListEntry) {
@@ -62,8 +78,22 @@ class RoomsController(
                         lastActivity = st.lastActivity.toMutableMap().apply { put(item.roomId, item.lastTs) }
                     )
                 }
+                scope.launch {
+                    val cnt = runCatching { service.port.roomUnreadStats(item.roomId)?.messages?.toInt() ?: 0 }
+                        .getOrDefault(0)
+                    _state.update { st ->
+                        st.copy(unread = st.unread.toMutableMap().apply { put(item.roomId, cnt) })
+                    }
+                }
             }
         })
+    }
+
+    fun toggleUnreadOnly() {
+        val tok = roomListToken ?: return
+        val next = !_state.value.unreadOnly
+        _state.update { it.copy(unreadOnly = next) }
+        service.port.roomListSetUnreadOnly(tok, next)
     }
 
 
@@ -89,23 +119,6 @@ class RoomsController(
         // (refreshes first 20 for now)
         val top = rooms.take(20)
         fillLastActivityBackground(top)
-    }
-
-    private fun key(roomId: String) = "room_read_ts:$roomId"
-
-    private fun observeSends() {
-        sendsJob?.cancel()
-        sendsJob = scope.launch {
-            service.observeSends().collect { upd ->
-                val now = service.nowMs()
-                _state.update { st ->
-                    val m = st.lastOutgoing.toMutableMap()
-                    m[upd.roomId] = now
-                    st.copy(lastOutgoing = m)
-                }
-                runCatching { saveLong(dataStore, actKey(upd.roomId), now) }
-            }
-        }
     }
 
     fun refreshRooms() {
@@ -134,29 +147,19 @@ class RoomsController(
                 )
             }
 
-            // unread + last activity
-            val results = withContext(Dispatchers.Default) {
+            val unreadMap = withContext(Dispatchers.Default) {
                 coroutineScope {
                     rooms.map { room ->
                         async {
-                            val recent = runCatching { service.loadRecent(room.id, 50) }.getOrDefault(emptyList())
-                            val lastTs = recent.maxOfOrNull { it.timestamp } ?: 0L
-                            room.id to (recent to lastTs)
+                            val cnt = runCatching { service.port.roomUnreadStats(room.id)?.messages?.toInt() ?: 0 }
+                                .getOrDefault(0)
+                            room.id to cnt
                         }
                     }.awaitAll().toMap()
                 }
             }
-
-            val unreadMap = buildMap {
-                for ((rid, pair) in results) {
-                    val (recent, _) = pair
-                    val lastRead = loadLong(dataStore, key(rid)) ?: 0L
-                    put(rid, recent.count { it.timestamp > lastRead })
-                }
-            }
-            val lastActivityMap = buildMap {
-                for ((rid, pair) in results) put(rid, pair.second)
-            }
+            // need a source for it
+            val lastActivityMap = _state.value.lastActivity
 
             _state.update {
                 it.copy(
@@ -165,32 +168,6 @@ class RoomsController(
                     lastActivity = lastActivityMap,
                     isBusy = false
                 )
-            }
-
-            runCatching {
-                val me = service.port.whoami()
-                for (room in rooms) {
-                    val prevTs = cachedActivity[room.id] ?: 0L
-                    val newTs = lastActivityMap[room.id] ?: 0L
-                    val unread = unreadMap[room.id] ?: 0
-                    if (newTs > prevTs && unread > 0) {
-                        // Build a short preview from recent messages newer than lastRead
-                        val recent = runCatching { service.loadRecent(room.id, 20) }.getOrDefault(emptyList())
-                        val lastRead = runCatching { loadLong(dataStore, key(room.id)) }.getOrNull() ?: 0L
-                        val previewLines = recent
-                            .filter { it.timestamp > lastRead && it.sender != me }
-                            .takeLast(3)
-                            .joinToString("\n") { e ->
-                                val who = e.sender.substringBefore(':', e.sender)
-                                "$who: ${e.body.take(120)}"
-                            }
-                        if (previewLines.isNotBlank()) {
-                            Notifier.notifyRoom(room.name, previewLines)
-                        }
-                    }
-                }
-            }.onFailure {
-            // silence.
             }
 
             val missing = rooms.filter { it.id !in cachedActivity }
@@ -231,6 +208,11 @@ class RoomsController(
 
     fun setSearchQuery(q: String) {
         _state.update { it.copy(roomSearchQuery = q) }
+    }
+
+    fun setUnreadOnly(unreadOnly: Boolean) {
+        val tok = roomListToken ?: return
+        service.port.roomListSetUnreadOnly(tok, unreadOnly)
     }
 
     fun open(room: RoomSummary) = onOpenRoom(room)

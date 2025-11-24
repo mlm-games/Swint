@@ -5,6 +5,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import org.mlm.mages.AttachmentInfo
+import org.mlm.mages.AttachmentKind
 import mages.Client as FfiClient
 import mages.RoomSummary as FfiRoom
 import mages.MessageEvent as FfiEvent
@@ -34,7 +36,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         synchronized(clientLock) {
             client.let { c ->
                 runCatching { c.shutdown() }
-                runCatching { c.close() }  // key: avoid Cleaner path
+                runCatching { c.close() }              // key: avoid Cleaner path
             }
         }
     }
@@ -60,48 +62,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
         val subId: ULong = client.observeRoomTimelineDiffs(roomId, obs)
         awaitClose { client.unobserveRoomTimeline(subId) }
-    }
-
-    override suspend fun initCaches(): Boolean = client.initCaches()
-
-    override suspend fun cacheMessages(roomId: String, messages: List<MessageEvent>): Boolean {
-        val ffiMessages = messages.map { msg ->
-            mages.MessageEvent(
-                itemId = msg.itemId,
-                eventId = msg.eventId,
-                roomId = msg.roomId,
-                sender = msg.sender,
-                body = msg.body,
-                timestampMs = msg.timestamp.toULong()
-            )
-        }
-        return client.cacheMessages(roomId, ffiMessages)
-    }
-
-    override suspend fun getCachedMessages(roomId: String, limit: Int): List<MessageEvent> =
-        client.getCachedMessages(roomId, limit.toUInt()).map { it.toModel() }
-
-    override suspend fun savePaginationState(state: MatrixPort.PaginationState): Boolean {
-        val ffiState = mages.PaginationState(
-            roomId = state.roomId,
-            prevBatch = state.prevBatch,
-            nextBatch = state.nextBatch,
-            atStart = state.atStart,
-            atEnd = state.atEnd
-        )
-        return client.savePaginationState(ffiState)
-    }
-
-    override suspend fun getPaginationState(roomId: String): MatrixPort.PaginationState? {
-        return client.getPaginationState(roomId)?.let { ffi ->
-            MatrixPort.PaginationState(
-                roomId = ffi.roomId,
-                prevBatch = ffi.prevBatch,
-                nextBatch = ffi.nextBatch,
-                atStart = ffi.atStart,
-                atEnd = ffi.atEnd
-            )
-        }
     }
 
     override fun observeConnection(observer: MatrixPort.ConnectionObserver): ULong {
@@ -167,10 +127,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         awaitClose { client.unobserveSends(token) }
     }
 
-    override suspend fun mediaCacheStats(): Pair<Long, Long> {
-        val s = client.mediaCacheStats(); return s.bytes.toLong() to s.files.toLong()
-    }
-    override suspend fun mediaCacheEvict(maxBytes: Long): Long = client.mediaCacheEvict(maxBytes.toULong()).toLong()
     override suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String> =
         runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
 
@@ -206,38 +162,38 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.unobserveTyping(token)
     }
 
-     override fun observeReceipts(roomId: String, observer: ReceiptsObserver): ULong {
-      val cb = object : mages.ReceiptsObserver {
-          override fun onChanged() { observer.onChanged() }
-      }
-      return client.observeReceipts(roomId, cb)
-  }
-  override fun stopReceiptsObserver(token: ULong) {
-      client.unobserveReceipts(token)
-  }
-  override suspend fun dmPeerUserId(roomId: String): String? = client.dmPeerUserId(roomId)
-  override suspend fun isEventReadBy(roomId: String, eventId: String, userId: String): Boolean =
-      client.isEventReadBy(roomId, eventId, userId)
+    override fun observeReceipts(roomId: String, observer: ReceiptsObserver): ULong {
+        val cb = object : mages.ReceiptsObserver {
+            override fun onChanged() { observer.onChanged() }
+        }
+        return client.observeReceipts(roomId, cb)
+    }
+    override fun stopReceiptsObserver(token: ULong) {
+        client.unobserveReceipts(token)
+    }
+    override suspend fun dmPeerUserId(roomId: String): String? = client.dmPeerUserId(roomId)
+    override suspend fun isEventReadBy(roomId: String, eventId: String, userId: String): Boolean =
+        client.isEventReadBy(roomId, eventId, userId)
 
-  override fun startCallInbox(observer: MatrixPort.CallObserver): ULong {
-      val cb = object : mages.CallObserver {
-          override fun onInvite(invite: mages.CallInvite) {
-              observer.onInvite(
-                  CallInvite(
-                      roomId = invite.roomId,
-                      sender = invite.sender,
-                      callId = invite.callId,
-                      isVideo = invite.isVideo,
-                      tsMs = invite.tsMs.toLong()
-                  )
-              )
-          }
-      }
-      return client.startCallInbox(cb)
-  }
-  override fun stopCallInbox(token: ULong) {
-      client.stopCallInbox(token)
-  }
+    override fun startCallInbox(observer: MatrixPort.CallObserver): ULong {
+        val cb = object : mages.CallObserver {
+            override fun onInvite(invite: mages.CallInvite) {
+                observer.onInvite(
+                    CallInvite(
+                        roomId = invite.roomId,
+                        sender = invite.sender,
+                        callId = invite.callId,
+                        isVideo = invite.isVideo,
+                        tsMs = invite.tsMs.toLong()
+                    )
+                )
+            }
+        }
+        return client.startCallInbox(cb)
+    }
+    override fun stopCallInbox(token: ULong) {
+        client.stopCallInbox(token)
+    }
 
     override fun startSupervisedSync(observer: MatrixPort.SyncObserver) {
         val cb = object : mages.SyncObserver {
@@ -283,7 +239,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
             override fun onPhase(flowId: String, phase: mages.SasPhase) {
                 observer.onPhase(flowId, phase.toCommon())
             }
-            override fun onEmojis(payload: mages.SasEmojis) {
+            override fun onEmojis(payload: SasEmojis) {
                 observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
             }
             override fun onError(flowId: String, message: String) {
@@ -384,6 +340,17 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override suspend fun retryTxnNow(txnId: String): Boolean =
         client.retryTxnNow(txnId)
+
+    override suspend fun retryByTxn(roomId: String, txnId: String): Boolean {
+        return client.retryByTxn(roomId, txnId)
+    }
+
+    override suspend fun downloadToCacheFile(
+        mxcUri: String,
+        filenameHint: String?
+    ): Result<String> {
+        return runCatching { client.downloadToCacheFile(mxcUri, filenameHint).path }
+    }
 
     override suspend fun pendingSends(): UInt =
         client.pendingSends()
@@ -514,12 +481,46 @@ class RustMatrixPort(hs: String) : MatrixPort {
             )
         }
     }
-}
 
+
+
+    override fun roomListSetUnreadOnly(
+        token: ULong,
+        unreadOnly: Boolean
+    ): Boolean {
+        return client.roomListSetUnreadOnly(token, unreadOnly)
+    }
+
+    override suspend fun loginSsoLoopback(openUrl: (String) -> Boolean, deviceName: String?): Boolean {
+        val opener = object : mages.UrlOpener {
+            override fun open(url: String): Boolean = openUrl(url)
+        }
+        return runCatching { client.loginSsoLoopback(opener, deviceName) }.isSuccess
+    }
+}
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
 private fun FfiEvent.toModel() = MessageEvent(
-    itemId = itemId, eventId = eventId, roomId = roomId, sender = sender, body = body, timestamp = timestampMs.toLong()
+    itemId = itemId,
+    eventId = eventId,
+    roomId = roomId,
+    sender = sender,
+    body = body,
+    timestamp = timestampMs.toLong(),
+    txnId = txnId,
+    attachment = attachment?.let {
+        AttachmentInfo(
+            kind = when (it.kind) {
+                mages.AttachmentKind.IMAGE -> AttachmentKind.Image
+                mages.AttachmentKind.VIDEO -> AttachmentKind.Video
+                mages.AttachmentKind.FILE -> AttachmentKind.File
+            },
+            mxcUri = it.mxcUri,
+            thumbnailMxcUri = it.thumbnailMxcUri,
+            mime = it.mime,
+            durationMs = it.durationMs?.toLong()
+        )
+    }
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)
