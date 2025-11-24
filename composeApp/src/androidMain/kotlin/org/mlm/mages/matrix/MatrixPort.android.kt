@@ -5,6 +5,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import org.mlm.mages.AttachmentInfo
+import org.mlm.mages.AttachmentKind
 import mages.Client as FfiClient
 import mages.RoomSummary as FfiRoom
 import mages.MessageEvent as FfiEvent
@@ -237,7 +239,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
             override fun onPhase(flowId: String, phase: mages.SasPhase) {
                 observer.onPhase(flowId, phase.toCommon())
             }
-            override fun onEmojis(payload: mages.SasEmojis) {
+            override fun onEmojis(payload: SasEmojis) {
                 observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
             }
             override fun onError(flowId: String, message: String) {
@@ -313,7 +315,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 observer.onError(flowId, message)
             }
         }
-        return client.acceptVerification(flowId, cb)
+        return client.acceptVerification(flowId, otherUserId, cb)
     }
 
     override suspend fun confirmVerification(flowId: String): Boolean =
@@ -323,7 +325,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.cancelVerification(flowId)
 
     override suspend fun cancelVerificationRequest(flowId: String, otherUserId: String?): Boolean =
-        client.cancelVerificationRequest(flowId)
+        client.cancelVerificationRequest(flowId, otherUserId)
 
     override fun enterForeground() {
         client.enterForeground()
@@ -488,11 +490,37 @@ class RustMatrixPort(hs: String) : MatrixPort {
     ): Boolean {
         return client.roomListSetUnreadOnly(token, unreadOnly)
     }
+
+    override suspend fun loginSsoLoopback(openUrl: (String) -> Boolean, deviceName: String?): Boolean {
+        val opener = object : mages.UrlOpener {
+            override fun open(url: String): Boolean = openUrl(url)
+        }
+        return runCatching { client.loginSsoLoopback(opener, deviceName) }.isSuccess
+    }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
 private fun FfiEvent.toModel() = MessageEvent(
-    itemId = itemId, eventId = eventId, roomId = roomId, sender = sender, body = body, timestamp = timestampMs.toLong()
+    itemId = itemId,
+    eventId = eventId,
+    roomId = roomId,
+    sender = sender,
+    body = body,
+    timestamp = timestampMs.toLong(),
+    txnId = txnId,
+    attachment = attachment?.let {
+        AttachmentInfo(
+            kind = when (it.kind) {
+                mages.AttachmentKind.IMAGE -> AttachmentKind.Image
+                mages.AttachmentKind.VIDEO -> AttachmentKind.Video
+                mages.AttachmentKind.FILE -> AttachmentKind.File
+            },
+            mxcUri = it.mxcUri,
+            thumbnailMxcUri = it.thumbnailMxcUri,
+            mime = it.mime,
+            durationMs = it.durationMs?.toLong()
+        )
+    }
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)

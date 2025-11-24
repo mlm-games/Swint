@@ -315,7 +315,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 observer.onError(flowId, message)
             }
         }
-        return client.acceptVerification(flowId, cb)
+        return client.acceptVerification(flowId, otherUserId, cb)
     }
 
     override suspend fun confirmVerification(flowId: String): Boolean =
@@ -325,7 +325,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.cancelVerification(flowId)
 
     override suspend fun cancelVerificationRequest(flowId: String, otherUserId: String?): Boolean =
-        client.cancelVerificationRequest(flowId)
+        client.cancelVerificationRequest(flowId, otherUserId)
 
     override fun enterForeground() {
         client.enterForeground()

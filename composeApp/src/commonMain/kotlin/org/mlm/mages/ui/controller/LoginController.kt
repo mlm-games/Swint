@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.mlm.mages.MatrixService
 import org.mlm.mages.ui.LoginUiState
+import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
 class LoginController(
@@ -60,17 +61,25 @@ class LoginController(
         }
     }
 
+    @OptIn(ExperimentalTime::class)
     fun startSso(openUrl: (String) -> Boolean) {
         if (_state.value.isBusy) return
         scope.launch {
             _state.update { it.copy(isBusy = true, error = null) }
             runCatching {
-                // Uses the port method you implemented via UniFFI
                 service.port.loginSsoLoopback(openUrl, deviceName = "Mages")
             }.onFailure { t ->
                 _state.update { it.copy(isBusy = false, error = t.message ?: "SSO failed") }
-                return@launch
             }.onSuccess {
+                withContext(Dispatchers.Default) {
+                    org.mlm.mages.storage.saveString(dataStore, "homeserver", _state.value.homeserver)
+                    org.mlm.mages.storage.saveLong(
+                        dataStore,
+                        "notif:baseline_ms",
+                        Clock.System.now().toEpochMilliseconds()
+                    )
+                }
+                _state.update { it.copy(isBusy = false) }
                 withContext(Dispatchers.Main) { onLoggedIn() }
             }
         }

@@ -1849,31 +1849,32 @@ impl Client {
     pub fn accept_verification(
         &self,
         flow_id: String,
+        other_user_id: Option<String>,
         observer: Box<dyn VerificationObserver>,
     ) -> bool {
         let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
-            // Case 1: The flow is already a running SAS verification (e.g. we started it)
+            // 1) Prefer explicitly provided user id
+            let user_opt = if let Some(uid) = other_user_id {
+                uid.parse::<OwnedUserId>().ok()
+            } else {
+                // 2) Then try inbox
+                self.inbox
+                    .lock()
+                    .unwrap()
+                    .get(&flow_id)
+                    .map(|p| p.0.clone())
+            };
+            let Some(user) = user_opt else {
+                return false; // don’t fall back to “me”
+            };
+
+            // Already-running SAS?
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
                 return f.sas.accept().await.is_ok();
             }
 
-            // Resolve user for this flow (from inbox if present, else fall back to our own user)
-            let user = match self
-                .inbox
-                .lock()
-                .unwrap()
-                .get(&flow_id)
-                .map(|p| p.0.clone())
-            {
-                Some(u) => u,
-                None => match self.inner.user_id() {
-                    Some(me) => me.to_owned(),
-                    None => return false,
-                },
-            };
-
-            // Case 2: Accept a pending VerificationRequest
+            // Pending request?
             if let Some(req) = self
                 .inner
                 .encryption()
@@ -1887,7 +1888,7 @@ impl Client {
                 return true;
             }
 
-            // Case 3: Flow may already have transitioned to a verification; accept SAS if present
+            // Or a verification that already started?
             if let Some(verification) = self
                 .inner
                 .encryption()
@@ -1946,29 +1947,23 @@ impl Client {
         })
     }
 
-    pub fn cancel_verification_request(&self, flow_id: String) -> bool {
+    pub fn cancel_verification_request(
+        &self,
+        flow_id: String,
+        other_user_id: Option<String>,
+    ) -> bool {
         RT.block_on(async {
-            // Try known inbox first
-            if let Some((user, _device)) = self.inbox.lock().unwrap().get(&flow_id).cloned() {
-                if let Some(req) = self
-                    .inner
-                    .encryption()
-                    .get_verification_request(&user, &flow_id)
-                    .await
-                {
-                    let ok = req.cancel().await.is_ok();
-                    if ok {
-                        self.inbox.lock().unwrap().remove(&flow_id);
-                    }
-                    return ok;
+            let user = if let Some(uid) = other_user_id {
+                match uid.parse::<OwnedUserId>() {
+                    Ok(u) => u,
+                    Err(_) => return false,
                 }
-            }
-            // Fallbacks
-            let user = match self.inner.user_id() {
-                Some(me) => me.to_owned(),
-                None => return false,
+            } else if let Some((u, _)) = self.inbox.lock().unwrap().get(&flow_id).cloned() {
+                u
+            } else {
+                return false;
             };
-            // Cancel a still‑pending request
+
             if let Some(req) = self
                 .inner
                 .encryption()
@@ -1977,7 +1972,6 @@ impl Client {
             {
                 return req.cancel().await.is_ok();
             }
-            // Or cancel a verification that already started
             if let Some(verification) = self
                 .inner
                 .encryption()
@@ -2599,20 +2593,33 @@ impl Client {
         device_name: Option<String>,
     ) -> Result<(), FfiError> {
         RT.block_on(async {
-            // 0.14.0: SSO API is on MatrixAuth
-            let sso = self
-                .inner
+            self.inner
                 .matrix_auth()
                 .login_sso(move |sso_url: String| async move {
                     let _ = opener.open(sso_url);
                     Ok(())
-                });
-
-            sso.initial_device_display_name(device_name.as_deref().unwrap_or("Mages"))
+                })
+                .initial_device_display_name(device_name.as_deref().unwrap_or("Mages"))
                 .send()
                 .await
-                .map(|_| ())
-                .map_err(|e| FfiError::Msg(e.to_string()))
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            if let Some(sess) = self.inner.matrix_auth().session() {
+                tokio::fs::create_dir_all(&self.store_dir).await?;
+                let info = SessionInfo {
+                    user_id: sess.meta.user_id.to_string(),
+                    device_id: sess.meta.device_id.to_string(),
+                    access_token: sess.tokens.access_token.clone(),
+                    refresh_token: sess.tokens.refresh_token.clone(),
+                    homeserver: self.inner.homeserver().to_string(),
+                };
+                tokio::fs::write(
+                    session_file(&self.store_dir),
+                    serde_json::to_string(&info).unwrap(),
+                )
+                .await?;
+            }
+            Ok(())
         })
     }
 }
