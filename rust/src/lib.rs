@@ -920,7 +920,7 @@ impl Client {
             let td_handler = client.observe_events::<ToDeviceKeyVerificationRequestEvent, ()>();
             let mut td_sub = td_handler.subscribe();
 
-            // in‑room verification requests arrive as m.room.message with msgtype=m.key.verification.request
+            // In‑room requests arrive as a room message with msgtype = m.key.verification.request
             let ir_handler = client.observe_events::<SyncRoomMessageEvent, Room>();
             let mut ir_sub = ir_handler.subscribe();
 
@@ -928,9 +928,9 @@ impl Client {
                 tokio::select! {
                     maybe = td_sub.next() => {
                         if let Some((ev, ())) = maybe {
-                            let flow_id = ev.content.transaction_id.to_string();   // to‑device uses txn id
-                            let from_user = ev.sender.to_string();
-                            let from_device = ev.content.from_device.to_string();
+                            let flow_id    = ev.content.transaction_id.to_string(); // to‑device uses txn id
+                            let from_user  = ev.sender.to_string();
+                            let from_device= ev.content.from_device.to_string();
 
                             inbox.lock().unwrap().insert(
                                 flow_id.clone(),
@@ -949,7 +949,7 @@ impl Client {
                             if let SyncRoomMessageEvent::Original(o) = ev {
                                 if let MessageType::VerificationRequest(_c) = &o.content.msgtype {
                                     // in‑room flow_id is the event_id
-                                    let flow_id = o.event_id.to_string();
+                                    let flow_id   = o.event_id.to_string();
                                     let from_user = o.sender.to_string();
 
                                     // We only need the user later; device can be a placeholder
@@ -1854,11 +1854,10 @@ impl Client {
     ) -> bool {
         let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
-            // 1) Prefer explicitly provided user id
+            // Prefer explicit other user; else look up from inbox
             let user_opt = if let Some(uid) = other_user_id {
                 uid.parse::<OwnedUserId>().ok()
             } else {
-                // 2) Then try inbox
                 self.inbox
                     .lock()
                     .unwrap()
@@ -1866,7 +1865,7 @@ impl Client {
                     .map(|p| p.0.clone())
             };
             let Some(user) = user_opt else {
-                return false; // don’t fall back to “me”
+                return false;
             };
 
             // Already-running SAS?
@@ -1888,21 +1887,28 @@ impl Client {
                 return true;
             }
 
-            // Or a verification that already started?
+            // A verification may already exist; sas() can appear a moment later after START
             if let Some(verification) = self
                 .inner
                 .encryption()
                 .get_verification(&user, &flow_id)
                 .await
             {
-                if let Some(sas) = verification.sas() {
+                if let Some(sas) = verification.clone().sas() {
                     return sas.accept().await.is_ok();
                 }
+                // Short retry for sas() to materialize
+                for _ in 0..5 {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    if let Some(sas) = verification.clone().sas() {
+                        return sas.accept().await.is_ok();
+                    }
+                }
             }
+
             false
         })
     }
-
     pub fn confirm_verification(&self, flow_id: String) -> bool {
         RT.block_on(async {
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
@@ -2619,6 +2625,9 @@ impl Client {
                 )
                 .await?;
             }
+
+            let _ = self.inner.sync_once(SyncSettings::default()).await;
+
             Ok(())
         })
     }
