@@ -232,12 +232,18 @@ fun RoomScreen(
                             UnreadDivider()
                         }
 
+                        val prevEvent = events.getOrNull(index - 1)
+                        val shouldGroup = prevEvent != null &&
+                                prevEvent.sender == event.sender &&
+                                prevDate == eventDate &&
+                                (event.timestamp - prevEvent.timestamp) < 300_000 // 5 minutes in milliseconds (for grouping messages)
+
                         MessageBubble(
                             isMine = (event.sender == state.myUserId),
                             body = event.body,
                             sender = event.sender,
                             timestamp = event.timestamp,
-                            grouped = false,
+                            grouped = shouldGroup,
                             reactions = state.reactions[event.eventId] ?: emptySet(),
                             eventId = event.eventId,
                             onLongPress = { sheetEvent = event },
