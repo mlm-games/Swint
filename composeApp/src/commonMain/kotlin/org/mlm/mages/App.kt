@@ -67,7 +67,8 @@ fun App(
                     onSearch = controller::setSearchQuery,
                     onOpen = { controller.open(it) },
                     onOpenSecurity = { nav.push(Route.Security) },
-                    onToggleUnreadOnly = {controller.toggleUnreadOnly()}
+                    onToggleUnreadOnly = {controller.toggleUnreadOnly()},
+                    onOpenDiscover = { nav.push(Route.Discover) },
                 )
             }
             is Route.Room -> {
@@ -129,6 +130,24 @@ fun App(
                             service.port.close()
                             if (ok) { nav.replace(Route.Login)}
                         }
+                    }
+                )
+            }
+            Route.Discover -> {
+                val controller = remember { DiscoverController(service) }
+                val ui by controller.state.collectAsState()
+                val scope = rememberCoroutineScope()
+                DiscoverScreen(
+                    state = ui,
+                    onQuery = controller::setQuery,
+                    onClose = { nav.pop() },
+                    onOpenUser = { u ->
+                        val rid = controller.ensureDm(u.userId)
+                        if (rid != null) nav.push(Route.Room(rid, u.displayName ?: u.userId))
+                    },
+                    onOpenRoom = { room ->
+                        val rid = controller.joinOrOpen(room.alias ?: room.roomId)
+                        if (rid != null) nav.push(Route.Room(rid, room.name ?: room.alias ?: room.roomId))
                     }
                 )
             }

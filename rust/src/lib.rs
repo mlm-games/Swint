@@ -21,7 +21,7 @@ use matrix_sdk::{
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
     ruma::{
-        OwnedMxcUri, OwnedRoomOrAliasId,
+        OwnedMxcUri, OwnedRoomAliasId, OwnedRoomOrAliasId,
         api::client::{
             directory::get_public_rooms_filtered,
             push::{Pusher, PusherIds, PusherInit, PusherKind},
@@ -2620,6 +2620,25 @@ impl Client {
                 .join_room_by_id_or_alias(&target, &[])
                 .await
                 .is_ok()
+        })
+    }
+
+    pub fn resolve_room_id(&self, id_or_alias: String) -> Result<String, FfiError> {
+        RT.block_on(async {
+            if id_or_alias.starts_with('!') {
+                return Ok(id_or_alias);
+            }
+            if id_or_alias.starts_with('#') {
+                let alias = OwnedRoomAliasId::try_from(id_or_alias)
+                    .map_err(|e| FfiError::Msg(e.to_string()))?;
+                let resp = self
+                    .inner
+                    .resolve_room_alias(&alias)
+                    .await
+                    .map_err(|e| FfiError::Msg(e.to_string()))?;
+                return Ok(resp.room_id.to_string());
+            }
+            Err(FfiError::Msg("not a room id or alias".into()))
         })
     }
 

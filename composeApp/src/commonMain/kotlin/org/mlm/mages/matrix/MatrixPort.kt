@@ -216,6 +216,7 @@ interface MatrixPort {
     suspend fun publicRooms(server: String? = null, search: String? = null, limit: Int = 50, since: String? = null): PublicRoomsPage
     suspend fun joinByIdOrAlias(idOrAlias: String): Boolean
     suspend fun ensureDm(userId: String): String?
+    suspend fun resolveRoomId(idOrAlias: String): String?
 
 }
 

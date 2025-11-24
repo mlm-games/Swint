@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixProvider
+import org.mlm.mages.nav.handleMatrixLink
+import org.mlm.mages.nav.parseMatrixLink
 import org.mlm.mages.platform.MagesPaths
 import org.mlm.mages.push.PREF_INSTANCE
 import org.mlm.mages.storage.provideAppDataStore
@@ -71,6 +73,21 @@ class MainActivity : ComponentActivity() {
                 val roomId = uri.getQueryParameter("id")
                 if (!roomId.isNullOrBlank()) {
                     deepLinkRoomIds.tryEmit(roomId)
+                }
+                return
+            }
+
+            val url = uri.toString()
+            val link = parseMatrixLink(url)
+            if (link !is org.mlm.mages.nav.MatrixLink.Unsupported) {
+                lifecycleScope.launch {
+                    val svc = MatrixProvider.get(this@MainActivity)
+                    handleMatrixLink(
+                        service = svc,
+                        link = link,
+                    ) { roomId, _ ->
+                        deepLinkRoomIds.tryEmit(roomId)
+                    }
                 }
             }
         }

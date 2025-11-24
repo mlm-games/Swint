@@ -49,7 +49,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
             implementation(compose.components.resources)
-
+            implementation(libs.uri.kmp)
         }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)

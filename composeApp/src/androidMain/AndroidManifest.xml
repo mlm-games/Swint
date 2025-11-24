@@ -25,9 +25,12 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="mages"
-                    android:host="room" />
+                <data android:scheme="mages" />
+                <data android:host="room" />
+                <data android:scheme="https" />
+                <data android:host="matrix.to" />
+                <data android:pathPrefix="/#/" />
+                <data android:scheme="matrix" />
             </intent-filter>
         </activity>
         <service

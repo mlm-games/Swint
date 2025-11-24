@@ -23,6 +23,7 @@ materialIconsExtended = "1.7.3"
 okio = "3.16.4"
 serialization = "1.9.0"
 coroutines = "1.10.2"
+uriKmp = "0.0.21"
 workRuntimeKtx = "2.11.0"
 browser = "1.9.0"
 
@@ -52,6 +53,7 @@ material-icons-extended = { module = "org.jetbrains.compose.material:material-ic
 net-jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4jSimple" }
+uri-kmp = { module = "com.eygraber:uri-kmp", version.ref = "uriKmp" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
