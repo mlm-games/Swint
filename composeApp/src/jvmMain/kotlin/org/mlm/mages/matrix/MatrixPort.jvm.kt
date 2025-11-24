@@ -497,6 +497,37 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
         return runCatching { client.loginSsoLoopback(opener, deviceName) }.isSuccess
     }
+
+    override suspend fun searchUsers(term: String, limit: Int): List<DirectoryUser> =
+        client.searchUsers(term, limit.toULong()).map { u ->
+            DirectoryUser(u.userId, u.displayName, u.avatarUrl)
+        }
+
+    override suspend fun publicRooms(server: String?, search: String?, limit: Int, since: String?): PublicRoomsPage {
+        val resp = client.publicRooms(server, search, limit.toUInt(), since)
+        return PublicRoomsPage(
+            rooms = resp.rooms.map {
+                PublicRoom(
+                    roomId = it.roomId,
+                    name = it.name,
+                    topic = it.topic,
+                    alias = it.alias,
+                    avatarUrl = it.avatarUrl,
+                    memberCount = it.memberCount.toLong(),
+                    worldReadable = it.worldReadable,
+                    guestCanJoin = it.guestCanJoin
+                )
+            },
+            nextBatch = resp.nextBatch,
+            prevBatch = resp.prevBatch
+        )
+    }
+
+    override suspend fun joinByIdOrAlias(idOrAlias: String): Boolean =
+        client.joinByIdOrAlias(idOrAlias)
+
+    override suspend fun ensureDm(userId: String): String? =
+        runCatching { client.ensureDm(userId) }.getOrNull()
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

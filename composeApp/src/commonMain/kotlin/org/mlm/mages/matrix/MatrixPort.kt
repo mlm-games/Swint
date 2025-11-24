@@ -52,7 +52,9 @@ data class CallInvite(
 data class RenderedNotification( val roomId: String, val eventId: String, val roomName: String, val sender: String, val body: String, val isNoisy: Boolean, val hasMention: Boolean )
 
 data class UnreadStats(val messages: Long, val notifications: Long, val mentions: Long)
-
+data class DirectoryUser(val userId: String, val displayName: String?, val avatarUrl: String?)
+data class PublicRoom(val roomId: String, val name: String?, val topic: String?, val alias: String?, val avatarUrl: String?, val memberCount: Long, val worldReadable: Boolean, val guestCanJoin: Boolean)
+data class PublicRoomsPage(val rooms: List<PublicRoom>, val nextBatch: String?, val prevBatch: String?)
 interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
@@ -209,6 +211,11 @@ interface MatrixPort {
     fun roomListSetUnreadOnly(token: ULong, unreadOnly: Boolean): Boolean
 
     suspend fun loginSsoLoopback(openUrl: (String) -> Boolean, deviceName: String? = null): Boolean
+
+    suspend fun searchUsers(term: String, limit: Int = 20): List<DirectoryUser>
+    suspend fun publicRooms(server: String? = null, search: String? = null, limit: Int = 50, since: String? = null): PublicRoomsPage
+    suspend fun joinByIdOrAlias(idOrAlias: String): Boolean
+    suspend fun ensureDm(userId: String): String?
 
 }
 

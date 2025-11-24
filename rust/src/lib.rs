@@ -16,13 +16,17 @@ use futures_util::{StreamExt, TryStreamExt};
 use thiserror::Error;
 
 use matrix_sdk::{
-    Client as SdkClient, Room, RoomMemberships, SessionTokens,
+    Client as SdkClient, OwnedServerName, Room, RoomMemberships, SessionTokens,
     authentication::{matrix::MatrixSession, oauth::OAuthError},
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
     ruma::{
-        OwnedMxcUri,
-        api::client::push::{Pusher, PusherIds, PusherInit, PusherKind},
+        OwnedMxcUri, OwnedRoomOrAliasId,
+        api::client::{
+            directory::get_public_rooms_filtered,
+            push::{Pusher, PusherIds, PusherInit, PusherKind},
+        },
+        directory::Filter,
         events::room::MediaSource,
         push::HttpPusherData,
     },
@@ -260,6 +264,32 @@ pub struct RoomListEntry {
     pub name: String,
     pub unread: u64,
     pub last_ts: u64,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct DirectoryUser {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct PublicRoom {
+    pub room_id: String,
+    pub name: Option<String>,
+    pub topic: Option<String>,
+    pub alias: Option<String>,
+    pub avatar_url: Option<String>,
+    pub member_count: u64,
+    pub world_readable: bool,
+    pub guest_can_join: bool,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct PublicRoomsPage {
+    pub rooms: Vec<PublicRoom>,
+    pub next_batch: Option<String>,
+    pub prev_batch: Option<String>,
 }
 
 #[uniffi::export(callback_interface)]
@@ -2465,6 +2495,150 @@ impl Client {
         } else {
             false
         }
+    }
+
+    pub fn search_users(
+        &self,
+        search_term: String,
+        limit: u64,
+    ) -> Result<Vec<DirectoryUser>, FfiError> {
+        RT.block_on(async {
+            let resp = self
+                .inner
+                .search_users(&search_term, limit)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?; // matrix-sdk 0.14's helper
+            let out = resp
+                .results
+                .into_iter()
+                .map(|u| DirectoryUser {
+                    user_id: u.user_id.to_string(),
+                    display_name: u.display_name,
+                    avatar_url: u.avatar_url.map(|mxc| mxc.to_string()),
+                })
+                .collect();
+            Ok(out)
+        })
+    }
+
+    pub fn public_rooms(
+        &self,
+        server: Option<String>,
+        search: Option<String>,
+        limit: u32,
+        since: Option<String>,
+    ) -> Result<PublicRoomsPage, FfiError> {
+        RT.block_on(async {
+            // Parse server name if provided
+            let server_name: Option<OwnedServerName> = match server {
+                Some(s) => {
+                    Some(OwnedServerName::try_from(s).map_err(|e| FfiError::Msg(e.to_string()))?)
+                }
+                None => None,
+            };
+
+            // If a search term exists, use get_public_rooms_filtered; else use get_public_rooms.
+            if let Some(term) = search.filter(|s| !s.trim().is_empty()) {
+                let mut req = get_public_rooms_filtered::v3::Request::new();
+                let mut f = Filter::new();
+                f.generic_search_term = Some(term);
+                req.filter = f;
+                if let Some(s) = since.as_deref() {
+                    req.since = Some(s.to_owned());
+                }
+                if limit > 0 {
+                    req.limit = Some(limit.into());
+                }
+                if let Some(ref sn) = server_name {
+                    req.server = Some(sn.clone());
+                }
+
+                let resp = self
+                    .inner
+                    .public_rooms_filtered(req)
+                    .await
+                    .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+                let rooms = resp
+                    .chunk
+                    .into_iter()
+                    .map(|r| PublicRoom {
+                        room_id: r.room_id.to_string(),
+                        name: r.name,
+                        topic: r.topic,
+                        alias: r.canonical_alias.map(|a| a.to_string()),
+                        avatar_url: r.avatar_url.map(|mxc| mxc.to_string()),
+                        member_count: r.num_joined_members.into(),
+                        world_readable: r.world_readable,
+                        guest_can_join: r.guest_can_join,
+                    })
+                    .collect();
+
+                Ok(PublicRoomsPage {
+                    rooms,
+                    next_batch: resp.next_batch,
+                    prev_batch: resp.prev_batch,
+                })
+            } else {
+                // Simple directory (no server-side filter)
+                let resp = self
+                    .inner
+                    .public_rooms(Some(limit), since.as_deref(), server_name.as_deref())
+                    .await
+                    .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+                let rooms = resp
+                    .chunk
+                    .into_iter()
+                    .map(|r| PublicRoom {
+                        room_id: r.room_id.to_string(),
+                        name: r.name,
+                        topic: r.topic,
+                        alias: r.canonical_alias.map(|a| a.to_string()),
+                        avatar_url: r.avatar_url.map(|mxc| mxc.to_string()),
+                        member_count: r.num_joined_members.into(),
+                        world_readable: r.world_readable,
+                        guest_can_join: r.guest_can_join,
+                    })
+                    .collect();
+
+                Ok(PublicRoomsPage {
+                    rooms,
+                    next_batch: resp.next_batch,
+                    prev_batch: resp.prev_batch,
+                })
+            }
+        })
+    }
+
+    pub fn join_by_id_or_alias(&self, id_or_alias: String) -> bool {
+        RT.block_on(async {
+            let Ok(target) = OwnedRoomOrAliasId::try_from(id_or_alias) else {
+                return false;
+            };
+            self.inner
+                .join_room_by_id_or_alias(&target, &[])
+                .await
+                .is_ok()
+        })
+    }
+
+    // Ensure a DM exists with a user: reuse if present, else create one.
+    pub fn ensure_dm(&self, user_id: String) -> Result<String, FfiError> {
+        RT.block_on(async {
+            let uid = user_id
+                .parse::<OwnedUserId>()
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            if let Some(room) = self.inner.get_dm_room(&uid) {
+                return Ok(room.room_id().to_string());
+            }
+            let room = self
+                .inner
+                .create_dm(&uid)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            Ok(room.room_id().to_string())
+        })
     }
 
     /// Download full media into the SDK's cache dir and return its path.
