@@ -7,26 +7,27 @@ connector = "3.1.2"
 slf4jSimple = "2.0.17"
 up-fcm = "3.0.0"
 up-ui = "1.1.0"
-androidx-activity = "1.11.0"
+androidx-activity = "1.12.0"
 androidx-appcompat = "1.7.1"
 androidx-core = "1.17.0"
 androidx-espresso = "3.7.0"
 androidx-lifecycle = "2.9.6"
 androidx-testExt = "1.3.0"
 composeMultiplatform = "1.9.3"
-datastorePreferencesCore = "1.1.7"
+datastorePreferencesCore = "1.2.0"
 jna = "5.18.1"
 junit = "4.13.2"
 kotlin = "2.2.21"
 kotlinxDatetime = "0.7.1"
 materialIconsExtended = "1.7.3"
-okio = "3.16.2"
+okio = "3.16.4"
 serialization = "1.9.0"
 coroutines = "1.10.2"
 workRuntimeKtx = "2.11.0"
+browser = "1.9.0"
 
 [libraries]
-androidx-browser = { module = "androidx.browser:browser" }
+androidx-browser = { module = "androidx.browser:browser" , version.ref = "browser"}
 androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferencesCore" }
 androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "workRuntimeKtx" }
