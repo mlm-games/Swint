@@ -208,6 +208,8 @@ interface MatrixPort {
 
     fun roomListSetUnreadOnly(token: ULong, unreadOnly: Boolean): Boolean
 
+    suspend fun loginSsoLoopback(openUrl: (String) -> Boolean, deviceName: String? = null): Boolean
+
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

@@ -16,7 +16,7 @@ matrix-sdk = { version = "0.14.0", default-features = false, features = [
     "e2e-encryption",
     "sqlite",
     "rustls-tls",
-    "markdown",
+    "sso-login",
     "automatic-room-key-forwarding",
     "bundled-sqlite",
 ] }

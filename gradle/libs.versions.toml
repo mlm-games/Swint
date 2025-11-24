@@ -26,6 +26,7 @@ coroutines = "1.10.2"
 workRuntimeKtx = "2.11.0"
 
 [libraries]
+androidx-browser = { module = "androidx.browser:browser" }
 androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferencesCore" }
 androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "workRuntimeKtx" }

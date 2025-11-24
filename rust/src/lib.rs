@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use matrix_sdk::{
     Client as SdkClient, Room, RoomMemberships, SessionTokens,
-    authentication::matrix::MatrixSession,
+    authentication::{matrix::MatrixSession, oauth::OAuthError},
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
     ruma::{
@@ -2591,6 +2591,30 @@ impl Client {
             NotificationStatus::EventNotFound => Ok(None),
         }
     }
+
+    /// SSO with built-in loopback server. Opens a browser and completes login.
+    pub fn login_sso_loopback(
+        &self,
+        opener: Box<dyn UrlOpener>,
+        device_name: Option<String>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            // 0.14.0: SSO API is on MatrixAuth
+            let sso = self
+                .inner
+                .matrix_auth()
+                .login_sso(move |sso_url: String| async move {
+                    let _ = opener.open(sso_url);
+                    Ok(())
+                });
+
+            sso.initial_device_display_name(device_name.as_deref().unwrap_or("Mages"))
+                .send()
+                .await
+                .map(|_| ())
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
 }
 
 impl Client {
@@ -2655,7 +2679,7 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let mut reply_to_event_id: Option<String> = None;
     let mut reply_to_sender: Option<String> = None;
     let mut reply_to_body: Option<String> = None;
-    let attachment: Option<AttachmentInfo> = None;
+    let mut attachment: Option<AttachmentInfo> = None;
     let body;
 
     match ev.content() {
@@ -2663,17 +2687,104 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
             // Reply details
             if let Some(details) = &ml.in_reply_to {
                 reply_to_event_id = Some(details.event_id.to_string());
-                // If embedded event details are available, surface sender/body
                 if let matrix_sdk_ui::timeline::TimelineDetails::Ready(embed) = &details.event {
                     reply_to_sender = Some(embed.sender.to_string());
-                    // If replied content is a message, extract its body
                     if let Some(m) = embed.content.as_message() {
                         reply_to_body = Some(m.body().to_owned());
                     }
                 }
             }
-            // Message body for this event (strip fallback if we have a reply)
+
             if let Some(msg) = ml.as_message() {
+                use matrix_sdk::ruma::events::room::message::MessageType as MT;
+                let mt = msg.msgtype();
+                match mt {
+                    MT::Image(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Image,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    MT::Video(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (w, h, size, mime, dur, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.duration.map(|d| d.as_millis() as u64),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None, None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::Video,
+                                mxc_uri: mxc_uri.clone(),
+                                mime,
+                                size_bytes: size,
+                                width: w,
+                                height: h,
+                                duration_ms: dur,
+                                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc_uri.clone())),
+                            });
+                        }
+                    }
+                    MT::File(c) => {
+                        let mxc = mxc_from_media_source(&c.source);
+                        let (size, mime, thumb) = if let Some(info) = &c.info {
+                            (
+                                info.size.map(|v| u64::from(v)),
+                                info.mimetype.clone(),
+                                info.thumbnail_source
+                                    .as_ref()
+                                    .and_then(|s| mxc_from_media_source(s)),
+                            )
+                        } else {
+                            (None, None, None)
+                        };
+                        if let Some(mxc_uri) = mxc {
+                            attachment = Some(AttachmentInfo {
+                                kind: AttachmentKind::File,
+                                mxc_uri,
+                                mime,
+                                size_bytes: size,
+                                width: None,
+                                height: None,
+                                duration_ms: None,
+                                thumbnail_mxc_uri: thumb,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
                 let raw = msg.body();
                 body = if reply_to_event_id.is_some() {
                     strip_reply_fallback(raw)
@@ -2685,7 +2796,6 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
             }
         }
         _ => {
-            // Non message-like: use existing renderer
             body = render_timeline_text(ev);
         }
     }
@@ -3083,4 +3193,9 @@ fn missing_reply_event_id(ev: &EventTimelineItem) -> Option<matrix_sdk::ruma::Ow
         }
     }
     None
+}
+
+#[uniffi::export(callback_interface)]
+pub trait UrlOpener: Send + Sync {
+    fn open(&self, url: String) -> bool;
 }

@@ -63,6 +63,8 @@ class RoomController(
                 .getOrDefault(emptyList())
             _state.update { it.copy(events = recent.sortedBy { e -> e.timestamp }) }
 
+            prefetchThumbnailsForEvents(recent)
+
             if (recent.size < 40) {
                 val hitStart = service.paginateBack(_state.value.roomId, 50)
                 _state.update { it.copy(hitStart = hitStart) }
@@ -332,28 +334,25 @@ class RoomController(
     }
 
     private fun prefetchThumbnails(diff: TimelineDiff<MessageEvent>) {
-        val roomId = _state.value.roomId
-        fun want(ev: MessageEvent): Boolean {
-            val a = ev.attachment ?: return false
-            return when (a.kind) {
-                AttachmentKind.Image, AttachmentKind.Video -> true
-                AttachmentKind.File -> a.thumbnailMxcUri != null // only if server provides
-            }
-        }
         val events = when (diff) {
             is TimelineDiff.Reset -> diff.items
             is TimelineDiff.Insert -> listOf(diff.item)
             is TimelineDiff.Update -> listOf(diff.item)
             else -> emptyList()
-        }.filter(::want)
+        }
+        prefetchThumbnailsForEvents(events)
+    }
 
-        if (events.isEmpty()) return
+    private fun prefetchThumbnailsForEvents(events: List<MessageEvent>) {
         events.forEach { ev ->
             val a = ev.attachment ?: return@forEach
-            // pick the best MXC for thumb
-            val mxc = a.thumbnailMxcUri ?: a.mxcUri
-            // Skip if we already have one
+            if (a.kind != AttachmentKind.Image && a.kind != AttachmentKind.Video && a.thumbnailMxcUri == null) {
+                return@forEach
+            }
+            // Skip if already cached
             if (_state.value.thumbByEvent.containsKey(ev.eventId)) return@forEach
+
+            val mxc = a.thumbnailMxcUri ?: a.mxcUri
             scope.launch {
                 val res = service.thumbnailToCache(mxc, 320, 320, true)
                 res.onSuccess { path ->

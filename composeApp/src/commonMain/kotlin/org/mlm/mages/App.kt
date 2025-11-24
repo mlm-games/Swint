@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.nav.*
 import org.mlm.mages.platform.rememberFileOpener
+import org.mlm.mages.platform.rememberOpenBrowser
 import org.mlm.mages.ui.MainTheme
 import org.mlm.mages.ui.controller.*
 import org.mlm.mages.ui.screens.*
@@ -30,6 +31,7 @@ fun App(
                 }) // For desktop            
         }
 
+        val openUrl = rememberOpenBrowser()
 
         when (val r = nav.current) {
             Route.Login -> {
@@ -46,7 +48,8 @@ fun App(
                     onChangeHomeserver = controller::setHomeserver,
                     onChangeUser = controller::setUser,
                     onChangePass = controller::setPass,
-                    onSubmit = controller::submit
+                    onSubmit = controller::submit,
+                    onSso = { controller.startSso(openUrl) }
                 )
             }
             Route.Rooms -> {
