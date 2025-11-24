@@ -9,6 +9,9 @@ import androidx.core.net.toUri
 import kotlinx.coroutines.*
 import org.mlm.mages.R
 import org.mlm.mages.matrix.MatrixProvider
+import org.mlm.mages.notifications.getRoomNotifMode
+import org.mlm.mages.notifications.shouldNotify
+import org.mlm.mages.storage.provideAppDataStore
 
 class WakeSyncService : Service() {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -125,6 +128,14 @@ class NotificationService : Service() {
                     }.getOrNull()
 
                 if (rn != null) {
+                    val ds = provideAppDataStore(this@NotificationService)
+                    val mode = runCatching { getRoomNotifMode(ds, roomId) }.getOrDefault(org.mlm.mages.notifications.RoomNotifMode.Default)
+                    if (!shouldNotify(mode, rn.hasMention)) {
+                        // Respect mutes / mentions-only
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return@launch
+                    }
                     val mgr = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                     val open =
                         Intent(this@NotificationService, org.mlm.mages.MainActivity::class.java).apply {

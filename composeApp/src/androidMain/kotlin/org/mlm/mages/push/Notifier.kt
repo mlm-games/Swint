@@ -10,6 +10,9 @@ import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
 import org.mlm.mages.MainActivity
 import org.mlm.mages.MatrixService
+import org.mlm.mages.notifications.RoomNotifMode
+import org.mlm.mages.notifications.getRoomNotifMode
+import org.mlm.mages.storage.provideAppDataStore
 
 object Notifier {
     /// fetches last 20 events per room, shows only those newer than stored lastReadTs
@@ -40,6 +43,14 @@ object Notifier {
 
         for (room in rooms.take(maxRoomsToScan)) {
             if (posted >= maxNotificationsThisPass) break
+
+            val mode = runCatching { getRoomNotifMode(provideAppDataStore(ctx), room.id) }
+                .getOrDefault(RoomNotifMode.Default)
+            if (mode == RoomNotifMode.Mute) continue
+            if (mode == RoomNotifMode.MentionsOnly) {
+                // avoid noise
+                continue
+            }
 
             // Per-room watermark (last time we notified something in this room)
             val lastNotifiedTs = org.mlm.mages.storage.loadLong(ds, "notif:last_ts:${room.id}") ?: baseline

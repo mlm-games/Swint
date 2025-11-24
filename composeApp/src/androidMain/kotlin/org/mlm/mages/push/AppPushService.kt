@@ -14,6 +14,9 @@ import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.data.PushMessage
 import androidx.core.net.toUri
 import kotlinx.coroutines.cancel
+import org.mlm.mages.notifications.getRoomNotifMode
+import org.mlm.mages.notifications.shouldNotify
+import org.mlm.mages.storage.provideAppDataStore
 
 const val PUSH_PREFS = "unifiedpush_prefs"
 const val PREF_ENDPOINT = "endpoint"
@@ -57,13 +60,16 @@ class AppPushService : PushService() {
                 for ((roomId, eventId) in pairs) {
                     val notif = runCatching { svc.port.fetchNotification(roomId, eventId) }.getOrNull()
                     if (notif != null) {
-                        AndroidNotificationHelper.showSingleEvent(
-                            this@AppPushService,
-                            AndroidNotificationHelper.NotificationText(notif.sender, notif.body),
-                            roomId,
-                            eventId
-                        )
-                        shown++
+                        val ds = provideAppDataStore(this@AppPushService)
+                        val mode = runCatching { getRoomNotifMode(ds, roomId) }.getOrDefault(org.mlm.mages.notifications.RoomNotifMode.Default)
+                        if (shouldNotify(mode, notif.hasMention)) {
+                            AndroidNotificationHelper.showSingleEvent(
+                                this@AppPushService,
+                                AndroidNotificationHelper.NotificationText(notif.sender, notif.body),
+                                roomId, eventId
+                            )
+                            shown++
+                        }
                     }
                     if (shown >= 3) break
                 }
