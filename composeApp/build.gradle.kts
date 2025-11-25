@@ -286,7 +286,19 @@ compose.desktop {
             targetFormats(TargetFormat.AppImage, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "Mages"
             packageVersion = android.defaultConfig.versionName
+            description = "Mages Matrix Client"
+            vendor = "MLM Games"
             appResourcesRootDir.set(project.layout.projectDirectory.dir("resources"))
+
+            modules("java.instrument", "jdk.security.auth", "jdk.unsupported")
+
+            linux {
+                iconFile.set(project.file("../fastlane/android/metadata/en-US/images/icon.png"))
+                packageName = "mages"
+                debMaintainer = "gfxoxinzh@mozmail.com"
+                menuGroup = "Network;InstantMessaging"
+                appCategory = "Network"
+            }
         }
     }
 }
