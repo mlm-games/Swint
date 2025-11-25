@@ -13,8 +13,6 @@ use tokio::runtime::Runtime;
 use uniffi::{Enum, Record};
 
 use futures_util::{StreamExt, TryStreamExt};
-use thiserror::Error;
-
 use matrix_sdk::{
     Client as SdkClient, OwnedServerName, Room, RoomMemberships, SessionTokens,
     authentication::{matrix::MatrixSession, oauth::OAuthError},
@@ -25,9 +23,10 @@ use matrix_sdk::{
         api::client::{
             directory::get_public_rooms_filtered,
             push::{Pusher, PusherIds, PusherInit, PusherKind},
+            room::{Visibility, create_room::v3::RoomPreset},
         },
         directory::Filter,
-        events::room::MediaSource,
+        events::room::{MediaSource, name::RoomNameEventContent, topic::RoomTopicEventContent},
         push::HttpPusherData,
     },
 };
@@ -72,6 +71,11 @@ use matrix_sdk_ui::{
         TimelineEventItemId, TimelineItem, TimelineItemContent,
     },
 };
+use ruma::api::client::{
+    membership::join_room_by_id::v3::Request as JoinByIdReq,
+    membership::leave_room::v3::Request as LeaveReq, room::create_room::v3 as create_room_v3,
+};
+use thiserror::Error;
 
 use std::panic::AssertUnwindSafe;
 
@@ -216,6 +220,24 @@ pub struct UnreadStats {
     pub mentions: u64,
 }
 
+#[derive(Clone, uniffi::Record)]
+pub struct RoomProfile {
+    pub room_id: String,
+    pub name: String,
+    pub topic: Option<String>,
+    pub member_count: u64,
+    pub is_encrypted: bool,
+    pub is_dm: bool,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct MemberSummary {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub is_me: bool,
+    pub membership: String,
+}
+
 enum RoomListCmd {
     SetUnreadOnly(bool),
 }
@@ -298,6 +320,12 @@ pub trait RoomListObserver: Send + Sync {
     fn on_update(&self, item: RoomListEntry);
 }
 
+#[derive(Clone, uniffi::Record)]
+pub struct InviteSummary {
+    pub room_id: String,
+    pub name: String,
+}
+
 fn cache_dir(dir: &PathBuf) -> PathBuf {
     dir.join("media_cache")
 }
@@ -353,10 +381,6 @@ fn write_trusted(dir: &PathBuf, ids: &[String]) -> bool {
         return std::fs::write(path, txt).is_ok();
     }
     false
-}
-
-fn read_all(path: &str) -> std::io::Result<Vec<u8>> {
-    std::fs::read(path)
 }
 
 #[derive(Debug, Error, uniffi::Error)]
@@ -2116,6 +2140,221 @@ impl Client {
             } else {
                 false
             }
+        })
+    }
+
+    pub fn list_invited(&self) -> Result<Vec<RoomProfile>, FfiError> {
+        RT.block_on(async {
+            let rooms = self.inner.invited_rooms();
+
+            let mut out = Vec::with_capacity(rooms.len());
+            for room in rooms {
+                let rid = room.room_id().to_owned();
+
+                let name = room
+                    .display_name()
+                    .await
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|_| rid.to_string());
+
+                let topic = room.topic();
+                let member_count = room.active_members_count();
+
+                let is_dm = room.is_direct().await.unwrap_or(false);
+                let is_encrypted = room
+                    .latest_encryption_state()
+                    .await
+                    .map(|s| s.is_encrypted())
+                    .unwrap_or(false);
+
+                out.push(RoomProfile {
+                    room_id: rid.to_string(),
+                    name,
+                    topic,
+                    member_count,
+                    is_encrypted,
+                    is_dm,
+                });
+            }
+            Ok(out)
+        })
+    }
+
+    // Accept an invite by room ID
+    pub fn accept_invite(&self, room_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            // Join-by-id is the canonical accept for invites
+            self.inner.join_room_by_id(&rid).await.is_ok()
+        })
+    }
+
+    // Decline an invite (leave)
+    pub fn leave_room(&self, room_id: String) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let rid =
+                ruma::OwnedRoomId::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+            let room = self
+                .inner
+                .get_room(&rid)
+                .ok_or_else(|| FfiError::Msg("room not found".into()))?;
+
+            room.leave().await.map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    // Create a private room; optional name/topic; optional invitees.
+    // Returns the new roomId on success.
+    pub fn create_room(
+        &self,
+        name: Option<String>,
+        topic: Option<String>,
+        invitees: Vec<String>,
+    ) -> Result<String, FfiError> {
+        RT.block_on(async {
+            // Build create room request (private visibility)
+            let mut req = create_room_v3::Request::new();
+            req.preset = Some(RoomPreset::PrivateChat.into());
+            req.visibility = Visibility::Private;
+            if let Some(n) = &name {
+                req.name = Some(n.clone());
+            }
+            if let Some(t) = &topic {
+                req.topic = Some(t.clone());
+            }
+            if !invitees.is_empty() {
+                let parsed = invitees
+                    .into_iter()
+                    .map(|u| u.parse())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e: ruma::IdParseError| FfiError::Msg(e.to_string()))?;
+                req.invite = parsed;
+            }
+
+            // NOTE: If you want encryption-by-default, see small fix below.
+            let resp = self
+                .inner
+                .send(req)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            Ok(resp.room_id.to_string())
+        })
+    }
+
+    // Set room name (state event)
+    pub fn set_room_name(&self, room_id: String, name: String) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let content = RoomNameEventContent::new(name);
+            if let Some(room) = self.inner.get_room(&rid) {
+                room.send_state_event(content).await.is_ok()
+            } else {
+                false
+            }
+        })
+    }
+
+    // Set room topic
+    pub fn set_room_topic(&self, room_id: String, topic: String) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let content = RoomTopicEventContent::new(topic);
+            if let Some(room) = self.inner.get_room(&rid) {
+                room.send_state_event(content).await.is_ok()
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn room_profile(&self, room_id: String) -> Result<RoomProfile, FfiError> {
+        RT.block_on(async {
+            use matrix_sdk_base::RoomMemberships;
+
+            let rid =
+                ruma::OwnedRoomId::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+            let room = self
+                .inner
+                .get_room(&rid)
+                .ok_or_else(|| FfiError::Msg("room not found".into()))?;
+
+            let name = room
+                .display_name()
+                .await
+                .map(|d| d.to_string())
+                .unwrap_or_else(|_| rid.to_string());
+
+            let topic = room.topic();
+
+            let member_count = room.joined_members_count();
+
+            let is_encrypted = room
+                .latest_encryption_state()
+                .await
+                .map(|s| s.is_encrypted())
+                .unwrap_or(false);
+
+            let is_dm = match room.is_direct().await {
+                Ok(b) => b,
+                Err(_) => {
+                    if let (Some(me), Ok(members)) = (
+                        self.inner.user_id(),
+                        room.members(RoomMemberships::ACTIVE).await,
+                    ) {
+                        let others = members.into_iter().filter(|m| m.user_id() != me).count();
+                        others == 1
+                    } else {
+                        false
+                    }
+                }
+            };
+
+            Ok(RoomProfile {
+                room_id: rid.to_string(),
+                name,
+                topic,
+                member_count,
+                is_encrypted,
+                is_dm,
+            })
+        })
+    }
+
+    pub fn list_members(&self, room_id: String) -> Result<Vec<MemberSummary>, FfiError> {
+        RT.block_on(async {
+            use matrix_sdk_base::RoomMemberships;
+
+            let rid =
+                ruma::OwnedRoomId::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+            let room = self
+                .inner
+                .get_room(&rid)
+                .ok_or_else(|| FfiError::Msg("room not found".into()))?;
+
+            let me = self.inner.user_id();
+
+            let members = room
+                .members(RoomMemberships::ACTIVE)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let out: Vec<MemberSummary> = members
+                .into_iter()
+                .map(|m| MemberSummary {
+                    user_id: m.user_id().to_string(),
+                    display_name: m.display_name().map(|n| n.to_string()),
+                    is_me: me.map(|u| u == m.user_id()).unwrap_or(false),
+                    membership: m.membership().to_string(),
+                })
+                .collect();
+
+            Ok(out)
         })
     }
 

@@ -55,6 +55,21 @@ data class UnreadStats(val messages: Long, val notifications: Long, val mentions
 data class DirectoryUser(val userId: String, val displayName: String?, val avatarUrl: String?)
 data class PublicRoom(val roomId: String, val name: String?, val topic: String?, val alias: String?, val avatarUrl: String?, val memberCount: Long, val worldReadable: Boolean, val guestCanJoin: Boolean)
 data class PublicRoomsPage(val rooms: List<PublicRoom>, val nextBatch: String?, val prevBatch: String?)
+data class RoomProfile(
+    val roomId: String,
+    val name: String,
+    val topic: String?,
+    val memberCount: Long,
+    val isEncrypted: Boolean,
+    val isDm: Boolean
+)
+
+data class MemberSummary(
+    val userId: String,
+    val displayName: String?,
+    val isMe: Boolean,
+    val membership: String
+)
 interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
@@ -67,13 +82,6 @@ interface MatrixPort {
         Reconnecting
     }
 
-    data class PaginationState(
-        val roomId: String,
-        val prevBatch: String?,
-        val nextBatch: String?,
-        val atStart: Boolean,
-        val atEnd: Boolean
-    )
     interface SyncObserver { fun onState(status: SyncStatus) }
 
     suspend fun init(hs: String)
@@ -217,6 +225,17 @@ interface MatrixPort {
     suspend fun joinByIdOrAlias(idOrAlias: String): Boolean
     suspend fun ensureDm(userId: String): String?
     suspend fun resolveRoomId(idOrAlias: String): String?
+
+    suspend fun listInvited(): List<RoomProfile>
+    suspend fun acceptInvite(roomId: String): Boolean
+    suspend fun leaveRoom(roomId: String): Boolean
+
+    suspend fun createRoom(name: String?, topic: String?, invitees: List<String>): String?
+    suspend fun setRoomName(roomId: String, name: String): Boolean
+    suspend fun setRoomTopic(roomId: String, topic: String): Boolean
+
+    suspend fun roomProfile(roomId: String): RoomProfile?
+    suspend fun listMembers(roomId: String): List<MemberSummary>
 
 }
 

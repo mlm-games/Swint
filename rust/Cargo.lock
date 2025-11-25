@@ -1814,6 +1814,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "matrix-sdk",
+ "matrix-sdk-base",
  "matrix-sdk-ui",
  "mime",
  "once_cell",

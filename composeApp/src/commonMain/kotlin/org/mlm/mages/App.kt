@@ -69,6 +69,7 @@ fun App(
                     onOpenSecurity = { nav.push(Route.Security) },
                     onToggleUnreadOnly = {controller.toggleUnreadOnly()},
                     onOpenDiscover = { nav.push(Route.Discover) },
+                    onOpenInvites = {nav.push(Route.Invites)}
                 )
             }
             is Route.Room -> {
@@ -151,6 +152,21 @@ fun App(
                     }
                 )
             }
+            is Route.Invites -> {
+                val controller = remember { org.mlm.mages.ui.controller.InvitesController(service.port) }
+                val ui by controller.state.collectAsState()
+                InvitesScreen(
+                    invites = ui.invites,
+                    busy = ui.busy,
+                    error = ui.error,
+                    onBack = { nav.pop() },
+                    onRefresh = controller::refresh,
+                    onAccept = { controller.accept(it) },
+                    onDecline = { controller.decline(it) },
+                    onOpenRoom = { roomId, title -> nav.push(Route.Room(roomId, title)) }
+                )
+            }
+
         }
     }
 }

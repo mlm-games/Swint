@@ -5,7 +5,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Mail
 import androidx.compose.material.icons.filled.MeetingRoom
+import androidx.compose.material.icons.filled.NewLabel
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
@@ -30,6 +32,7 @@ fun RoomsScreen(
     onOpenSecurity: () -> Unit,
     onToggleUnreadOnly: () -> Unit,
     onOpenDiscover: () -> Unit,
+    onOpenInvites: () -> Unit,
 ) {
     val filtered = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
         val q = state.roomSearchQuery.trim()
@@ -52,7 +55,8 @@ fun RoomsScreen(
                     actions = {
                         IconButton(enabled = !state.isBusy, onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh") }
                         IconButton(onClick = onOpenSecurity) { Icon(Icons.Default.Security, "Security") }
-                        IconButton(onClick = onOpenDiscover) { Icon(Icons.Default.Search, "Discover") }
+                        IconButton(onClick = onOpenDiscover) { Icon(Icons.Default.NewLabel, "Discover") }
+                        IconButton(onClick = onOpenInvites) { Icon(Icons.Default.Mail, contentDescription = "Invites") }
                     }
                 )
                 state.offlineBanner?.let {

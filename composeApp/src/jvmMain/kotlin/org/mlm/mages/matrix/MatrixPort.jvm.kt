@@ -1,10 +1,12 @@
 package org.mlm.mages.matrix
 
+import kotlinx.coroutines.Dispatchers
 import mages.SasEmojis
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.withContext
 import org.mlm.mages.AttachmentInfo
 import org.mlm.mages.AttachmentKind
 import mages.Client as FfiClient
@@ -644,6 +646,54 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override suspend fun resolveRoomId(idOrAlias: String): String? =
         runCatching { client.resolveRoomId(idOrAlias) }.getOrNull()
+
+    override suspend fun listInvited(): List<RoomProfile> = withContext(Dispatchers.IO) {
+        client.listInvited().map {
+            RoomProfile(it.roomId, it.name, it.topic, it.memberCount.toLong(), it.isEncrypted, it.isDm)
+        }
+    }
+
+    override suspend fun acceptInvite(roomId: String): Boolean = withContext(Dispatchers.IO) {
+        client.acceptInvite(roomId)
+    }
+
+    override suspend fun leaveRoom(roomId: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.leaveRoom(roomId) }.isSuccess
+    }
+
+    override suspend fun createRoom(
+        name: String?, topic: String?, invitees: List<String>
+    ): String? = withContext(Dispatchers.IO) {
+        runCatching { client.createRoom(name, topic, invitees) }.getOrNull()
+    }
+
+    override suspend fun setRoomName(roomId: String, name: String): Boolean = withContext(Dispatchers.IO) {
+        client.setRoomName(roomId, name)
+    }
+
+    override suspend fun setRoomTopic(roomId: String, topic: String): Boolean = withContext(Dispatchers.IO) {
+        client.setRoomTopic(roomId, topic)
+    }
+
+    override suspend fun roomProfile(roomId: String): RoomProfile? = withContext(Dispatchers.IO) {
+        runCatching { client.roomProfile(roomId) }.getOrNull()?.let {
+            RoomProfile(
+                it.roomId,
+                it.name,
+                it.topic,
+                it.memberCount.toLong(),
+                it.isEncrypted,
+                it.isDm
+            )
+        }
+    }
+
+    override suspend fun listMembers(roomId: String): List<MemberSummary> = withContext(
+        Dispatchers.IO) {
+        runCatching { client.listMembers(roomId) }.getOrElse { emptyList() }.map {
+            MemberSummary(it.userId, it.displayName, it.isMe, it.membership)
+        }
+    }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

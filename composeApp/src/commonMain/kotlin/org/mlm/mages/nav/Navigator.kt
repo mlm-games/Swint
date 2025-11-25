@@ -11,6 +11,7 @@ sealed interface Route {
 
     data object Security : Route
     data object Discover : Route
+    data object Invites : Route
 }
 
 class Navigator(initial: Route) {
