@@ -56,8 +56,8 @@ kotlin {
             implementation(libs.net.jna)
             implementation(libs.okio)
             implementation(libs.kotlinx.coroutines.swing)
-            implementation("com.github.hypfvieh:dbus-java-core:5.1.1")
-            implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.1.1")
+            implementation(libs.dbus.java.core)
+            implementation(libs.dbus.java.transport.native.unixsocket)
             implementation(libs.slf4j.simple)
         }
         commonTest.dependencies {
@@ -74,8 +74,8 @@ android {
         applicationId = "org.mlm.mages"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 97
-        versionName = "0.6.7"
+        versionCode = 87
+        versionName = "0.7.0"
 
         androidResources {
             localeFilters += setOf("en", "ar", "de", "es-rES", "es-rUS", "fr", "hr", "hu", "in", "it", "ja", "pl", "pt-rBR", "ru-rRU", "sv", "tr", "uk", "zh", "cs", "el", "fi", "ko", "nl", "vi")

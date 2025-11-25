@@ -42,6 +42,7 @@ fun RoomScreen(
     onCancelUpload: () -> Unit,
     onDelete: (MessageEvent) -> Unit,
     onOpenAttachment: (MessageEvent) -> Unit,
+    onOpenInfo: () -> Unit,
 ) {
     val listState = rememberLazyListState()
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
@@ -104,7 +105,7 @@ fun RoomScreen(
                         navigationIcon = {
                             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                         },
-                        actions = { IconButton(onClick = { /* TODO */ }) { Icon(Icons.Default.Info, "Room info") } }
+                        actions = { IconButton(onClick = { onOpenInfo() }) { Icon(Icons.Default.Info, "Room info") } }
                     )
                     AnimatedVisibility(visible = state.isOffline) {
                         Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {

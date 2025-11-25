@@ -12,6 +12,7 @@ import org.mlm.mages.platform.rememberOpenBrowser
 import org.mlm.mages.ui.MainTheme
 import org.mlm.mages.ui.controller.*
 import org.mlm.mages.ui.screens.*
+import org.mlm.mages.ui.sheets.CreateRoomSheet
 
 @Composable
 fun App(
@@ -21,6 +22,9 @@ fun App(
 ) {
     MainTheme {
         val nav = rememberNavigator(initial = Route.Login)
+        var showCreateRoom by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
+
         BindDeepLinks(nav, deepLinks)
 
         BindLifecycle(service)
@@ -69,8 +73,25 @@ fun App(
                     onOpenSecurity = { nav.push(Route.Security) },
                     onToggleUnreadOnly = {controller.toggleUnreadOnly()},
                     onOpenDiscover = { nav.push(Route.Discover) },
-                    onOpenInvites = {nav.push(Route.Invites)}
+                    onOpenInvites = {nav.push(Route.Invites)},
+                    onOpenCreateRoom = { showCreateRoom = true },
                 )
+                if (showCreateRoom) {
+                    CreateRoomSheet(
+                        onCreate = { name, topic, invitees ->
+                            scope.launch {
+                                val roomId = service.port.createRoom(name, topic, invitees) // suspend
+                                if (roomId != null) {
+                                    showCreateRoom = false
+                                    nav.push(Route.Room(roomId, name ?: roomId))
+                                } else {
+                                // TODO: Snackbar
+                                }
+                            }
+                                   },
+                        onDismiss = { showCreateRoom = false }
+                    )
+                }
             }
             is Route.Room -> {
                 val controller = remember(r.roomId) { RoomController(service, dataStore, r.roomId, r.name) }
@@ -97,7 +118,8 @@ fun App(
                         controller.openAttachment(event) { path, mime ->
                             openExternal(path, mime) // platform-resolved
                         }
-                    }
+                    },
+                    onOpenInfo = { nav.push(Route.RoomInfo(r.roomId)) }
                 )
             }
             Route.Security -> {
@@ -137,7 +159,6 @@ fun App(
             Route.Discover -> {
                 val controller = remember { DiscoverController(service) }
                 val ui by controller.state.collectAsState()
-                val scope = rememberCoroutineScope()
                 DiscoverScreen(
                     state = ui,
                     onQuery = controller::setQuery,
@@ -153,7 +174,7 @@ fun App(
                 )
             }
             is Route.Invites -> {
-                val controller = remember { org.mlm.mages.ui.controller.InvitesController(service.port) }
+                val controller = remember { InvitesController(service.port) }
                 val ui by controller.state.collectAsState()
                 InvitesScreen(
                     invites = ui.invites,
@@ -167,6 +188,25 @@ fun App(
                 )
             }
 
+            is Route.RoomInfo -> {
+                val controller = remember(r.roomId) { RoomInfoController(service, r.roomId) }
+                val state by controller.state.collectAsState()
+
+                RoomInfoScreen(
+                    state = state,
+                    onBack = { nav.pop() },
+                    onRefresh = controller::refresh,
+                    onNameChange = controller::updateName,
+                    onTopicChange = controller::updateTopic,
+                    onSaveName = { controller.saveName() },
+                    onSaveTopic = { controller.saveTopic() },
+                    onLeave = { controller.leave() },
+                    onLeaveSuccess = {
+                        // Pop back to rooms list
+                        nav.popUntil { it is Route.Rooms }
+                    }
+                )
+            }
         }
     }
 }

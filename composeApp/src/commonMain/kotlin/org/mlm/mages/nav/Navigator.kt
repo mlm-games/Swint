@@ -12,6 +12,7 @@ sealed interface Route {
     data object Security : Route
     data object Discover : Route
     data object Invites : Route
+    data class RoomInfo(val roomId: String) : Route
 }
 
 class Navigator(initial: Route) {
@@ -21,6 +22,12 @@ class Navigator(initial: Route) {
     fun push(route: Route) { backStack += route }
     fun replace(route: Route) { if (backStack.isEmpty()) { backStack += route } else { backStack[backStack.lastIndex] = route } }
     fun pop(): Boolean = if (backStack.size > 1) { backStack.removeAt(backStack.lastIndex); true } else false
+
+    fun popUntil(predicate: (Route) -> Boolean) {
+        while (backStack.size > 1 && !predicate(backStack.last())) {
+            backStack.removeAt(backStack.lastIndex)
+        }
+    }
 }
 
 @Composable
