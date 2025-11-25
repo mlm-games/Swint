@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.Mail
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -60,7 +61,7 @@ fun InvitesScreen(
                                     }
                                 },
                                 trailingContent = {
-                                    Row {
+                                    Row { //Setting vertical alignment won't help on mobile since misaligns are due to text overflow...
                                         TextButton(onClick = { onDecline(inv.roomId) }) { Text("Decline") }
                                         Spacer(Modifier.width(8.dp))
                                         Button(onClick = {
