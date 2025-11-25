@@ -1,4 +1,4 @@
-package org.mlm.mages.ui.sheets
+package org.mlm.mages.ui.components
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
@@ -9,7 +9,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import org.jetbrains.skia.paragraph.Alignment
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

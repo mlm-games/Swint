@@ -12,7 +12,7 @@ import org.mlm.mages.platform.rememberOpenBrowser
 import org.mlm.mages.ui.MainTheme
 import org.mlm.mages.ui.controller.*
 import org.mlm.mages.ui.screens.*
-import org.mlm.mages.ui.sheets.CreateRoomSheet
+import org.mlm.mages.ui.components.CreateRoomSheet
 
 @Composable
 fun App(
