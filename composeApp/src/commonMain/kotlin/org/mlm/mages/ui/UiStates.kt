@@ -3,6 +3,7 @@ package org.mlm.mages.ui
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.DeviceSummary
+import org.mlm.mages.matrix.ReactionChip
 import org.mlm.mages.matrix.SasPhase
 import org.mlm.mages.ui.components.AttachmentData
 
@@ -44,12 +45,12 @@ data class RoomUiState(
     val attachmentProgress: Float = 0f,
     val error: String? = null,
 
-    val reactions: Map<String, Set<String>> = emptyMap(),
     val lastReadTs: Long? = null,
     val isDm: Boolean = false,
     val lastIncomingFromOthersTs: Long? = null,
     val lastOutgoingRead: Boolean = false,
     val thumbByEvent: Map<String, String> = emptyMap(),
+    val reactionChips: Map<String, List<ReactionChip>> = emptyMap(),
 )
 data class VerificationRequestUi(
     val flowId: String,

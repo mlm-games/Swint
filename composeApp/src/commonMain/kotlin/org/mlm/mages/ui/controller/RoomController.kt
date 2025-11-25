@@ -97,21 +97,21 @@ class RoomController(
                 when (diff) {
                     is TimelineDiff.Reset -> _state.update {
                         it.copy(
-                            events = diff.items
-                                .distinctBy { e -> e.itemId }
-                                .sortedBy { e -> e.timestamp }
+                            events = diff.items.distinctBy { e -> e.itemId }.sortedBy { e -> e.timestamp }
                         )
+                    }.also {
+                        diff.items.forEach { ev -> refreshReactionsFor(ev.eventId) }
                     }
                     is TimelineDiff.Clear -> _state.update { it.copy(events = emptyList()) }
                     is TimelineDiff.Insert -> _state.update { s ->
                         val next = (s.events + diff.item).distinctBy { it.itemId }.sortedBy { e -> e.timestamp }
                         s.copy(events = next)
-                    }
+                    }.also { refreshReactionsFor(diff.item.eventId) }
                     is TimelineDiff.Update -> _state.update { s ->
                         val idx = s.events.indexOfFirst { it.itemId == diff.item.itemId }
                         val next = if (idx >= 0) s.events.toMutableList().apply { set(idx, diff.item) } else (s.events + diff.item)
                         s.copy(events = next.sortedBy { e -> e.timestamp })
-                    }
+                    }.also { refreshReactionsFor(diff.item.eventId) }
                     is TimelineDiff.Remove -> _state.update { s ->
                         s.copy(events = s.events.filterNot { it.itemId == diff.itemId })
                     }
@@ -263,13 +263,8 @@ class RoomController(
 
     fun react(ev: MessageEvent, emoji: String) {
         scope.launch {
-            runCatching { service.react(_state.value.roomId, ev.eventId, emoji) }
-
-            _state.update { st ->
-                val current = st.reactions[ev.eventId].orEmpty().toMutableSet()
-                if (emoji in current) current.remove(emoji) else current.add(emoji)
-                st.copy(reactions = st.reactions.toMutableMap().apply { put(ev.eventId, current) })
-            }
+            runCatching { service.port.react(_state.value.roomId, ev.eventId, emoji) }
+            refreshReactionsFor(ev.eventId)
         }
     }
 
@@ -377,6 +372,23 @@ class RoomController(
                 .onFailure { t ->
                     _state.update { it.copy(error = t.message ?: "Download failed") }
                 }
+        }
+    }
+
+    private fun refreshReactionsFor(eventId: String) {
+        val rid = _state.value.roomId
+        scope.launch {
+            val chips = runCatching { service.port.reactions(rid, eventId) }.getOrDefault(emptyList())
+            if (chips.isNotEmpty()) {
+                _state.update { st ->
+                    st.copy(reactionChips = st.reactionChips.toMutableMap().apply { put(eventId, chips) })
+                }
+            } else {
+                // If no chips, removes
+                _state.update { st ->
+                    st.copy(reactionChips = st.reactionChips.toMutableMap().apply { remove(eventId) })
+                }
+            }
         }
     }
 }

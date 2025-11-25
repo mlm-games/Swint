@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.mlm.mages.AttachmentKind
+import org.mlm.mages.matrix.ReactionChip
 import org.mlm.mages.platform.loadImageBitmapFromPath
 
 @Composable
@@ -54,7 +55,7 @@ fun MessageBubble(
     sender: String?,
     timestamp: Long,
     grouped: Boolean,
-    reactions: Set<String> = emptySet(),
+    reactionChips: List<ReactionChip> = emptyList(),
     eventId: String? = null,
     replyPreview: String? = null,
     replySender: String? = null,
@@ -222,25 +223,7 @@ fun MessageBubble(
             }
         }
 
-        // Reactions
-        if (reactions.isNotEmpty()) {
-            FlowRow(
-                modifier = Modifier
-                    .padding(top = 4.dp)
-                    .widthIn(max = 280.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                reactions.forEach { emoji ->
-                    InputChip(
-                        selected = false,
-                        onClick = { onReact?.invoke(emoji) },
-                        label = { Text(emoji) },
-                        modifier = Modifier.height(28.dp)
-                    )
-                }
-            }
-        }
+        ReactionChipsBar(chips = reactionChips, onClick = onReact)
     }
 }
 
@@ -480,5 +463,28 @@ private fun DurationBadge(ms: Long, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
         )
+    }
+}
+
+@Composable
+fun ReactionChipsBar(
+    chips: List<ReactionChip>,
+    onClick: ((String) -> Unit)? = null
+) {
+    if (chips.isEmpty()) return
+    androidx.compose.foundation.layout.FlowRow(
+        modifier = Modifier
+            .padding(top = 4.dp)
+            .widthIn(max = 280.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        chips.forEach { c ->
+            InputChip(
+                selected = c.mine,
+                onClick = { onClick?.invoke(c.key) },
+                label = { Text("${c.key} ${c.count}") }
+            )
+        }
     }
 }

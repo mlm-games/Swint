@@ -233,6 +233,7 @@ fun RoomScreen(
                             UnreadDivider()
                         }
 
+                        val chips = state.reactionChips[event.eventId] ?: emptyList()
                         val prevEvent = events.getOrNull(index - 1)
                         val shouldGroup = prevEvent != null &&
                                 prevEvent.sender == event.sender &&
@@ -245,7 +246,7 @@ fun RoomScreen(
                             sender = event.sender,
                             timestamp = event.timestamp,
                             grouped = shouldGroup,
-                            reactions = state.reactions[event.eventId] ?: emptySet(),
+                            reactionChips = chips,
                             eventId = event.eventId,
                             onLongPress = { sheetEvent = event },
                             onReact = { emoji -> onReact(event, emoji) },

@@ -326,6 +326,13 @@ pub struct InviteSummary {
     pub name: String,
 }
 
+#[derive(Clone, uniffi::Record)]
+pub struct ReactionSummary {
+    pub key: String,
+    pub count: u32,
+    pub me: bool,
+}
+
 fn cache_dir(dir: &PathBuf) -> PathBuf {
     dir.join("media_cache")
 }
@@ -3061,6 +3068,44 @@ impl Client {
             let _ = self.inner.sync_once(SyncSettings::default()).await;
 
             Ok(())
+        })
+    }
+
+    /// Return reactions (emoji -> count, me).
+    pub fn reactions_for_event(&self, room_id: String, event_id: String) -> Vec<ReactionSummary> {
+        RT.block_on(async {
+            let rid = match ruma::OwnedRoomId::try_from(room_id) {
+                Ok(v) => v,
+                Err(_) => return vec![],
+            };
+            let eid = match ruma::OwnedEventId::try_from(event_id) {
+                Ok(v) => v,
+                Err(_) => return vec![],
+            };
+
+            let Some(tl) = get_timeline_for(&self.inner, &rid).await else {
+                return vec![];
+            };
+            let Some(item) = tl.item_by_event_id(&eid).await else {
+                return vec![];
+            };
+
+            let me = self.inner.user_id();
+            let mut out = Vec::new();
+
+            if let Some(reactions) = item.content().reactions() {
+                for (key, by_sender) in reactions.iter() {
+                    let count = by_sender.len() as u32;
+                    let me_reacted = me.map(|u| by_sender.contains_key(u)).unwrap_or(false);
+                    out.push(ReactionSummary {
+                        key: key.to_string(),
+                        count,
+                        me: me_reacted,
+                    });
+                }
+            }
+
+            out
         })
     }
 }

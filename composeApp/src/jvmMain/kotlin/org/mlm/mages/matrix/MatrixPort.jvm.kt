@@ -694,6 +694,9 @@ class RustMatrixPort(hs: String) : MatrixPort {
             MemberSummary(it.userId, it.displayName, it.isMe, it.membership)
         }
     }
+
+    override suspend fun reactions(roomId: String, eventId: String): List<ReactionChip> =
+        client.reactionsForEvent(roomId, eventId).map { ReactionChip(it.key, it.count.toInt(), it.me) }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

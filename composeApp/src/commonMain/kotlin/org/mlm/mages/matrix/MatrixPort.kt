@@ -70,6 +70,10 @@ data class MemberSummary(
     val isMe: Boolean,
     val membership: String
 )
+
+data class ReactionChip(val key: String, val count: Int, val mine: Boolean)
+
+
 interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
@@ -236,6 +240,8 @@ interface MatrixPort {
 
     suspend fun roomProfile(roomId: String): RoomProfile?
     suspend fun listMembers(roomId: String): List<MemberSummary>
+
+    suspend fun reactions(roomId: String, eventId: String): List<ReactionChip>
 
 }
 
