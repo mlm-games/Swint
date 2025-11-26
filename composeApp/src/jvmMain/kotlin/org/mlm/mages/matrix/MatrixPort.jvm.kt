@@ -721,6 +721,115 @@ class RustMatrixPort(hs: String) : MatrixPort {
             prevBatch = page.prevBatch
         )
     }
+
+    override suspend fun isSpace(roomId: String): Boolean {
+        return try {
+            client.isSpace(roomId)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    override suspend fun mySpaces(): List<SpaceInfo> {
+        return try {
+            client.mySpaces().map { space ->
+                SpaceInfo(
+                    roomId = space.roomId,
+                    name = space.name,
+                    topic = space.topic,
+                    memberCount = space.memberCount.toLong(),
+                    isEncrypted = space.isEncrypted,
+                    isPublic = space.isPublic
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    override suspend fun createSpace(
+        name: String,
+        topic: String?,
+        isPublic: Boolean,
+        invitees: List<String>
+    ): String? {
+        return try {
+            client.createSpace(name, topic, isPublic, invitees)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    override suspend fun spaceAddChild(
+        spaceId: String,
+        childRoomId: String,
+        order: String?,
+        suggested: Boolean?
+    ): Boolean {
+        return try {
+            client.spaceAddChild(spaceId, childRoomId, order, suggested)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    override suspend fun spaceRemoveChild(
+        spaceId: String,
+        childRoomId: String
+    ): Boolean {
+        return try {
+            client.spaceRemoveChild(spaceId, childRoomId)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    override suspend fun spaceHierarchy(
+        spaceId: String,
+        from: String?,
+        limit: Int,
+        maxDepth: Int?,
+        suggestedOnly: Boolean
+    ): SpaceHierarchyPage? {
+        return try {
+            val page = client.spaceHierarchy(
+                spaceId = spaceId,
+                from = from,
+                limit = limit.toUInt(),
+                maxDepth = maxDepth?.toUInt(),
+                suggestedOnly = suggestedOnly
+            )
+            SpaceHierarchyPage(
+                children = page.children.map { child ->
+                    SpaceChildInfo(
+                        roomId = child.roomId,
+                        name = child.name,
+                        topic = child.topic,
+                        alias = child.alias,
+                        avatarUrl = child.avatarUrl,
+                        isSpace = child.isSpace,
+                        memberCount = child.memberCount.toLong(),
+                        worldReadable = child.worldReadable,
+                        guestCanJoin = child.guestCanJoin,
+                        suggested = child.suggested
+                    )
+                },
+                nextBatch = page.nextBatch
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    override suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean {
+        return try {
+            client.spaceInviteUser(spaceId, userId)
+        } catch (e: Exception) {
+            false
+        }
+    }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)

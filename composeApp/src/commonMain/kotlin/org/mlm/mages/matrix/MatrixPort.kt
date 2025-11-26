@@ -81,6 +81,33 @@ data class ThreadPage(
 )
 data class ThreadSummary(val rootEventId: String, val roomId: String, val count: Long, val latestTsMs: Long?)
 
+data class SpaceInfo(
+    val roomId: String,
+    val name: String,
+    val topic: String?,
+    val memberCount: Long,
+    val isEncrypted: Boolean,
+    val isPublic: Boolean
+)
+
+data class SpaceChildInfo(
+    val roomId: String,
+    val name: String?,
+    val topic: String?,
+    val alias: String?,
+    val avatarUrl: String?,
+    val isSpace: Boolean,
+    val memberCount: Long,
+    val worldReadable: Boolean,
+    val guestCanJoin: Boolean,
+    val suggested: Boolean
+)
+
+data class SpaceHierarchyPage(
+    val children: List<SpaceChildInfo>,
+    val nextBatch: String?
+)
+
 interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
@@ -260,6 +287,31 @@ interface MatrixPort {
         limit: Int = 50,
         forward: Boolean = false
     ): ThreadPage
+
+    suspend fun isSpace(roomId: String): Boolean
+    suspend fun mySpaces(): List<SpaceInfo>
+    suspend fun createSpace(
+        name: String,
+        topic: String?,
+        isPublic: Boolean,
+        invitees: List<String>
+    ): String?
+    suspend fun spaceAddChild(
+        spaceId: String,
+        childRoomId: String,
+        order: String?,
+        suggested: Boolean?
+    ): Boolean
+    suspend fun spaceRemoveChild(spaceId: String, childRoomId: String): Boolean
+    suspend fun spaceHierarchy(
+        spaceId: String,
+        from: String?,
+        limit: Int,
+        maxDepth: Int?,
+        suggestedOnly: Boolean
+    ): SpaceHierarchyPage?
+    suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean
+
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

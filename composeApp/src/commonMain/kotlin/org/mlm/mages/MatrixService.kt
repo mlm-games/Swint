@@ -4,6 +4,8 @@ import kotlinx.coroutines.flow.Flow
 import org.mlm.mages.matrix.DeviceSummary
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.SendUpdate
+import org.mlm.mages.matrix.SpaceHierarchyPage
+import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.matrix.TimelineDiff
 import org.mlm.mages.matrix.VerificationObserver
 import kotlin.time.ExperimentalTime
@@ -111,5 +113,41 @@ class MatrixService(val port: MatrixPort) {
 
     suspend fun downloadToCacheFile(mxc: String, filenameHint: String? = null): Result<String> =
                 port.downloadToCacheFile(mxc, filenameHint)
+
+    suspend fun isSpace(roomId: String): Boolean =
+        runCatching { port.isSpace(roomId) }.getOrDefault(false)
+
+    suspend fun mySpaces(): List<SpaceInfo> =
+        runCatching { port.mySpaces() }.getOrDefault(emptyList())
+
+    suspend fun createSpace(
+        name: String,
+        topic: String?,
+        isPublic: Boolean,
+        invitees: List<String>
+    ): String? = runCatching { port.createSpace(name, topic, isPublic, invitees) }.getOrNull()
+
+    suspend fun spaceAddChild(
+        spaceId: String,
+        childRoomId: String,
+        order: String? = null,
+        suggested: Boolean? = null
+    ): Boolean = runCatching { port.spaceAddChild(spaceId, childRoomId, order, suggested) }.getOrDefault(false)
+
+    suspend fun spaceRemoveChild(spaceId: String, childRoomId: String): Boolean =
+        runCatching { port.spaceRemoveChild(spaceId, childRoomId) }.getOrDefault(false)
+
+    suspend fun spaceHierarchy(
+        spaceId: String,
+        from: String? = null,
+        limit: Int = 50,
+        maxDepth: Int? = null,
+        suggestedOnly: Boolean = false
+    ): SpaceHierarchyPage? = runCatching {
+        port.spaceHierarchy(spaceId, from, limit, maxDepth, suggestedOnly)
+    }.getOrNull()
+
+    suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean =
+        runCatching { port.spaceInviteUser(spaceId, userId) }.getOrDefault(false)
 
 }

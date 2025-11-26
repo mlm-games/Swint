@@ -19,7 +19,7 @@ use matrix_sdk::{
     config::SyncSettings,
     media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
     ruma::{
-        OwnedMxcUri, OwnedRoomAliasId, OwnedRoomOrAliasId,
+        OwnedMxcUri, OwnedRoomAliasId, OwnedRoomOrAliasId, SpaceChildOrder,
         api::client::{
             directory::get_public_rooms_filtered,
             push::{Pusher, PusherIds, PusherInit, PusherKind},
@@ -28,6 +28,7 @@ use matrix_sdk::{
         directory::Filter,
         events::room::{MediaSource, name::RoomNameEventContent, topic::RoomTopicEventContent},
         push::HttpPusherData,
+        room::RoomType,
     },
 };
 use matrix_sdk::{
@@ -89,6 +90,14 @@ use ruma::{
         room::message::{Relation as MsgRelation, RoomMessageEventContent},
     },
 };
+use ruma::{
+    api::client::{
+        space::get_hierarchy::v1 as space_hierarchy_v1,
+        state::send_state_event::v3 as send_state_v3,
+    },
+    events::{StateEventType, space::child::SpaceChildEventContent},
+};
+use serde_json::value::RawValue;
 use std::panic::AssertUnwindSafe;
 
 // UniFFI macro-first setup
@@ -361,6 +370,36 @@ pub struct ReactionSummary {
     pub key: String,
     pub count: u32,
     pub me: bool,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct SpaceInfo {
+    pub room_id: String,
+    pub name: String,
+    pub topic: Option<String>,
+    pub member_count: u64,
+    pub is_encrypted: bool,
+    pub is_public: bool,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct SpaceChildInfo {
+    pub room_id: String,
+    pub name: Option<String>,
+    pub topic: Option<String>,
+    pub alias: Option<String>,
+    pub avatar_url: Option<String>,
+    pub is_space: bool,
+    pub member_count: u64,
+    pub world_readable: bool,
+    pub guest_can_join: bool,
+    pub suggested: bool,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct SpaceHierarchyPage {
+    pub children: Vec<SpaceChildInfo>,
+    pub next_batch: Option<String>,
 }
 
 fn cache_dir(dir: &PathBuf) -> PathBuf {
@@ -3313,6 +3352,273 @@ impl Client {
                 count,
                 latest_ts_ms: latest,
             })
+        })
+    }
+
+    /// Return true if the room is a Space (m.space).
+    pub fn is_space(&self, room_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            self.inner
+                .get_room(&rid)
+                .map(|r| r.is_space())
+                .unwrap_or(false)
+        })
+    }
+
+    /// List all joined spaces with basic profile info.
+    /// List all joined spaces with basic profile info.
+    pub fn my_spaces(&self) -> Vec<SpaceInfo> {
+        RT.block_on(async {
+            let mut out = Vec::new();
+
+            for room in self.inner.joined_space_rooms() {
+                let rid = room.room_id().to_owned();
+
+                let name = room
+                    .display_name()
+                    .await
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|_| rid.to_string());
+
+                let topic = room.topic();
+                let member_count = room.joined_members_count();
+
+                let is_encrypted = matches!(
+                    room.encryption_state(),
+                    matrix_sdk::EncryptionState::Encrypted
+                );
+
+                // Heuristic/publicity helper the SDK provides (may be None if state missing)
+                let is_public = room.is_public().unwrap_or(false);
+
+                out.push(SpaceInfo {
+                    room_id: rid.to_string(),
+                    name,
+                    topic,
+                    member_count,
+                    is_encrypted,
+                    is_public,
+                });
+            }
+
+            out
+        })
+    }
+
+    /// Create a space (m.space). Returns the new space room_id on success.
+    /// Create a space (m.space). Returns the new space room_id on success.
+    /// Uses create_room::v3 CreationContent.room_type = m.space.
+    pub fn create_space(
+        &self,
+        name: String,
+        topic: Option<String>,
+        is_public: bool,
+        invitees: Vec<String>,
+    ) -> Result<String, FfiError> {
+        RT.block_on(async {
+            use ruma::{
+                api::client::room::{Visibility, create_room::v3 as create_room_v3},
+                serde::Raw,
+            };
+
+            let mut req = create_room_v3::Request::new();
+
+            // Set m.space via CreationContent.room_type
+            let mut cc = create_room_v3::CreationContent::new();
+            cc.room_type = Some(RoomType::Space);
+            req.creation_content = Some(Raw::new(&cc).map_err(|e| FfiError::Msg(e.to_string()))?);
+
+            req.name = Some(name);
+            req.topic = topic;
+            req.visibility = if is_public {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            };
+            req.preset = Some(if is_public {
+                create_room_v3::RoomPreset::PublicChat
+            } else {
+                create_room_v3::RoomPreset::PrivateChat
+            });
+
+            if !invitees.is_empty() {
+                let parsed = invitees
+                    .into_iter()
+                    .map(|u| u.parse())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e: ruma::IdParseError| FfiError::Msg(e.to_string()))?;
+                req.invite = parsed;
+            }
+
+            // Using Client::send so we can return the room_id from the response
+            let resp = self
+                .inner
+                .send(req)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            Ok(resp.room_id.to_string())
+        })
+    }
+
+    /// Add a child (room or subspace) to a space via m.space.child.
+    /// - order: Optional ordering key (e.g. "a", "b"...), should be <= 50 ASCII chars.
+    /// - suggested: mark as suggested for clients.
+    pub fn space_add_child(
+        &self,
+        space_id: String,
+        child_room_id: String,
+        order: Option<String>,
+        suggested: Option<bool>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            use ruma::{
+                OwnedRoomId, OwnedServerName, events::space::child::SpaceChildEventContent,
+            };
+
+            // Parse room IDs
+            let rid_space = OwnedRoomId::try_from(space_id.as_str())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            let rid_child = OwnedRoomId::try_from(child_room_id.as_str())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let room = self
+                .inner
+                .get_room(&rid_space)
+                .ok_or_else(|| FfiError::Msg("space not found".into()))?;
+
+            // Build via list from child's server
+            let via: Vec<OwnedServerName> = rid_child
+                .server_name()
+                .map(|s| s.to_owned())
+                .into_iter()
+                .collect();
+
+            let mut content = SpaceChildEventContent::new(via);
+
+            if let Some(o) = order {
+                let ord = <&SpaceChildOrder>::try_from(o.as_str())
+                    .map_err(|e| FfiError::Msg(format!("Invalid order string: {}", e)))?
+                    .to_owned();
+                content.order = Some(ord);
+            }
+
+            content.suggested = suggested.unwrap_or(false);
+
+            room.send_state_event_for_key(&rid_child, content)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            Ok(())
+        })
+    }
+
+    /// Remove a child from a space by sending an empty content state for that key.
+    /// This effectively clears the relation for clients honoring the spec.
+    pub fn space_remove_child(
+        &self,
+        space_id: String,
+        child_room_id: String,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            use ruma::OwnedRoomId;
+            use serde_json::json;
+
+            let rid_space = OwnedRoomId::try_from(space_id.as_str())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            let room = self
+                .inner
+                .get_room(&rid_space)
+                .ok_or_else(|| FfiError::Msg("space not found".into()))?;
+
+            // Return type here is Response; we ignore it and return ()
+            room.send_state_event_raw("m.space.child", child_room_id.as_str(), json!({}))
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            Ok(())
+        })
+    }
+
+    /// Traverse a space with the server-side hierarchy API (MSC2946).
+    /// - from: pagination token; pass None for first page
+    /// - limit: page size (server may cap)
+    /// - max_depth: optional depth limit (e.g. Some(2)); None means server default
+    /// - suggested_only: include only suggested children
+    pub fn space_hierarchy(
+        &self,
+        space_id: String,
+        from: Option<String>,
+        limit: u32,
+        max_depth: Option<u32>,
+        suggested_only: bool,
+    ) -> Result<SpaceHierarchyPage, FfiError> {
+        RT.block_on(async {
+            use ruma::{OwnedRoomId, api::client::space::get_hierarchy::v1 as space_hierarchy_v1};
+
+            let rid_space = OwnedRoomId::try_from(space_id.as_str())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let mut req = space_hierarchy_v1::Request::new(rid_space);
+            req.from = from;
+            if limit > 0 {
+                req.limit = Some(limit.into());
+            }
+            req.max_depth = max_depth.map(Into::into);
+            req.suggested_only = suggested_only; // bool
+
+            let resp = self
+                .inner
+                .send(req)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            // Fields are on chunk.summary (not on the chunk itself)
+            let children = resp
+                .rooms
+                .into_iter()
+                .map(|chunk| {
+                    let s = chunk.summary;
+                    let is_space = matches!(s.room_type, Some(RoomType::Space));
+                    SpaceChildInfo {
+                        room_id: s.room_id.to_string(),
+                        name: s.name,
+                        topic: s.topic,
+                        alias: s.canonical_alias.map(|a| a.to_string()),
+                        avatar_url: s.avatar_url.map(|m| m.to_string()),
+                        is_space,
+                        member_count: s.num_joined_members.into(),
+                        world_readable: s.world_readable,
+                        guest_can_join: s.guest_can_join,
+                        // Not present on summary; use false by default
+                        suggested: false,
+                    }
+                })
+                .collect();
+
+            Ok(SpaceHierarchyPage {
+                children,
+                next_batch: resp.next_batch,
+            })
+        })
+    }
+
+    /// Invite a user to a space.
+    pub fn space_invite_user(&self, space_id: String, user_id: String) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(space_id) else {
+                return false;
+            };
+            let Ok(uid) = ruma::OwnedUserId::try_from(user_id) else {
+                return false;
+            };
+            if let Some(room) = self.inner.get_room(&rid) {
+                room.invite_user_by_id(&uid).await.is_ok()
+            } else {
+                false
+            }
         })
     }
 }

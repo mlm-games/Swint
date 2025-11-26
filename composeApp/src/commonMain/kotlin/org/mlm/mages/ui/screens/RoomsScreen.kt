@@ -30,6 +30,7 @@ fun RoomsScreen(
     onOpenDiscover: () -> Unit,
     onOpenInvites: () -> Unit,
     onOpenCreateRoom: () -> Unit,
+    onOpenSpaces: () -> Unit,
 ) {
     val filtered = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
         val q = state.roomSearchQuery.trim()
@@ -52,6 +53,7 @@ fun RoomsScreen(
                         IconButton(enabled = !state.isBusy, onClick = onRefresh) {
                             Icon(Icons.Default.Refresh, "Refresh")
                         }
+                        IconButton(onClick = onOpenSpaces) { Icon(Icons.Default.Workspaces, "Spaces") }
                         IconButton(onClick = onOpenSecurity) {
                             Icon(Icons.Default.Security, "Security")
                         }

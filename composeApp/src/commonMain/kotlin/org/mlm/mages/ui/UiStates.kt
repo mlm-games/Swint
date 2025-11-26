@@ -5,6 +5,8 @@ import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.DeviceSummary
 import org.mlm.mages.matrix.ReactionChip
 import org.mlm.mages.matrix.SasPhase
+import org.mlm.mages.matrix.SpaceChildInfo
+import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.ui.components.AttachmentData
 
 
@@ -81,4 +83,33 @@ data class SecurityUiState(
     val sasOtherDevice: String? = null,
     val sasError: String? = null,
     val sasIncoming: Boolean = false,
+)
+
+data class SpacesUiState(
+    val spaces: List<SpaceInfo> = emptyList(),
+    val selectedSpace: SpaceInfo? = null,
+    val hierarchy: List<SpaceChildInfo> = emptyList(),
+    val hierarchyNextBatch: String? = null,
+    val isLoading: Boolean = false,
+    val isLoadingHierarchy: Boolean = false,
+    val error: String? = null,
+    val searchQuery: String = ""
+)
+
+data class CreateSpaceUiState(
+    val name: String = "",
+    val topic: String = "",
+    val isPublic: Boolean = false,
+    val invitees: List<String> = emptyList(),
+    val isCreating: Boolean = false,
+    val error: String? = null
+)
+
+data class SpaceSettingsUiState(
+    val space: SpaceInfo? = null,
+    val children: List<SpaceChildInfo> = emptyList(),
+    val availableRooms: List<RoomSummary> = emptyList(),
+    val isLoading: Boolean = false,
+    val isSaving: Boolean = false,
+    val error: String? = null
 )

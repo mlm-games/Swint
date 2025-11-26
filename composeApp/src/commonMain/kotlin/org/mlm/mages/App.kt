@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixPort
+import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.nav.*
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberOpenBrowser
@@ -98,6 +99,7 @@ fun App(
                             onOpenDiscover = { nav.push(Route.Discover) },
                             onOpenInvites = { nav.push(Route.Invites) },
                             onOpenCreateRoom = { showCreateRoom = true },
+                            onOpenSpaces = { nav.push(Route.Spaces) },
                         )
                         if (showCreateRoom) {
                             CreateRoomSheet(
@@ -251,6 +253,105 @@ fun App(
                             onDelete = { event -> controller.delete(event) },
                             onRetry = { event -> controller.retry(event) },
                             snackbarController = snackbar
+                        )
+                    }
+                    Route.Spaces -> {
+                        val controller = remember {
+                            SpacesController(
+                                service = service,
+                                onOpenRoom = { roomId, name -> nav.push(Route.Room(roomId, name)) },
+                                onOpenSpace = { space -> nav.push(Route.SpaceDetail(space.roomId, space.name)) }
+                            )
+                        }
+                        val ui by controller.state.collectAsState()
+                        var showCreateSpace by remember { mutableStateOf(false) }
+
+                        if (showCreateSpace) {
+                            val createController = remember {
+                                CreateSpaceController(
+                                    service = service,
+                                    onCreated = { spaceId ->
+                                        showCreateSpace = false
+                                        controller.refresh()
+                                    }
+                                )
+                            }
+                            val createState by createController.state.collectAsState()
+
+                            CreateSpaceScreen(
+                                state = createState,
+                                onBack = { showCreateSpace = false },
+                                onNameChange = createController::setName,
+                                onTopicChange = createController::setTopic,
+                                onPublicChange = createController::setPublic,
+                                onAddInvitee = createController::addInvitee,
+                                onRemoveInvitee = createController::removeInvitee,
+                                onCreate = createController::create
+                            )
+                        } else {
+                            SpacesScreen(
+                                state = ui,
+                                onBack = { nav.pop() },
+                                onRefresh = controller::refresh,
+                                onSearch = controller::setSearchQuery,
+                                onSelectSpace = { space -> controller.openSpace(space) },  // This now navigates
+                                onCreateSpace = { showCreateSpace = true }
+                            )
+                        }
+                    }
+
+                    is Route.SpaceDetail -> {
+                        val controller = remember(route.spaceId) {
+                            SpacesController(
+                                service = service,
+                                onOpenRoom = { roomId, name -> nav.push(Route.Room(roomId, name)) },
+                                onOpenSpace = { space -> nav.push(Route.SpaceDetail(space.roomId, space.name)) }
+                            )
+                        }
+                        val ui by controller.state.collectAsState()
+
+                        // Load the space hierarchy on first composition
+                        LaunchedEffect(route.spaceId) {
+                            controller.loadHierarchy(route.spaceId)
+                        }
+
+                        // Use selected space from state, or create a minimal one from route params
+                        val displaySpace = ui.selectedSpace ?: SpaceInfo(
+                            roomId = route.spaceId,
+                            name = route.spaceName,
+                            topic = null,
+                            memberCount = 0,
+                            isEncrypted = false,
+                            isPublic = false
+                        )
+
+                        SpaceDetailScreen(
+                            space = displaySpace,
+                            hierarchy = ui.hierarchy,
+                            isLoading = ui.isLoadingHierarchy,
+                            hasMore = ui.hierarchyNextBatch != null,
+                            error = ui.error,
+                            onBack = { nav.pop() },
+                            onRefresh = { controller.loadHierarchy(route.spaceId) },
+                            onLoadMore = controller::loadMoreHierarchy,
+                            onOpenChild = controller::openChild,
+                            onOpenSettings = { nav.push(Route.SpaceSettings(route.spaceId)) }
+                        )
+                    }
+
+                    is Route.SpaceSettings -> {
+                        val controller = remember(route.spaceId) {
+                            SpaceSettingsController(service, route.spaceId)
+                        }
+                        val ui by controller.state.collectAsState()
+
+                        SpaceSettingsScreen(
+                            state = ui,
+                            onBack = { nav.pop() },
+                            onRefresh = controller::refresh,
+                            onAddChild = controller::addChild,
+                            onRemoveChild = controller::removeChild,
+                            onInviteUser = controller::inviteUser
                         )
                     }
                 }

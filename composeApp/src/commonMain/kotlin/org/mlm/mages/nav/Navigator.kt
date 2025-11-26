@@ -15,6 +15,11 @@ sealed interface Route {
     data object Invites : Route
     data class RoomInfo(val roomId: String) : Route
     data class Thread(val roomId: String, val rootEventId: String, val roomName: String) : Route
+
+    data object Spaces : Route
+    data class SpaceDetail(val spaceId: String, val spaceName: String) : Route
+    data class SpaceSettings(val spaceId: String) : Route
+
 }
 
 /**
@@ -27,6 +32,9 @@ private val Route.depth: Int get() = when (this) {
     is Route.Room -> 2
     is Route.RoomInfo -> 3
     is Route.Thread -> 3
+    Route.Spaces -> 3
+    is Route.SpaceDetail -> 4
+    is Route.SpaceSettings -> 5
 }
 
 class Navigator(initial: Route) {
