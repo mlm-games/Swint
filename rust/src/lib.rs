@@ -3369,7 +3369,6 @@ impl Client {
     }
 
     /// List all joined spaces with basic profile info.
-    /// List all joined spaces with basic profile info.
     pub fn my_spaces(&self) -> Vec<SpaceInfo> {
         RT.block_on(async {
             let mut out = Vec::new();
@@ -3409,8 +3408,6 @@ impl Client {
     }
 
     /// Create a space (m.space). Returns the new space room_id on success.
-    /// Create a space (m.space). Returns the new space room_id on success.
-    /// Uses create_room::v3 CreationContent.room_type = m.space.
     pub fn create_space(
         &self,
         name: String,
@@ -3464,8 +3461,6 @@ impl Client {
     }
 
     /// Add a child (room or subspace) to a space via m.space.child.
-    /// - order: Optional ordering key (e.g. "a", "b"...), should be <= 50 ASCII chars.
-    /// - suggested: mark as suggested for clients.
     pub fn space_add_child(
         &self,
         space_id: String,
@@ -3516,7 +3511,6 @@ impl Client {
     }
 
     /// Remove a child from a space by sending an empty content state for that key.
-    /// This effectively clears the relation for clients honoring the spec.
     pub fn space_remove_child(
         &self,
         space_id: String,
@@ -3543,10 +3537,6 @@ impl Client {
     }
 
     /// Traverse a space with the server-side hierarchy API (MSC2946).
-    /// - from: pagination token; pass None for first page
-    /// - limit: page size (server may cap)
-    /// - max_depth: optional depth limit (e.g. Some(2)); None means server default
-    /// - suggested_only: include only suggested children
     pub fn space_hierarchy(
         &self,
         space_id: String,

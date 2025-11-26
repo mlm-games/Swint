@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
+import org.mlm.mages.matrix.ReactionChip
 import org.mlm.mages.ui.base.BaseController
 
 data class ThreadUi(
@@ -14,6 +15,7 @@ data class ThreadUi(
     val nextBatch: String? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
+    val reactionChips: Map<String, List<ReactionChip>> = emptyMap(),
 
     val editingEvent: MessageEvent? = null,
     val editInput: String = ""
@@ -39,6 +41,7 @@ class ThreadController(
                 )
             }
         }
+        refreshReactionsForAll()
     }
 
     fun loadMore() {
@@ -55,6 +58,7 @@ class ThreadController(
                     .distinctBy { it.itemId }
                     .sortedBy { it.timestamp }
                 updateState { copy(messages = merged, nextBatch = page.nextBatch, isLoading = false) }
+                refreshReactionsForAll()
             } else {
                 updateState { copy(isLoading = false) }
             }
@@ -120,5 +124,27 @@ class ThreadController(
 
         if (ok) refresh()
         return ok
+    }
+
+
+    fun getReactions(eventId: String): List<ReactionChip> {
+        return _state.value.reactionChips[eventId] ?: emptyList()
+    }
+
+    private fun refreshReactionsForAll() {
+        _state.value.messages.forEach { ev ->
+            scope.launch {
+                refreshReactionsFor(ev.eventId)
+            }
+        }
+    }
+
+    private suspend fun refreshReactionsFor(eventId: String) {
+        val chips = runCatching { service.port.reactions(roomId, eventId) }.getOrDefault(emptyList())
+        _state.value = _state.value.copy(
+            reactionChips = _state.value.reactionChips.toMutableMap().apply {
+                if (chips.isNotEmpty()) put(eventId, chips) else remove(eventId)
+            }
+        )
     }
 }

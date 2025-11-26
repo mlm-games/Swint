@@ -57,22 +57,6 @@ fun ThreadScreen(
     var sheetEvent by remember { mutableStateOf<MessageEvent?>(null) }
     val listState = rememberLazyListState()
 
-    var reactionChips by remember { mutableStateOf<Map<String, List<ReactionChip>>>(emptyMap()) }
-
-    LaunchedEffect(state.messages) {
-        state.messages.forEach { event ->
-            launch {
-                val chips = runCatching {
-                    // TODO: This should ideally be exposed through the controller
-                    emptyList<ReactionChip>()
-                }.getOrDefault(emptyList())
-                if (chips.isNotEmpty()) {
-                    reactionChips = reactionChips + (event.eventId to chips)
-                }
-            }
-        }
-    }
-
     val isNearBottom by remember(listState, state.messages) {
         derivedStateOf {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -222,7 +206,7 @@ fun ThreadScreen(
                             ThreadRootMessage(
                                 event = root,
                                 isMine = root.sender == myUserId,
-                                reactionChips = reactionChips[root.eventId] ?: emptyList(),
+                                reactionChips = state.reactionChips[root.eventId] ?: emptyList(),
                                 onReact = { emoji -> onReact(root, emoji) },
                                 onReply = { replyTo = root },
                                 onLongPress = { sheetEvent = root }
@@ -244,7 +228,7 @@ fun ThreadScreen(
                         ThreadReplyMessage(
                             event = event,
                             isMine = event.sender == myUserId,
-                            reactionChips = reactionChips[event.eventId] ?: emptyList(),
+                            reactionChips = state.reactionChips[event.eventId] ?: emptyList(),
                             onReact = { emoji -> onReact(event, emoji) },
                             onLongPress = { sheetEvent = event },
                             grouped = shouldGroup

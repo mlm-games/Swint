@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.update
 abstract class BaseController<S>(initialState: S) {
     protected val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    private val _state = MutableStateFlow(initialState)
+    val _state = MutableStateFlow(initialState)
     val state: StateFlow<S> = _state
 
     protected val currentState: S get() = _state.value
