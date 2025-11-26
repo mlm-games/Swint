@@ -43,6 +43,7 @@ fun RoomScreen(
     onDelete: (MessageEvent) -> Unit,
     onOpenAttachment: (MessageEvent) -> Unit,
     onOpenInfo: () -> Unit,
+    onOpenThread: (MessageEvent) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
@@ -256,6 +257,14 @@ fun RoomScreen(
                             durationMs = event.attachment?.durationMs,
                             onOpenAttachment = { onOpenAttachment(event) },
                         )
+                        val tcount = state.threadCount[event.eventId] ?: 0
+                        if (tcount > 0) {
+                            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+                                TextButton(onClick = {onOpenThread(event)} ) {
+                                    Text("View thread ($tcount)")
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(2.dp))
 
                         if (index == lastOutgoingIndex) {

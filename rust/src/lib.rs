@@ -77,6 +77,18 @@ use ruma::api::client::{
 };
 use thiserror::Error;
 
+use ruma::{
+    OwnedEventId,
+    api::{
+        Direction,
+        client::relations::get_relating_events_with_rel_type_and_event_type as get_relating,
+    },
+    events::{
+        TimelineEventType,
+        relation::{RelationType, Thread as ThreadRel},
+        room::message::{Relation as MsgRelation, RoomMessageEventContent},
+    },
+};
 use std::panic::AssertUnwindSafe;
 
 // UniFFI macro-first setup
@@ -117,6 +129,7 @@ pub struct MessageEvent {
     pub reply_to_sender: Option<String>,
     pub reply_to_body: Option<String>,
     pub attachment: Option<AttachmentInfo>,
+    pub thread_root_event_id: Option<String>,
 }
 
 #[derive(Clone, Enum)]
@@ -240,6 +253,23 @@ pub struct MemberSummary {
 
 enum RoomListCmd {
     SetUnreadOnly(bool),
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct ThreadPage {
+    pub root_event_id: String,
+    pub room_id: String,
+    pub messages: Vec<MessageEvent>,
+    pub next_batch: Option<String>,
+    pub prev_batch: Option<String>,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct ThreadSummary {
+    pub root_event_id: String,
+    pub room_id: String,
+    pub count: u64,
+    pub latest_ts_ms: Option<u64>,
 }
 
 #[derive(uniffi::Record, Clone)]
@@ -3108,6 +3138,183 @@ impl Client {
             out
         })
     }
+
+    /// MSC3440
+    pub fn send_thread_text(
+        &self,
+        room_id: String,
+        root_event_id: String,
+        body: String,
+        reply_to_event_id: Option<String>,
+    ) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let Ok(root) = ruma::OwnedEventId::try_from(root_event_id) else {
+                return false;
+            };
+            let Some(tl) = get_timeline_for(&self.inner, &rid).await else {
+                return false;
+            };
+
+            let mut content: RoomMessageEventContent = RoomMessageEventContent::text_plain(body);
+
+            let relation = if let Some(reply_to) = reply_to_event_id {
+                if let Ok(eid) = ruma::OwnedEventId::try_from(reply_to) {
+                    MsgRelation::Thread(ThreadRel::reply(root, eid))
+                } else {
+                    MsgRelation::Thread(ThreadRel::without_fallback(root))
+                }
+            } else {
+                MsgRelation::Thread(ThreadRel::without_fallback(root))
+            };
+
+            content.relates_to = Some(relation);
+            tl.send(content.into()).await.is_ok()
+        })
+    }
+
+    pub fn thread_replies(
+        &self,
+        room_id: String,
+        root_event_id: String,
+        from: Option<String>,
+        limit: u32,
+        direction_forward: bool,
+    ) -> Result<ThreadPage, FfiError> {
+        RT.block_on(async {
+            let rid = ruma::OwnedRoomId::try_from(room_id.clone())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            let root = ruma::OwnedEventId::try_from(root_event_id.clone())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let mut req = get_relating::v1::Request::new(
+                rid.clone(),
+                root.clone(),
+                RelationType::Thread,
+                TimelineEventType::RoomMessage,
+            );
+            if let Some(f) = from.as_deref() {
+                req.from = Some(f.to_owned());
+            }
+            if limit > 0 {
+                req.limit = Some(limit.into());
+            }
+            req.dir = if direction_forward {
+                Direction::Forward
+            } else {
+                Direction::Backward
+            };
+
+            let resp = self
+                .inner
+                .send(req)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let mut out: Vec<MessageEvent> = Vec::new();
+
+            // Include the root first (mapped via timeline for consistent formatting)
+            if let Some(root_ev) = map_event_id_via_timeline(&self.inner, &rid, &root).await {
+                out.push(root_ev);
+            }
+
+            // Each chunk item is Raw<AnyMessageLikeEvent>; deserialize, take event_id, then map via timeline
+            for raw in resp.chunk.iter() {
+                if let Ok(ml) = raw.deserialize() {
+                    let eid = ml.event_id().to_owned();
+                    if let Some(mev) = map_event_id_via_timeline(&self.inner, &rid, &eid).await {
+                        out.push(mev);
+                    }
+                }
+            }
+
+            // Chronological order (ascending by timestamp)
+            out.sort_by_key(|e| e.timestamp_ms);
+
+            Ok(ThreadPage {
+                root_event_id: root_event_id,
+                room_id: room_id,
+                messages: out,
+                next_batch: resp.next_batch.clone(),
+                prev_batch: resp.prev_batch.clone(),
+            })
+        })
+    }
+
+    /// Approximate thread summary: count + latest timestamp by paging relations.
+    pub fn thread_summary(
+        &self,
+        room_id: String,
+        root_event_id: String,
+        per_page: u32,
+        max_pages: u32,
+    ) -> Result<ThreadSummary, FfiError> {
+        RT.block_on(async {
+            let rid = ruma::OwnedRoomId::try_from(room_id.clone())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            let root = ruma::OwnedEventId::try_from(root_event_id.clone())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let mut from: Option<String> = None;
+            let mut pages = 0u32;
+            let mut count: u64 = 0;
+            let mut latest: Option<u64> = None;
+
+            loop {
+                pages += 1;
+                if pages > max_pages.max(1) {
+                    break;
+                }
+
+                let mut req = get_relating::v1::Request::new(
+                    rid.clone(),
+                    root.clone(),
+                    RelationType::Thread,
+                    TimelineEventType::RoomMessage,
+                );
+                req.dir = Direction::Backward; // newer first
+                if let Some(f) = &from {
+                    req.from = Some(f.clone());
+                }
+                if per_page > 0 {
+                    req.limit = Some(per_page.into());
+                }
+
+                let resp = self
+                    .inner
+                    .send(req)
+                    .await
+                    .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+                for raw in resp.chunk.iter() {
+                    if let Ok(ml) = raw.deserialize() {
+                        let eid = ml.event_id().to_owned();
+                        count += 1;
+                        if let Some(mev) = map_event_id_via_timeline(&self.inner, &rid, &eid).await
+                        {
+                            if latest.map_or(true, |l| mev.timestamp_ms > l) {
+                                latest = Some(mev.timestamp_ms);
+                            }
+                        }
+                    }
+                }
+
+                if resp.next_batch.is_none() {
+                    break;
+                }
+                from = resp.next_batch;
+            }
+
+            Ok(ThreadSummary {
+                root_event_id,
+                room_id,
+                count,
+                latest_ts_ms: latest,
+            })
+        })
+    }
 }
 
 impl Client {
@@ -3173,6 +3380,7 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     let mut reply_to_sender: Option<String> = None;
     let mut reply_to_body: Option<String> = None;
     let mut attachment: Option<AttachmentInfo> = None;
+    let thread_root_event_id = ev.content().thread_root().map(|id| id.to_string());
     let body;
 
     match ev.content() {
@@ -3306,6 +3514,7 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         reply_to_sender,
         reply_to_body,
         attachment,
+        thread_root_event_id,
     })
 }
 
@@ -3316,13 +3525,14 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
     let send_state = match ev.send_state() {
         Some(EventSendState::NotSentYet { .. }) => Some(SendState::Sending),
         Some(EventSendState::SendingFailed { .. }) => Some(SendState::Failed),
-        Some(EventSendState::Sent { event_id }) => Some(SendState::Sent),
+        Some(EventSendState::Sent { .. }) => Some(SendState::Sent),
         None => None,
     };
 
     let mut reply_to_event_id: Option<String> = None;
     let mut reply_to_sender: Option<String> = None;
     let mut reply_to_body: Option<String> = None;
+    let thread_root_event_id: Option<String> = ev.content().thread_root().map(|id| id.to_string());
     let body;
     let mut attachment: Option<AttachmentInfo> = None;
 
@@ -3452,7 +3662,21 @@ fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Optio
         reply_to_sender,
         reply_to_body,
         attachment,
+        thread_root_event_id,
     })
+}
+
+async fn map_event_id_via_timeline(
+    client: &SdkClient,
+    rid: &ruma::OwnedRoomId,
+    eid: &ruma::OwnedEventId,
+) -> Option<MessageEvent> {
+    let Some(tl) = get_timeline_for(client, rid).await else {
+        return None;
+    };
+    let _ = tl.fetch_details_for_event(eid.as_ref()).await;
+    let item = tl.item_by_event_id(eid).await?;
+    map_event(&item, rid.as_str())
 }
 
 fn render_timeline_text(ev: &EventTimelineItem) -> String {

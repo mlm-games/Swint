@@ -46,9 +46,10 @@ fun SasDialog(
     otherUser: String,
     otherDevice: String,
     error: String?,
+    showAccept: Boolean,
     onAccept: () -> Unit,
     onConfirm: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
 ) {
     Dialog(
         onDismissRequest = onCancel,

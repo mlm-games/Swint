@@ -72,7 +72,14 @@ data class MemberSummary(
 )
 
 data class ReactionChip(val key: String, val count: Int, val mine: Boolean)
-
+data class ThreadPage(
+    val rootEventId: String,
+    val roomId: String,
+    val messages: List<MessageEvent>,
+    val nextBatch: String?,
+    val prevBatch: String?
+)
+data class ThreadSummary(val rootEventId: String, val roomId: String, val count: Long, val latestTsMs: Long?)
 
 interface MatrixPort {
 
@@ -243,6 +250,16 @@ interface MatrixPort {
 
     suspend fun reactions(roomId: String, eventId: String): List<ReactionChip>
 
+    suspend fun sendThreadText(roomId: String, rootEventId: String, body: String, replyToEventId: String? = null): Boolean
+    suspend fun threadSummary(roomId: String, rootEventId: String, perPage: Int = 100, maxPages: Int = 10): ThreadSummary
+
+    suspend fun threadReplies(
+        roomId: String,
+        rootEventId: String,
+        from: String? = null,
+        limit: Int = 50,
+        forward: Boolean = false
+    ): ThreadPage
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

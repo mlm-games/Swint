@@ -51,6 +51,7 @@ data class RoomUiState(
     val lastOutgoingRead: Boolean = false,
     val thumbByEvent: Map<String, String> = emptyMap(),
     val reactionChips: Map<String, List<ReactionChip>> = emptyMap(),
+    val threadCount: Map<String, Int> = emptyMap(),
 )
 data class VerificationRequestUi(
     val flowId: String,
@@ -78,5 +79,6 @@ data class SecurityUiState(
     val sasEmojis: List<String> = emptyList(),
     val sasOtherUser: String? = null,
     val sasOtherDevice: String? = null,
-    val sasError: String? = null
+    val sasError: String? = null,
+    val sasIncoming: Boolean = false,
 )

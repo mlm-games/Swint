@@ -107,6 +107,7 @@ fun SecurityScreen(
 
     // SAS dialog flows
     if (state.sasFlowId != null) {
+        val showAccept = state.sasIncoming
         SasDialog(
             phase = state.sasPhase,
             emojis = state.sasEmojis,
@@ -115,7 +116,8 @@ fun SecurityScreen(
             error = state.sasError,
             onAccept = onAcceptSas,
             onConfirm = onConfirmSas,
-            onCancel = onCancelSas
+            onCancel = onCancelSas,
+            showAccept = showAccept,
         )
     }
 

@@ -13,6 +13,8 @@ sealed interface Route {
     data object Discover : Route
     data object Invites : Route
     data class RoomInfo(val roomId: String) : Route
+    data class Thread(val roomId: String, val rootEventId: String, val roomName: String) : Route
+
 }
 
 class Navigator(initial: Route) {

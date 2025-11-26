@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.nav.*
 import org.mlm.mages.platform.rememberFileOpener
@@ -119,7 +120,8 @@ fun App(
                             openExternal(path, mime) // platform-resolved
                         }
                     },
-                    onOpenInfo = { nav.push(Route.RoomInfo(r.roomId)) }
+                    onOpenInfo = { nav.push(Route.RoomInfo(r.roomId)) },
+                    onOpenThread = { nav.push(Route.Thread(r.roomId, it.eventId, ui.roomName)) }
                 )
             }
             Route.Security -> {
@@ -204,6 +206,24 @@ fun App(
                     onLeaveSuccess = {
                         // Pop back to rooms list
                         nav.popUntil { it is Route.Rooms }
+                    }
+                )
+            }
+            is Route.Thread -> {
+                val controller = remember(r.roomId) { ThreadController(service, r.roomId, r.rootEventId) }
+                val ui by controller.state.collectAsState()
+
+                ThreadScreen(
+                    state = ui,
+                    myUserId = service.port.whoami(),
+                    reactionChips = { eid -> runBlocking { service.port.reactions(r.roomId, eid) } }, // TODO: rememberCoroutineScope and state
+                    onReact = controller::react,
+                    onBack = { nav.pop() },
+                    onLoadMore = controller::loadMore,
+                    onSendThread = { text, replyToId ->
+                        val ok = service.port.sendThreadText(r.roomId, r.rootEventId, text, replyToId)
+                        if (ok) controller.refresh()
+                        ok
                     }
                 )
             }
