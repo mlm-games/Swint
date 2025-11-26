@@ -10,10 +10,10 @@ import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.nav.*
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberOpenBrowser
-import org.mlm.mages.ui.MainTheme
+import org.mlm.mages.ui.components.sheets.CreateRoomSheet
 import org.mlm.mages.ui.controller.*
 import org.mlm.mages.ui.screens.*
-import org.mlm.mages.ui.components.CreateRoomSheet
+import org.mlm.mages.ui.theme.MainTheme
 
 @Composable
 fun App(
