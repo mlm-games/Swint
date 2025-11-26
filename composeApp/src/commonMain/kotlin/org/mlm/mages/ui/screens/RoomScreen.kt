@@ -18,9 +18,23 @@ import kotlinx.coroutines.launch
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.platform.rememberFilePicker
 import org.mlm.mages.ui.RoomUiState
-import org.mlm.mages.ui.components.*
-import java.awt.Desktop
-import java.io.File
+import org.mlm.mages.ui.components.AttachmentData
+import org.mlm.mages.ui.components.core.EmptyState
+import org.mlm.mages.ui.components.core.TypingDots
+import org.mlm.mages.ui.components.core.UnreadDivider
+import org.mlm.mages.ui.components.message.MessageBubble
+import org.mlm.mages.ui.components.message.MessageStatusLine
+import org.mlm.mages.ui.components.message.SeenByChip
+import org.mlm.mages.ui.components.composer.MessageComposer
+import org.mlm.mages.ui.components.composer.ActionBanner
+import org.mlm.mages.ui.components.attachment.AttachmentPicker
+import org.mlm.mages.ui.components.attachment.AttachmentProgress
+import org.mlm.mages.ui.components.sheets.MessageActionSheet
+import org.mlm.mages.ui.util.formatDate
+import org.mlm.mages.ui.util.formatTime
+import org.mlm.mages.ui.util.formatTypingText
+import org.mlm.mages.ui.theme.Spacing
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,6 +57,7 @@ fun RoomScreen(
     onDelete: (MessageEvent) -> Unit,
     onOpenAttachment: (MessageEvent) -> Unit,
     onOpenInfo: () -> Unit,
+    onOpenThread: (MessageEvent) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
@@ -56,11 +71,8 @@ fun RoomScreen(
     var showAttachmentPicker by remember { mutableStateOf(false) }
     var sheetEvent by remember { mutableStateOf<MessageEvent?>(null) }
 
-
     val picker = rememberFilePicker { data ->
-        if (data != null) {
-            onSendAttachment(data)
-        }
+        if (data != null) onSendAttachment(data)
         showAttachmentPicker = false
     }
 
@@ -102,9 +114,7 @@ fun RoomScreen(
                                 }
                             }
                         },
-                        navigationIcon = {
-                            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                        },
+                        navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                         actions = { IconButton(onClick = { onOpenInfo() }) { Icon(Icons.Default.Info, "Room info") } }
                     )
                     AnimatedVisibility(visible = state.isOffline) {
@@ -117,13 +127,7 @@ fun RoomScreen(
         },
         bottomBar = {
             Column {
-                // Context banner (reply/edit)
-                ActionBanner(
-                    replyingTo = state.replyingTo,
-                    editing = state.editing,
-                    onCancelReply = onCancelReply,
-                    onCancelEdit = onCancelEdit
-                )
+                ActionBanner(replyingTo = state.replyingTo, editing = state.editing, onCancelReply = onCancelReply, onCancelEdit = onCancelEdit)
                 if (state.isUploadingAttachment && state.currentAttachment != null) {
                     AttachmentProgress(
                         fileName = state.currentAttachment.fileName,
@@ -132,7 +136,6 @@ fun RoomScreen(
                         onCancel = onCancelUpload
                     )
                 }
-
                 MessageComposer(
                     value = state.input,
                     enabled = true,
@@ -148,15 +151,12 @@ fun RoomScreen(
                     onAttach = { showAttachmentPicker = true },
                     onCancelUpload = onCancelUpload
                 )
-
             }
         },
         floatingActionButton = {
             AnimatedVisibility(visible = !isNearBottom, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
                 ExtendedFloatingActionButton(
-                    onClick = {
-                        scope.launch { listState.animateScrollToItem(events.lastIndex.coerceAtLeast(0)) }
-                    },
+                    onClick = { scope.launch { listState.animateScrollToItem(events.lastIndex.coerceAtLeast(0)) } },
                     containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                     contentColor = MaterialTheme.colorScheme.onTertiaryContainer
                 ) {
@@ -174,17 +174,21 @@ fun RoomScreen(
             }
             val lastOutgoing = events.getOrNull(lastOutgoingIndex)
             val othersAfter = remember(events, lastOutgoingIndex, myId) {
-                if (lastOutgoingIndex >= 0 && myId != null) {
-                    events.drop(lastOutgoingIndex + 1).filter { it.sender != myId }
-                } else emptyList()
+                if (lastOutgoingIndex >= 0 && myId != null) events.drop(lastOutgoingIndex + 1).filter { it.sender != myId }
+                else emptyList()
             }
             val seenByNames = remember(othersAfter) {
                 othersAfter.map { it.sender }.distinct().map { sender ->
                     sender.substringAfter('@').substringBefore(':').ifBlank { sender }
                 }
             }
+
             if (events.isEmpty()) {
-                EmptyRoomView()
+                EmptyState(
+                    icon = Icons.Default.ChatBubbleOutline,
+                    title = "No messages yet",
+                    subtitle = "Send a message to start the conversation"
+                )
             } else {
                 LazyColumn(
                     state = listState,
@@ -194,7 +198,7 @@ fun RoomScreen(
                 ) {
                     if (!state.hitStart) {
                         item {
-                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                            Box(Modifier.fillMaxWidth().padding(Spacing.lg), contentAlignment = Alignment.Center) {
                                 OutlinedButton(onClick = onPaginateBack, enabled = !state.isPaginatingBack) {
                                     if (state.isPaginatingBack) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -216,7 +220,6 @@ fun RoomScreen(
                         val eventDate = formatDate(event.timestamp)
                         val prevDate = events.getOrNull(index - 1)?.let { formatDate(it.timestamp) }
 
-                        // Date header only when date boundary changes
                         if (prevDate != eventDate) {
                             DateHeader(eventDate)
                         }
@@ -225,11 +228,8 @@ fun RoomScreen(
                         if (lastReadTs != null) {
                             val prevTs = events.getOrNull(index - 1)?.timestamp
                             val showUnread = (event.timestamp > lastReadTs) && (prevTs == null || prevTs <= lastReadTs)
-                            if (showUnread) {
-                                UnreadDivider()
-                            }
+                            if (showUnread) UnreadDivider()
                         } else if (index == 0) {
-                            // No record: show once at the top
                             UnreadDivider()
                         }
 
@@ -238,7 +238,7 @@ fun RoomScreen(
                         val shouldGroup = prevEvent != null &&
                                 prevEvent.sender == event.sender &&
                                 prevDate == eventDate &&
-                                (event.timestamp - prevEvent.timestamp) < 300_000 // 5 minutes in milliseconds (for grouping messages)
+                                (event.timestamp - prevEvent.timestamp) < 300_000
 
                         MessageBubble(
                             isMine = (event.sender == state.myUserId),
@@ -254,8 +254,15 @@ fun RoomScreen(
                             thumbPath = state.thumbByEvent[event.eventId],
                             attachmentKind = event.attachment?.kind,
                             durationMs = event.attachment?.durationMs,
-                            onOpenAttachment = { onOpenAttachment(event) },
+                            onOpenAttachment = { onOpenAttachment(event) }
                         )
+
+                        val tcount = state.threadCount[event.eventId] ?: 0
+                        if (tcount > 0) {
+                            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+                                TextButton(onClick = { onOpenThread(event) }) { Text("View thread ($tcount)") }
+                            }
+                        }
                         Spacer(Modifier.height(2.dp))
 
                         if (index == lastOutgoingIndex) {
@@ -267,9 +274,7 @@ fun RoomScreen(
                                 }
                                 MessageStatusLine(text = statusText, isMine = true)
                             } else {
-                                if (seenByNames.isNotEmpty()) {
-                                    SeenByChip(names = seenByNames)
-                                }
+                                if (seenByNames.isNotEmpty()) SeenByChip(names = seenByNames)
                             }
                         }
                     }
@@ -304,35 +309,17 @@ fun RoomScreen(
     }
 }
 
-
 @Composable
 private fun DateHeader(date: String) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 16.dp, horizontal = 32.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.lg, horizontal = Spacing.xxl),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        HorizontalDivider(
-            modifier = Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
-        )
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            shape = MaterialTheme.shapes.small,
-            modifier = Modifier.padding(horizontal = 12.dp)
-        ) {
-            Text(
-                text = date,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-            )
+        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small, modifier = Modifier.padding(horizontal = Spacing.md)) {
+            Text(text = date, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = Spacing.md, vertical = 4.dp))
         }
-        HorizontalDivider(
-            modifier = Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
-        )
+        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
     }
 }

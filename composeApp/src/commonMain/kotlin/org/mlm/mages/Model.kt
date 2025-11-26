@@ -22,6 +22,7 @@ data class MessageEvent(
     val replyToSender: String? = null,
     val replyToBody: String? = null,
     val attachment: AttachmentInfo? = null,
+    val threadRootEventId: String? = null,
 )
 
 @Serializable

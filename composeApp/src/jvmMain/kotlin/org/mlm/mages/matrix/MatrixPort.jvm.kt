@@ -697,6 +697,139 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override suspend fun reactions(roomId: String, eventId: String): List<ReactionChip> =
         client.reactionsForEvent(roomId, eventId).map { ReactionChip(it.key, it.count.toInt(), it.me) }
+
+    override suspend fun sendThreadText(roomId: String, rootEventId: String, body: String, replyToEventId: String?): Boolean =
+        client.sendThreadText(roomId, rootEventId, body, replyToEventId)
+
+    override suspend fun threadSummary(roomId: String, rootEventId: String, perPage: Int, maxPages: Int): ThreadSummary {
+        val s = client.threadSummary(roomId, rootEventId, perPage.toUInt(), maxPages.toUInt())
+        return ThreadSummary(s.rootEventId, s.roomId, s.count.toLong(), s.latestTsMs?.toLong())
+    }
+    override suspend fun threadReplies(
+        roomId: String,
+        rootEventId: String,
+        from: String?,
+        limit: Int,
+        forward: Boolean
+    ): ThreadPage {
+        val page = client.threadReplies(roomId, rootEventId, from, limit.toUInt(), forward)
+        return ThreadPage(
+            rootEventId = page.rootEventId,
+            roomId = page.roomId,
+            messages = page.messages.map { it.toModel() },
+            nextBatch = page.nextBatch,
+            prevBatch = page.prevBatch
+        )
+    }
+
+    override suspend fun isSpace(roomId: String): Boolean {
+        return try {
+            client.isSpace(roomId)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    override suspend fun mySpaces(): List<SpaceInfo> {
+        return try {
+            client.mySpaces().map { space ->
+                SpaceInfo(
+                    roomId = space.roomId,
+                    name = space.name,
+                    topic = space.topic,
+                    memberCount = space.memberCount.toLong(),
+                    isEncrypted = space.isEncrypted,
+                    isPublic = space.isPublic
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    override suspend fun createSpace(
+        name: String,
+        topic: String?,
+        isPublic: Boolean,
+        invitees: List<String>
+    ): String? {
+        return try {
+            client.createSpace(name, topic, isPublic, invitees)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    override suspend fun spaceAddChild(
+        spaceId: String,
+        childRoomId: String,
+        order: String?,
+        suggested: Boolean?
+    ): Boolean {
+        return try {
+            client.spaceAddChild(spaceId, childRoomId, order, suggested)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    override suspend fun spaceRemoveChild(
+        spaceId: String,
+        childRoomId: String
+    ): Boolean {
+        return try {
+            client.spaceRemoveChild(spaceId, childRoomId)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    override suspend fun spaceHierarchy(
+        spaceId: String,
+        from: String?,
+        limit: Int,
+        maxDepth: Int?,
+        suggestedOnly: Boolean
+    ): SpaceHierarchyPage? {
+        return try {
+            val page = client.spaceHierarchy(
+                spaceId = spaceId,
+                from = from,
+                limit = limit.toUInt(),
+                maxDepth = maxDepth?.toUInt(),
+                suggestedOnly = suggestedOnly
+            )
+            SpaceHierarchyPage(
+                children = page.children.map { child ->
+                    SpaceChildInfo(
+                        roomId = child.roomId,
+                        name = child.name,
+                        topic = child.topic,
+                        alias = child.alias,
+                        avatarUrl = child.avatarUrl,
+                        isSpace = child.isSpace,
+                        memberCount = child.memberCount.toLong(),
+                        worldReadable = child.worldReadable,
+                        guestCanJoin = child.guestCanJoin,
+                        suggested = child.suggested
+                    )
+                },
+                nextBatch = page.nextBatch
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    override suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean {
+        return try {
+            client.spaceInviteUser(spaceId, userId)
+        } catch (e: Exception) {
+            false
+        }
+    }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
@@ -720,7 +853,8 @@ private fun FfiEvent.toModel() = MessageEvent(
             mime = it.mime,
             durationMs = it.durationMs?.toLong()
         )
-    }
+    },
+    threadRootEventId = threadRootEventId
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)

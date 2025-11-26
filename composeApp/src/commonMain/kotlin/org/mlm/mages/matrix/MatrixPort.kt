@@ -72,7 +72,41 @@ data class MemberSummary(
 )
 
 data class ReactionChip(val key: String, val count: Int, val mine: Boolean)
+data class ThreadPage(
+    val rootEventId: String,
+    val roomId: String,
+    val messages: List<MessageEvent>,
+    val nextBatch: String?,
+    val prevBatch: String?
+)
+data class ThreadSummary(val rootEventId: String, val roomId: String, val count: Long, val latestTsMs: Long?)
 
+data class SpaceInfo(
+    val roomId: String,
+    val name: String,
+    val topic: String?,
+    val memberCount: Long,
+    val isEncrypted: Boolean,
+    val isPublic: Boolean
+)
+
+data class SpaceChildInfo(
+    val roomId: String,
+    val name: String?,
+    val topic: String?,
+    val alias: String?,
+    val avatarUrl: String?,
+    val isSpace: Boolean,
+    val memberCount: Long,
+    val worldReadable: Boolean,
+    val guestCanJoin: Boolean,
+    val suggested: Boolean
+)
+
+data class SpaceHierarchyPage(
+    val children: List<SpaceChildInfo>,
+    val nextBatch: String?
+)
 
 interface MatrixPort {
 
@@ -242,6 +276,41 @@ interface MatrixPort {
     suspend fun listMembers(roomId: String): List<MemberSummary>
 
     suspend fun reactions(roomId: String, eventId: String): List<ReactionChip>
+
+    suspend fun sendThreadText(roomId: String, rootEventId: String, body: String, replyToEventId: String? = null): Boolean
+    suspend fun threadSummary(roomId: String, rootEventId: String, perPage: Int = 100, maxPages: Int = 10): ThreadSummary
+
+    suspend fun threadReplies(
+        roomId: String,
+        rootEventId: String,
+        from: String? = null,
+        limit: Int = 50,
+        forward: Boolean = false
+    ): ThreadPage
+
+    suspend fun isSpace(roomId: String): Boolean
+    suspend fun mySpaces(): List<SpaceInfo>
+    suspend fun createSpace(
+        name: String,
+        topic: String?,
+        isPublic: Boolean,
+        invitees: List<String>
+    ): String?
+    suspend fun spaceAddChild(
+        spaceId: String,
+        childRoomId: String,
+        order: String?,
+        suggested: Boolean?
+    ): Boolean
+    suspend fun spaceRemoveChild(spaceId: String, childRoomId: String): Boolean
+    suspend fun spaceHierarchy(
+        spaceId: String,
+        from: String?,
+        limit: Int,
+        maxDepth: Int?,
+        suggestedOnly: Boolean
+    ): SpaceHierarchyPage?
+    suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean
 
 }
 
