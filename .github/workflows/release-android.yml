@@ -185,6 +185,7 @@ jobs:
           body: ${{ needs.prepare-version.outputs.release_notes }}
 
       - name: Dispatch release-desktop.yml
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_releases == true
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -193,6 +194,6 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'release-desktop.yml',
-              ref: '${{ inputs.version_name }}'
+              ref: '${{ needs.prepare-version.outputs.version_name }}'
             });
-            core.info('Triggered desktop builds for ${{ inputs.version_name }}');
+            core.info('Triggered desktop builds for ${{ needs.prepare-version.outputs.version_name }}');
