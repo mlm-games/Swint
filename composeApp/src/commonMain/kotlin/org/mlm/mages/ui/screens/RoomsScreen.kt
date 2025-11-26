@@ -13,6 +13,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.ui.RoomsUiState
+import org.mlm.mages.ui.components.common.RoomListItem
 import org.mlm.mages.ui.components.core.EmptyState
 import org.mlm.mages.ui.components.core.ShimmerList
 import org.mlm.mages.ui.theme.Spacing
@@ -33,8 +34,12 @@ fun RoomsScreen(
     val filtered = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
         val q = state.roomSearchQuery.trim()
         var list = if (q.isBlank()) state.rooms
-        else state.rooms.filter { it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true) }
-        if (state.unreadOnly) list = list.filter { (state.unread[it.id] ?: 0) > 0 }
+        else state.rooms.filter {
+            it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true)
+        }
+        if (state.unreadOnly) {
+            list = list.filter { (state.unread[it.id] ?: 0) > 0 }
+        }
         list
     }
 
@@ -44,80 +49,107 @@ fun RoomsScreen(
                 TopAppBar(
                     title = { Text("Rooms", fontWeight = FontWeight.SemiBold) },
                     actions = {
-                        IconButton(enabled = !state.isBusy, onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh") }
-                        IconButton(onClick = onOpenSecurity) { Icon(Icons.Default.Security, "Security") }
-                        IconButton(onClick = onOpenDiscover) { Icon(Icons.Default.NewLabel, "Discover") }
-                        IconButton(onClick = onOpenInvites) { Icon(Icons.Default.Mail, "Invites") }
-                        IconButton(onClick = onOpenCreateRoom) { Icon(Icons.Default.Add, "New Room") }
+                        IconButton(enabled = !state.isBusy, onClick = onRefresh) {
+                            Icon(Icons.Default.Refresh, "Refresh")
+                        }
+                        IconButton(onClick = onOpenSecurity) {
+                            Icon(Icons.Default.Security, "Security")
+                        }
+                        IconButton(onClick = onOpenDiscover) {
+                            Icon(Icons.Default.NewLabel, "Discover")
+                        }
+                        IconButton(onClick = onOpenInvites) {
+                            Icon(Icons.Default.Mail, "Invites")
+                        }
+                        IconButton(onClick = onOpenCreateRoom) {
+                            Icon(Icons.Default.Add, "New Room")
+                        }
                     }
                 )
+
+                // Connection banners
                 state.offlineBanner?.let {
-                    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
-                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.padding(vertical = 4.dp, horizontal = Spacing.lg))
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(vertical = 4.dp, horizontal = Spacing.lg)
+                        )
                     }
                 } ?: state.syncBanner?.let {
-                    Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
-                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.padding(vertical = 4.dp, horizontal = Spacing.lg))
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(vertical = 4.dp, horizontal = Spacing.lg)
+                        )
                     }
                 }
+
+                // Search
                 OutlinedTextField(
                     value = state.roomSearchQuery,
                     onValueChange = onSearch,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
                     placeholder = { Text("Search rooms...") },
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     singleLine = true,
                     shape = MaterialTheme.shapes.large
                 )
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.lg), horizontalArrangement = Arrangement.Start) {
-                    FilterChip(selected = state.unreadOnly, onClick = onToggleUnreadOnly, label = { Text("Unread only") })
+
+                // Filters
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.lg),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    FilterChip(
+                        selected = state.unreadOnly,
+                        onClick = onToggleUnreadOnly,
+                        label = { Text("Unread only") }
+                    )
                 }
             }
         }
     ) { innerPadding ->
-        if (state.isBusy && state.rooms.isEmpty()) {
-            ShimmerList(modifier = Modifier.padding(innerPadding))
-        } else if (filtered.isEmpty()) {
-            EmptyState(
-                icon = Icons.Default.MeetingRoom,
-                title = "No rooms found",
-                subtitle = if (state.roomSearchQuery.isBlank()) "Join a room to start chatting" else "No rooms match \"${state.roomSearchQuery}\"",
-                modifier = Modifier.padding(innerPadding)
-            )
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding), contentPadding = PaddingValues(vertical = 8.dp)) {
-                items(filtered.reversed(), key = { it.id }) { room ->
-                    RoomCard(room = room, unreadCount = state.unread[room.id] ?: 0) { onOpen(room) }
-                }
+        when {
+            state.isBusy && state.rooms.isEmpty() -> {
+                ShimmerList(modifier = Modifier.padding(innerPadding))
             }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RoomCard(room: RoomSummary, unreadCount: Int, onClick: () -> Unit) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = if (unreadCount > 0) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface)
-    ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(Spacing.lg), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(48.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = MaterialTheme.shapes.medium) {
-                    Box(modifier = Modifier.size(48.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                        Text(room.name.take(2).uppercase(), color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+            filtered.isEmpty() -> {
+                EmptyState(
+                    icon = Icons.Default.MeetingRoom,
+                    title = "No rooms found",
+                    subtitle = if (state.roomSearchQuery.isBlank())
+                        "Join a room to start chatting"
+                    else
+                        "No rooms match \"${state.roomSearchQuery}\"",
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(innerPadding),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(filtered.reversed(), key = { it.id }) { room ->
+                        RoomListItem(
+                            room = room,
+                            unreadCount = state.unread[room.id] ?: 0,
+                            onClick = { onOpen(room) }
+                        )
                     }
-                }
-            }
-            Spacer(Modifier.width(Spacing.md))
-            Column(Modifier.weight(1f)) {
-                Text(room.name, style = MaterialTheme.typography.titleMedium, fontWeight = if (unreadCount > 0) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
-                Text(room.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-            }
-            if (unreadCount > 0) {
-                Badge(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) {
-                    Text(if (unreadCount > 99) "99+" else unreadCount.toString(), style = MaterialTheme.typography.labelSmall)
                 }
             }
         }

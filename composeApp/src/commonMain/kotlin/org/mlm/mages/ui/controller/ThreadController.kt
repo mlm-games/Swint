@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
+import org.mlm.mages.ui.base.BaseController
 
 data class ThreadUi(
     val roomId: String,
@@ -12,58 +13,112 @@ data class ThreadUi(
     val messages: List<MessageEvent> = emptyList(),
     val nextBatch: String? = null,
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+
+    val editingEvent: MessageEvent? = null,
+    val editInput: String = ""
 )
 
 class ThreadController(
     private val service: MatrixService,
     private val roomId: String,
     private val rootEventId: String
-) {
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val _state = MutableStateFlow(ThreadUi(roomId, rootEventId))
-    val state: StateFlow<ThreadUi> = _state
+) : BaseController<ThreadUi>(ThreadUi(roomId, rootEventId)) {
 
     init { refresh() }
 
     fun refresh() {
-        scope.launch {
-            _state.value = _state.value.copy(isLoading = true, error = null)
-            val page = runCatching { service.port.threadReplies(roomId, rootEventId, from = null, limit = 60, forward = false) }.getOrElse {
-                _state.value = _state.value.copy(isLoading = false, error = it.message ?: "Failed to load thread")
-                return@launch
+        launch(onError = { updateState { copy(isLoading = false, error = it.message ?: "Failed to load thread") } }) {
+            updateState { copy(isLoading = true, error = null) }
+            val page = service.port.threadReplies(roomId, rootEventId, from = null, limit = 60, forward = false)
+            updateState {
+                copy(
+                    messages = page.messages,
+                    nextBatch = page.nextBatch,
+                    isLoading = false
+                )
             }
-            // Messages are chronological per Rust; just set
-            _state.value = _state.value.copy(
-                messages = page.messages,
-                nextBatch = page.nextBatch,
-                isLoading = false
-            )
         }
     }
 
     fun loadMore() {
-        val token = _state.value.nextBatch ?: return
-        if (_state.value.isLoading) return
-        scope.launch {
-            _state.value = _state.value.copy(isLoading = true)
-            val page = runCatching {
+        val token = currentState.nextBatch ?: return
+        if (currentState.isLoading) return
+
+        launch {
+            updateState { copy(isLoading = true) }
+            val page = runSafe {
                 service.port.threadReplies(roomId, rootEventId, from = token, limit = 60, forward = false)
-            }.getOrNull()
+            }
             if (page != null) {
-                // Prepend older messages (still chronological ordering overall)
-                val merged = (page.messages + _state.value.messages).distinctBy { it.itemId }.sortedBy { it.timestamp }
-                _state.value = _state.value.copy(messages = merged, nextBatch = page.nextBatch, isLoading = false)
+                val merged = (page.messages + currentState.messages)
+                    .distinctBy { it.itemId }
+                    .sortedBy { it.timestamp }
+                updateState { copy(messages = merged, nextBatch = page.nextBatch, isLoading = false) }
             } else {
-                _state.value = _state.value.copy(isLoading = false)
+                updateState { copy(isLoading = false) }
             }
         }
     }
 
     fun react(ev: MessageEvent, emoji: String) {
-        scope.launch {
-            runCatching { service.port.react(_state.value.roomId, ev.eventId, emoji) }
-            // HACK: Wait for auto refresh to show up?
+        launch {
+            runSafe { service.port.react(currentState.roomId, ev.eventId, emoji) }
+            // Refresh to show updated reactions
+            delay(500)
+            refresh()
         }
+    }
+
+    fun startEdit(event: MessageEvent) {
+        updateState { copy(editingEvent = event, editInput = event.body) }
+    }
+
+    fun cancelEdit() {
+        updateState { copy(editingEvent = null, editInput = "") }
+    }
+
+    fun setEditInput(input: String) {
+        updateState { copy(editInput = input) }
+    }
+
+    suspend fun confirmEdit(): Boolean {
+        val editing = currentState.editingEvent ?: return false
+        val newBody = currentState.editInput.trim()
+        if (newBody.isBlank()) return false
+
+        val ok = runSafe { service.edit(roomId, editing.eventId, newBody) } ?: false
+        if (ok) {
+            updateState { copy(editingEvent = null, editInput = "") }
+            refresh()
+        }
+        return ok
+    }
+
+    suspend fun delete(event: MessageEvent): Boolean {
+        val ok = runSafe { service.redact(roomId, event.eventId, null) } ?: false
+        if (ok) refresh()
+        return ok
+    }
+
+    suspend fun retry(event: MessageEvent): Boolean {
+        if (event.body.isBlank()) return false
+
+        val triedPrecise = event.txnId?.let { txn ->
+            runSafe { service.retryByTxn(roomId, txn) } ?: false
+        } ?: false
+
+        if (triedPrecise) {
+            refresh()
+            return true
+        }
+
+        // Fallback: resend the message
+        val ok = runSafe {
+            service.port.sendThreadText(roomId, rootEventId, event.body.trim(), null)
+        } ?: false
+
+        if (ok) refresh()
+        return ok
     }
 }
