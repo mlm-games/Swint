@@ -35,6 +35,7 @@ import org.mlm.mages.ui.util.formatTime
 import org.mlm.mages.ui.util.formatTypingText
 import org.mlm.mages.ui.theme.Spacing
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import org.mlm.mages.ui.components.core.formatDisplayName
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -243,7 +244,7 @@ fun RoomScreen(
                         MessageBubble(
                             isMine = (event.sender == state.myUserId),
                             body = event.body,
-                            sender = event.sender,
+                            sender = formatDisplayName(event.sender),
                             timestamp = event.timestamp,
                             grouped = shouldGroup,
                             reactionChips = chips,

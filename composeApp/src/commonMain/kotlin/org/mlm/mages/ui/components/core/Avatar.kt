@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import org.mlm.mages.ui.theme.Sizes
+import java.util.Locale
 
 /**
  * Unified avatar component reducing duplication across screens.
@@ -103,4 +104,5 @@ fun extractInitials(name: String): String {
  */
 fun formatDisplayName(mxid: String): String {
     return mxid.substringAfter("@").substringBefore(":")
+        .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
 }
