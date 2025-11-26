@@ -260,7 +260,10 @@ fun RoomScreen(
 
                         val tcount = state.threadCount[event.eventId] ?: 0
                         if (tcount > 0) {
-                            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+                            Row(horizontalArrangement =
+                                if (event.sender == state.myUserId) {Arrangement.End} else { Arrangement.Start},
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                            {
                                 TextButton(onClick = { onOpenThread(event) }) { Text("View thread ($tcount)") }
                             }
                         }
@@ -305,7 +308,8 @@ fun RoomScreen(
             onDelete = { onDelete(ev) },
             onReact = { emoji -> onReact(ev, emoji) },
             onMarkReadHere = { onMarkReadHere(ev) },
-            onRetry = { onRetry(ev) }
+            onRetry = { onRetry(ev) },
+            onReplyInThread = { onOpenThread(ev) },
         )
     }
 }

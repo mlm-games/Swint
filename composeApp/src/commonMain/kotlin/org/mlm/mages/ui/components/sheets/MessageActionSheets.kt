@@ -37,7 +37,8 @@ fun MessageActionSheet(
     onDelete: () -> Unit,
     onReact: (String) -> Unit,
     onMarkReadHere: () -> Unit,
-    onRetry: (() -> Unit)? = null
+    onRetry: (() -> Unit)? = null,
+    onReplyInThread: (() -> Unit)? = null
 ) {
     val clipboard = LocalClipboardManager.current
 
@@ -55,6 +56,9 @@ fun MessageActionSheet(
             }
             ActionItem(Icons.Default.ContentCopy, "Copy") { clipboard.setText(AnnotatedString(event.body)); onDismiss() }
             ActionItem(Icons.AutoMirrored.Filled.Reply, "Reply") { onReply(); onDismiss() }
+            if (onReplyInThread != null) {
+                ActionItem(Icons.Default.Forum, "Reply in thread") { onReplyInThread(); onDismiss() }
+            }
             ActionItem(Icons.Default.Bookmark, "Mark as read here") { onMarkReadHere(); onDismiss() }
             if (isMine && event.sendState != SendState.Failed) {
                 ActionItem(Icons.Default.Edit, "Edit") { onEdit(); onDismiss() }
