@@ -1,11 +1,8 @@
 package org.mlm.mages.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -32,12 +29,20 @@ fun SpacesScreen(
     onSelectSpace: (SpaceInfo) -> Unit,
     onCreateSpace: () -> Unit
 ) {
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
+
     val filtered = remember(state.spaces, state.searchQuery) {
         val q = state.searchQuery.trim()
         if (q.isBlank()) state.spaces
-        else state.spaces.filter { 
-            it.name.contains(q, ignoreCase = true) || 
-            it.roomId.contains(q, ignoreCase = true) 
+        else state.spaces.filter {
+            it.name.contains(q, ignoreCase = true) ||
+                    it.roomId.contains(q, ignoreCase = true)
         }
     }
 
@@ -59,7 +64,8 @@ fun SpacesScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -78,20 +84,6 @@ fun SpacesScreen(
                 shape = MaterialTheme.shapes.large
             )
 
-            state.error?.let { error ->
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        error,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(Spacing.md),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
             when {
                 state.isLoading && state.spaces.isEmpty() -> {
                     ShimmerList(modifier = Modifier.fillMaxSize())
@@ -100,9 +92,9 @@ fun SpacesScreen(
                     EmptyState(
                         icon = Icons.Default.Workspaces,
                         title = if (state.searchQuery.isBlank()) "No spaces yet" else "No spaces found",
-                        subtitle = if (state.searchQuery.isBlank()) 
-                            "Create or join a space to organize your rooms" 
-                        else 
+                        subtitle = if (state.searchQuery.isBlank())
+                            "Create or join a space to organize your rooms"
+                        else
                             "No spaces match \"${state.searchQuery}\"",
                         action = if (state.searchQuery.isBlank()) {
                             { Button(onClick = onCreateSpace) { Text("Create Space") } }
@@ -198,7 +190,7 @@ private fun SpaceListItem(
                         )
                     }
                 }
-                
+
                 if (!space.topic.isNullOrBlank()) {
                     Text(
                         space.topic,
@@ -208,7 +200,7 @@ private fun SpaceListItem(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                
+
                 Text(
                     "${space.memberCount} members",
                     style = MaterialTheme.typography.labelSmall,

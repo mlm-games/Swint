@@ -18,7 +18,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.mlm.mages.matrix.SpaceChildInfo
 import org.mlm.mages.matrix.SpaceInfo
-import org.mlm.mages.ui.SpacesUiState
 import org.mlm.mages.ui.components.core.EmptyState
 import org.mlm.mages.ui.theme.Spacing
 
@@ -36,11 +35,19 @@ fun SpaceDetailScreen(
     onOpenChild: (SpaceChildInfo) -> Unit,
     onOpenSettings: () -> Unit
 ) {
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(error) {
+        error?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
+
     // Filter out the space itself from hierarchy
     val children = remember(hierarchy, space.roomId) {
         hierarchy.filter { it.roomId != space.roomId }
     }
-    
+
     // Separate rooms and subspaces
     val (subspaces, rooms) = remember(children) {
         children.partition { it.isSpace }
@@ -79,7 +86,8 @@ fun SpaceDetailScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -89,19 +97,6 @@ fun SpaceDetailScreen(
             // Loading
             AnimatedVisibility(visible = isLoading) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-
-            error?.let {
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        it,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(Spacing.md)
-                    )
-                }
             }
 
             SpaceHeaderCard(space)
@@ -203,9 +198,9 @@ private fun SpaceHeaderCard(space: SpaceInfo) {
                         )
                     }
                 }
-                
+
                 Spacer(Modifier.width(Spacing.lg))
-                
+
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -234,7 +229,7 @@ private fun SpaceHeaderCard(space: SpaceInfo) {
                     )
                 }
             }
-            
+
             if (!space.topic.isNullOrBlank()) {
                 Spacer(Modifier.height(Spacing.md))
                 Text(
@@ -315,9 +310,9 @@ private fun SpaceChildItem(
         } else null,
         leadingContent = {
             Surface(
-                color = if (child.isSpace) 
-                    MaterialTheme.colorScheme.secondaryContainer 
-                else 
+                color = if (child.isSpace)
+                    MaterialTheme.colorScheme.secondaryContainer
+                else
                     MaterialTheme.colorScheme.surfaceVariant,
                 shape = MaterialTheme.shapes.small,
                 modifier = Modifier.size(40.dp)

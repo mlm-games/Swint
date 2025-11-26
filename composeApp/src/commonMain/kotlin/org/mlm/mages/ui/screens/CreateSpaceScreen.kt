@@ -26,6 +26,13 @@ fun CreateSpaceScreen(
     onCreate: () -> Unit
 ) {
     var inviteeInput by remember { mutableStateOf("") }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -37,7 +44,8 @@ fun CreateSpaceScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -74,7 +82,7 @@ fun CreateSpaceScreen(
                 placeholder = { Text("My Awesome Space") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                isError = state.error != null && state.name.isBlank(),
+                isError = state.name.isBlank() && state.error != null,
                 enabled = !state.isCreating
             )
 
@@ -115,9 +123,9 @@ fun CreateSpaceScreen(
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            if (state.isPublic) 
-                                "Anyone can find and join this space" 
-                            else 
+                            if (state.isPublic)
+                                "Anyone can find and join this space"
+                            else
                                 "Only invited users can join",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -187,21 +195,6 @@ fun CreateSpaceScreen(
                             }
                         )
                     }
-                }
-            }
-
-            state.error?.let { error ->
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        error,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(Spacing.md),
-                        style = MaterialTheme.typography.bodySmall
-                    )
                 }
             }
 
