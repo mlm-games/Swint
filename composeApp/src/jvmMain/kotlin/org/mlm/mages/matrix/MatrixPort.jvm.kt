@@ -490,22 +490,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         eventId: String,
     ): Boolean = client.markFullyReadAt(roomId, eventId)
 
-    override suspend fun renderNotification(
-        roomId: String,
-        eventId: String,
-    ): RenderedNotification? =
-        client.fetchNotification(roomId, eventId)?.let {
-            RenderedNotification(
-                roomId = it.roomId,
-                eventId = it.eventId,
-                roomName = it.roomName,
-                sender = it.sender,
-                body = it.body,
-                isNoisy = it.isNoisy,
-                hasMention = it.hasMention,
-            )
-        }
-
     override suspend fun encryptionCatchupOnce(): Boolean = client.encryptionCatchupOnce()
 
     override fun observeRoomList(observer: MatrixPort.RoomListObserver): ULong {

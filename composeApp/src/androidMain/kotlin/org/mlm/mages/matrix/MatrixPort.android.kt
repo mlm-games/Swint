@@ -11,7 +11,6 @@ import org.mlm.mages.AttachmentInfo
 import org.mlm.mages.AttachmentKind
 import mages.Client as FfiClient
 import mages.RoomSummary as FfiRoom
-import mages.MessageEvent as FfiEvent
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.platform.MagesPaths
@@ -55,29 +54,31 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.recentEvents(roomId, limit.toUInt()).map { it.toModel() }
 
     override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
-        val obs = object : mages.TimelineDiffObserver {
-            override fun onInsert(event: mages.MessageEvent) {
-                trySendBlocking(TimelineDiff.Insert(event.toModel()))
+        val obs = object : mages.TimelineObserver {
+            override fun onDiff(diff: mages.TimelineDiffKind) {
+                val mapped: TimelineDiff<MessageEvent> = when (diff) {
+                    is mages.TimelineDiffKind.Reset -> TimelineDiff.Reset(diff.values.map { it.toModel() })
+                    is mages.TimelineDiffKind.Clear -> TimelineDiff.Clear
+                    is mages.TimelineDiffKind.Append -> {
+                        diff.values.forEach { trySendBlocking(TimelineDiff.Insert(it.toModel())) }
+                        return
+                    }
+                    is mages.TimelineDiffKind.PushBack -> TimelineDiff.Insert(diff.value.toModel())
+                    is mages.TimelineDiffKind.PushFront -> TimelineDiff.Insert(diff.value.toModel())
+                    is mages.TimelineDiffKind.Insert -> TimelineDiff.Insert(diff.value.toModel())
+                    is mages.TimelineDiffKind.Set -> TimelineDiff.Update(diff.value.toModel())
+                    is mages.TimelineDiffKind.Remove -> TimelineDiff.Remove(diff.index.toString())
+                    is mages.TimelineDiffKind.PopFront -> return // handled by Remove
+                    is mages.TimelineDiffKind.PopBack -> return
+                    is mages.TimelineDiffKind.Truncate -> return
+                }
+                trySendBlocking(mapped)
             }
-
-            override fun onUpdate(event: mages.MessageEvent) {
-                trySendBlocking(TimelineDiff.Update(event.toModel()))
-            }
-
-            override fun onRemove(itemId: String) {
-                trySendBlocking(TimelineDiff.Remove(itemId))
-            } // was eventId
-
-            override fun onClear() {
-                trySendBlocking(TimelineDiff.Clear)
-            }
-
-            override fun onReset(events: List<mages.MessageEvent>) {
-                trySendBlocking(TimelineDiff.Reset(events.map { it.toModel() }))
-            }
+            override fun onError(message: String) { /* log */ }
         }
-        val subId: ULong = client.observeRoomTimelineDiffs(roomId, obs)
-        awaitClose { client.unobserveRoomTimeline(subId) }
+
+        val token = client.observeTimeline(roomId, obs)
+        awaitClose { client.unobserveTimeline(token) }
     }
 
     override fun observeConnection(observer: MatrixPort.ConnectionObserver): ULong {
@@ -123,8 +124,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
         client.enqueueText(roomId, body, txnId)
-
-    override fun startSendWorker() = client.startSendWorker()
 
     override fun observeSends(): Flow<SendUpdate> = callbackFlow {
         val obs = object : mages.SendObserver {
@@ -311,7 +310,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 observer.onPhase(flowId, phase.toCommon())
             }
 
-            override fun onEmojis(payload: mages.SasEmojis) {
+            override fun onEmojis(payload: SasEmojis) {
                 observer.onEmojis(
                     payload.flowId,
                     payload.otherUser,
@@ -326,33 +325,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
         return client.startUserSas(userId, obs)
     }
-
-//    override suspend fun startVerification(
-//        targetUser: String,
-//        targetDevice: String,
-//        observer: VerificationObserver
-//    ): Boolean {
-//        val cb = object : mages.VerificationObserver {
-//            override fun onPhase(flowId: String, phase: mages.SasPhase) {
-//                observer.onPhase(flowId, when (phase) {
-//                    mages.SasPhase.REQUESTED -> SasPhase.Requested
-//                    mages.SasPhase.READY -> SasPhase.Ready
-//                    mages.SasPhase.EMOJIS -> SasPhase.Emojis
-//                    mages.SasPhase.CONFIRMED -> SasPhase.Confirmed
-//                    mages.SasPhase.CANCELLED -> SasPhase.Cancelled
-//                    mages.SasPhase.FAILED -> SasPhase.Failed
-//                    mages.SasPhase.DONE -> SasPhase.Done
-//                })
-//            }
-//            override fun onEmojis(payload: SasEmojis) {
-//                observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
-//            }
-//            override fun onError(flowId: String, message: String) {
-//                observer.onError(flowId, message)
-//            }
-//        }
-//        return client.startVerification(targetUser, targetDevice, cb)
-//    }
 
     override suspend fun acceptVerification(
         flowId: String,
@@ -408,11 +380,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override suspend fun logout(): Boolean = client.logout()
-    override suspend fun cancelTxn(txnId: String): Boolean =
-        client.cancelTxn(txnId)
-
-    override suspend fun retryTxnNow(txnId: String): Boolean =
-        client.retryTxnNow(txnId)
 
     override suspend fun retryByTxn(roomId: String, txnId: String): Boolean {
         return client.retryByTxn(roomId, txnId)
@@ -424,9 +391,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
     ): Result<String> {
         return runCatching { client.downloadToCacheFile(mxcUri, filenameHint).path }
     }
-
-    override suspend fun pendingSends(): UInt =
-        client.pendingSends()
 
     override suspend fun checkVerificationRequest(userId: String, flowId: String): Boolean =
         client.checkVerificationRequest(userId, flowId)
@@ -530,7 +494,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         roomId: String,
         eventId: String,
     ): RenderedNotification? =
-        client.renderNotification(roomId, eventId)?.let {
+        client.fetchNotification(roomId, eventId)?.let {
             RenderedNotification(
                 roomId = it.roomId,
                 eventId = it.eventId,
@@ -725,7 +689,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun isSpace(roomId: String): Boolean {
         return try {
             client.isSpace(roomId)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -742,7 +706,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                     isPublic = space.isPublic
                 )
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -755,7 +719,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     ): String? {
         return try {
             client.createSpace(name, topic, isPublic, invitees)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -769,7 +733,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return try {
             client.spaceAddChild(spaceId, childRoomId, order, suggested)
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -781,7 +745,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return try {
             client.spaceRemoveChild(spaceId, childRoomId)
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -818,7 +782,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 },
                 nextBatch = page.nextBatch
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -826,35 +790,51 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean {
         return try {
             client.spaceInviteUser(spaceId, userId)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
-private fun FfiEvent.toModel() = MessageEvent(
+
+private fun mages.MessageEvent.toModel() = MessageEvent(
     itemId = itemId,
     eventId = eventId,
     roomId = roomId,
     sender = sender,
     body = body,
     timestamp = timestampMs.toLong(),
+    sendState = sendState?.toKotlin(),
     txnId = txnId,
-    attachment = attachment?.let {
-        AttachmentInfo(
-            kind = when (it.kind) {
-                mages.AttachmentKind.IMAGE -> AttachmentKind.Image
-                mages.AttachmentKind.VIDEO -> AttachmentKind.Video
-                mages.AttachmentKind.FILE -> AttachmentKind.File
-            },
-            mxcUri = it.mxcUri,
-            thumbnailMxcUri = it.thumbnailMxcUri,
-            mime = it.mime,
-            durationMs = it.durationMs?.toLong()
-        )
-    },
+    replyToEventId = replyToEventId,
+    replyToSender = replyToSender,
+    replyToBody = replyToBody,
+    attachment = attachment?.toModel(),
     threadRootEventId = threadRootEventId
+)
+
+private fun mages.SendState.toKotlin(): SendState = when (this) {
+    mages.SendState.SENDING -> SendState.Sending
+    mages.SendState.SENT -> SendState.Sent
+    mages.SendState.FAILED -> SendState.Failed
+    mages.SendState.ENQUEUED -> SendState.Enqueued
+    mages.SendState.RETRYING -> SendState.Retrying
+}
+
+private fun mages.AttachmentInfo.toModel() = AttachmentInfo(
+    kind = when (kind) {
+        mages.AttachmentKind.IMAGE -> AttachmentKind.Image
+        mages.AttachmentKind.VIDEO -> AttachmentKind.Video
+        mages.AttachmentKind.FILE -> AttachmentKind.File
+    },
+    mxcUri = mxcUri,
+    mime = mime,
+    sizeBytes = sizeBytes?.toLong(),
+    width = width?.toInt(),
+    height = height?.toInt(),
+    durationMs = durationMs?.toLong(),
+    thumbnailMxcUri = thumbnailMxcUri
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)

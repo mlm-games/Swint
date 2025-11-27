@@ -124,7 +124,7 @@ class NotificationService : Service() {
 
                 val rn =
                     runCatching {
-                        service.port.renderNotification(roomId, eventId)
+                        service.port.fetchNotification(roomId, eventId)
                     }.getOrNull()
 
                 if (rn != null) {

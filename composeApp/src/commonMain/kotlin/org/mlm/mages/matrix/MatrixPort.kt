@@ -238,7 +238,6 @@ interface MatrixPort {
     fun observeOwnReceipt(roomId: String, observer: ReceiptsObserver): ULong
     suspend fun markFullyReadAt(roomId: String, eventId: String): Boolean
 
-    suspend fun renderNotification(roomId: String, eventId: String): RenderedNotification?
 
     suspend fun encryptionCatchupOnce(): Boolean
 
