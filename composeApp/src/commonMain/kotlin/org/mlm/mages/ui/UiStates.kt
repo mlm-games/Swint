@@ -24,7 +24,7 @@ data class RoomsUiState(
     val offlineBanner: String? = null,
     val syncBanner: String? = null,
     val unreadOnly: Boolean = false,
-    val isBusy: Boolean = false,
+    val isLoading: Boolean = false,
     val error: String? = null,
 
     val lastActivity: Map<String, Long> = emptyMap(),

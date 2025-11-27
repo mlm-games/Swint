@@ -62,7 +62,7 @@ interface LoadableState {
  */
 inline fun <reified S> S.withLoading(loading: Boolean): S where S : LoadableState {
     return when (this) {
-        is org.mlm.mages.ui.RoomsUiState -> copy(isBusy = loading, error = null) as S
+        is org.mlm.mages.ui.RoomsUiState -> copy(isLoading = loading, error = null) as S
         is org.mlm.mages.ui.SecurityUiState -> copy(isLoadingDevices = loading, error = null) as S
         is org.mlm.mages.ui.controller.RoomInfoUiState -> copy(isLoading = loading, error = null) as S
         is org.mlm.mages.ui.controller.ThreadUi -> copy(isLoading = loading, error = null) as S

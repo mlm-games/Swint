@@ -3911,66 +3911,98 @@ fn map_tl_item(item: &UiTimelineItem, room_id: &OwnedRoomId_Tl) -> Option<TlMess
 
     let content = ev.content();
 
-    let thread_root = content.thread_root().map(|eid| eid.to_string()); // docs: thread_root() -> Option<OwnedEventId>. <!--citation:1-->
+    let thread_root = content.thread_root().map(|eid| eid.to_string());
 
     let mut reply_to_event_id = None;
     let mut reply_to_sender = None;
     let mut reply_to_body = None;
-    if let Some(ird) = content.in_reply_to() {
-        reply_to_event_id = Some(ird.event_id.to_string());
-        if let TimelineDetails::Ready(embed) = &ird.event {
-            reply_to_sender = Some(embed.sender.to_string());
-            if let Some(m) = embed.content.as_message() {
-                reply_to_body = Some(m.body().to_owned());
-            }
-        }
-    }
-
-    let mut body = String::new();
     let mut attachment_mxc = None;
     let mut attachment_kind = None;
     let mut duration = None;
     let mut width = None;
     let mut height = None;
+    let body: String;
 
-    if let Some(msg) = content.as_message() {
-        body = msg.body().to_owned();
-
-        match msg.msgtype() {
-            MT::Image(c) => {
-                attachment_mxc = tl_mxc_from_source(&c.source);
-                attachment_kind = Some("Image".into());
-                if let Some(info) = &c.info {
-                    width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
-                    height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
-                }
-            }
-            MT::Video(c) => {
-                attachment_mxc = tl_mxc_from_source(&c.source);
-                attachment_kind = Some("Video".into());
-                if let Some(info) = &c.info {
-                    width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
-                    height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
-                    if let Some(d) = info.duration {
-                        duration = Some(d.as_millis() as u64);
+    match ev.content() {
+        TimelineItemContent::MsgLike(ml) => {
+            if let Some(details) = &ml.in_reply_to {
+                reply_to_event_id = Some(details.event_id.to_string());
+                if let TimelineDetails::Ready(embed) = &details.event {
+                    reply_to_sender = Some(embed.sender.to_string());
+                    if let Some(m) = embed.content.as_message() {
+                        reply_to_body = Some(m.body().to_owned());
                     }
                 }
             }
-            MT::File(c) => {
-                attachment_mxc = tl_mxc_from_source(&c.source);
-                attachment_kind = Some("File".into());
-            }
-            _ => {}
-        }
 
-        if body.trim().is_empty() {
-            body = "Encrypted or unsupported message.".into();
+            if let Some(msg) = ml.as_message() {
+                let raw_body = msg.body().to_owned();
+
+                match msg.msgtype() {
+                    MT::Image(c) => {
+                        attachment_mxc = tl_mxc_from_source(&c.source);
+                        attachment_kind = Some("Image".into());
+                        if let Some(info) = &c.info {
+                            width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
+                            height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
+                        }
+                    }
+                    MT::Video(c) => {
+                        attachment_mxc = tl_mxc_from_source(&c.source);
+                        attachment_kind = Some("Video".into());
+                        if let Some(info) = &c.info {
+                            width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
+                            height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
+                            if let Some(d) = info.duration {
+                                duration = Some(d.as_millis() as u64);
+                            }
+                        }
+                    }
+                    MT::File(c) => {
+                        attachment_mxc = tl_mxc_from_source(&c.source);
+                        attachment_kind = Some("File".into());
+                    }
+                    _ => {}
+                }
+
+                let mut text = if reply_to_event_id.is_some() {
+                    strip_reply_fallback(&raw_body)
+                } else if raw_body.trim().is_empty() {
+                    "Encrypted or unsupported message.".to_owned()
+                } else {
+                    raw_body
+                };
+
+                if msg.is_edited() {
+                    text.push_str(" \n(edited)");
+                }
+                body = text;
+            } else {
+                // Non-message MsgLike (sticker, poll, redacted, etc.)
+                body = tl_render_msg_like(ml);
+            }
         }
-        if msg.is_edited() {
-            body.push_str(" \n(edited)");
+        TimelineItemContent::MembershipChange(change) => {
+            body = tl_render_membership_change(ev, change);
         }
-    } else {
-        body = "Event".into();
+        TimelineItemContent::ProfileChange(change) => {
+            body = tl_render_profile_change(ev, change);
+        }
+        TimelineItemContent::OtherState(state) => {
+            body = tl_render_other_state(ev, state);
+        }
+        TimelineItemContent::FailedToParseMessageLike { event_type, .. } => {
+            body = format!("Unsupported message-like event: {}", event_type);
+        }
+        TimelineItemContent::FailedToParseState { event_type, .. } => {
+            body = format!("Unsupported state event: {}", event_type);
+        }
+        TimelineItemContent::CallInvite => {
+            body = "Started a call".to_string();
+        }
+        TimelineItemContent::CallNotify => {
+            body = "Call notification".to_string();
+        }
     }
 
     Some(TlMessageDto {
@@ -3992,6 +4024,111 @@ fn map_tl_item(item: &UiTimelineItem, room_id: &OwnedRoomId_Tl) -> Option<TlMess
         height,
         thread_root_event_id: thread_root,
     })
+}
+
+fn tl_render_msg_like(ml: &MsgLikeContent) -> String {
+    use MsgLikeKind::*;
+    match &ml.kind {
+        Message(m) => {
+            let mut s = m.body().to_owned();
+            if s.trim().is_empty() {
+                s = "Encrypted or unsupported message.".to_owned();
+            }
+            if m.is_edited() {
+                s.push_str(" \n(edited)");
+            }
+            s
+        }
+        Sticker(_) => "sent a sticker".to_string(),
+        Poll(_) => "started a poll".to_string(),
+        Redacted => "Message deleted".to_string(),
+        UnableToDecrypt(_) => "Unable to decrypt this message".to_string(),
+    }
+}
+
+fn tl_render_membership_change(
+    ev: &UiEventTimelineItem,
+    ch: &matrix_sdk_ui::timeline::RoomMembershipChange,
+) -> String {
+    use matrix_sdk_ui::timeline::MembershipChange as MC;
+
+    let actor = ev.sender().to_string();
+    let subject = ch.user_id().to_string();
+
+    match ch.change() {
+        Some(MC::Joined) => format!("{subject} joined the room"),
+        Some(MC::Left) => format!("{subject} left the room"),
+        Some(MC::Invited) => format!("{actor} invited {subject}"),
+        Some(MC::Kicked) => format!("{actor} removed {subject}"),
+        Some(MC::Banned) => format!("{actor} banned {subject}"),
+        Some(MC::Unbanned) => format!("{actor} unbanned {subject}"),
+        Some(MC::InvitationAccepted) => format!("{subject} accepted the invite"),
+        Some(MC::InvitationRejected) => format!("{subject} rejected the invite"),
+        Some(MC::InvitationRevoked) => format!("{actor} revoked the invite for {subject}"),
+        Some(MC::KickedAndBanned) => format!("{actor} removed and banned {subject}"),
+        Some(MC::Knocked) => format!("{subject} knocked"),
+        Some(MC::KnockAccepted) => format!("{actor} accepted {subject}"),
+        Some(MC::KnockDenied) => format!("{actor} denied {subject}"),
+        _ => format!("{subject} updated membership"),
+    }
+}
+
+fn tl_render_profile_change(
+    _ev: &UiEventTimelineItem,
+    pc: &matrix_sdk_ui::timeline::MemberProfileChange,
+) -> String {
+    let subject = pc.user_id().to_string();
+
+    if let Some(ch) = pc.displayname_change() {
+        match (&ch.old, &ch.new) {
+            (None, Some(new)) => return format!("{subject} set their display name to '{new}'"),
+            (Some(old), Some(new)) if old != new => {
+                return format!("{subject} changed their display name from '{old}' to '{new}'");
+            }
+            (Some(_), None) => return format!("{subject} removed their display name"),
+            _ => {}
+        }
+    }
+
+    if pc.avatar_url_change().is_some() {
+        return format!("{subject} updated their avatar");
+    }
+
+    format!("{subject} updated their profile")
+}
+
+fn tl_render_other_state(
+    ev: &UiEventTimelineItem,
+    s: &matrix_sdk_ui::timeline::OtherState,
+) -> String {
+    use matrix_sdk_ui::timeline::AnyOtherFullStateEventContent as A;
+
+    let actor = ev.sender().to_string();
+    match s.content() {
+        A::RoomName(c) => {
+            let mut name = "";
+            if let ruma::events::FullStateEventContent::Original { content, .. } = c {
+                name = &content.name;
+            }
+            format!("{actor} changed the room name to {name}")
+        }
+        A::RoomTopic(c) => {
+            let mut topic = "";
+            if let ruma::events::FullStateEventContent::Original { content, .. } = c {
+                topic = &content.topic;
+            }
+            format!("{actor} changed the topic to {topic}")
+        }
+        A::RoomAvatar(_) => format!("{actor} changed the room avatar"),
+        A::RoomEncryption(_) => "Encryption enabled for this room".to_string(),
+        A::RoomPinnedEvents(_) => format!("{actor} updated pinned events"),
+        A::RoomPowerLevels(_) => format!("{actor} changed power levels"),
+        A::RoomCanonicalAlias(_) => format!("{actor} changed the main address"),
+        _ => {
+            let ty = s.content().event_type().to_string();
+            format!("{actor} updated state: {ty}")
+        }
+    }
 }
 
 fn tl_mxc_from_source(src: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {

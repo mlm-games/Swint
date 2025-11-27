@@ -50,7 +50,7 @@ fun RoomsScreen(
                 TopAppBar(
                     title = { Text("Rooms", fontWeight = FontWeight.SemiBold) },
                     actions = {
-                        IconButton(enabled = !state.isBusy, onClick = onRefresh) {
+                        IconButton(onClick = onRefresh, enabled = !state.isLoading) {
                             Icon(Icons.Default.Refresh, "Refresh")
                         }
                         IconButton(onClick = onOpenSpaces) { Icon(Icons.Default.Workspaces, "Spaces") }
@@ -96,7 +96,11 @@ fun RoomsScreen(
                     }
                 }
 
-                // Search
+                if (state.isLoading && state.rooms.isNotEmpty()) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+
+                    // Search
                 OutlinedTextField(
                     value = state.roomSearchQuery,
                     onValueChange = onSearch,
@@ -126,8 +130,8 @@ fun RoomsScreen(
         }
     ) { innerPadding ->
         when {
-            state.isBusy && state.rooms.isEmpty() -> {
-                ShimmerList(modifier = Modifier.padding(innerPadding))
+            state.isLoading && state.rooms.isEmpty() -> {
+                ShimmerList(modifier = Modifier.fillMaxSize())
             }
             filtered.isEmpty() -> {
                 EmptyState(

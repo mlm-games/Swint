@@ -41,6 +41,14 @@ fun App(
             })
         }
 
+        val roomsController = remember(service, dataStore) {
+            RoomsController(
+                service = service,
+                dataStore = dataStore,
+                onOpenRoom = { room -> nav.push(Route.Room(room.id, room.name)) }
+            )
+        }
+
         val openUrl = rememberOpenBrowser()
 
         Scaffold(
@@ -81,21 +89,14 @@ fun App(
                     }
 
                     Route.Rooms -> {
-                        val controller = remember {
-                            RoomsController(
-                                service,
-                                dataStore = dataStore,
-                                onOpenRoom = { room -> nav.push(Route.Room(room.id, room.name)) }
-                            )
-                        }
-                        val ui by controller.state.collectAsState()
+                        val ui by roomsController.state.collectAsState()
                         RoomsScreen(
                             state = ui,
-                            onRefresh = controller::refreshRooms,
-                            onSearch = controller::setSearchQuery,
-                            onOpen = { controller.open(it) },
+                            onRefresh = roomsController::refreshRooms,
+                            onSearch = roomsController::setSearchQuery,
+                            onOpen = { roomsController.open(it) },
                             onOpenSecurity = { nav.push(Route.Security) },
-                            onToggleUnreadOnly = { controller.toggleUnreadOnly() },
+                            onToggleUnreadOnly = { roomsController.toggleUnreadOnly() },
                             onOpenDiscover = { nav.push(Route.Discover) },
                             onOpenInvites = { nav.push(Route.Invites) },
                             onOpenCreateRoom = { showCreateRoom = true },

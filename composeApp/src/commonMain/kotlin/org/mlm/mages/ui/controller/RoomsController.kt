@@ -8,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -27,11 +28,12 @@ class RoomsController(
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private val _state = MutableStateFlow(RoomsUiState())
+    private val _state = MutableStateFlow(RoomsUiState(isLoading = true))
     val state: StateFlow<RoomsUiState> = _state
 
     private var connToken: ULong? = null
     private var roomListToken: ULong? = null
+    private var initialized = false
 
     init {
         observeConnection()
@@ -42,14 +44,15 @@ class RoomsController(
         roomListToken?.let { service.port.unobserveRoomList(it) }
         roomListToken = service.port.observeRoomList(object : MatrixPort.RoomListObserver {
             override fun onReset(items: List<MatrixPort.RoomListEntry>) {
-                // Trust SDK-supplied unread values on reset for snappy UI
                 _state.update {
                     it.copy(
                         rooms = items.map { e -> RoomSummary(e.roomId, e.name) },
                         unread = items.associate { e -> e.roomId to e.unread.toInt() },
-                        lastActivity = items.associate { e -> e.roomId to e.lastTs }
+                        lastActivity = items.associate { e -> e.roomId to e.lastTs },
+                        isLoading = false
                     )
                 }
+                initialized = true
 
                 scope.launch {
                     val zeros = items.filter { it.unread.toInt() == 0 }.take(20)
@@ -80,9 +83,9 @@ class RoomsController(
                     }
                     st.copy(
                         rooms = updatedRooms,
-                        // Prefer SDK figure; refine later only if it is 0 (to avoid flapping)
                         unread = st.unread.toMutableMap().apply { put(item.roomId, item.unread.toInt()) },
-                        lastActivity = st.lastActivity.toMutableMap().apply { put(item.roomId, item.lastTs) }
+                        lastActivity = st.lastActivity.toMutableMap().apply { put(item.roomId, item.lastTs) },
+                        isLoading = false
                     )
                 }
 
@@ -99,6 +102,14 @@ class RoomsController(
                 }
             }
         })
+
+        // Timeout fallback
+        scope.launch {
+            delay(5000)
+            if (!initialized) {
+                _state.update { it.copy(isLoading = false) }
+            }
+        }
     }
 
     fun toggleUnreadOnly() {
@@ -123,19 +134,11 @@ class RoomsController(
         })
     }
 
-    private fun refreshActivityLight() {
-        val rooms = _state.value.rooms
-        if (rooms.isEmpty()) return
-        // (refreshes first 20 for now)
-        val top = rooms.take(20)
-        fillLastActivityBackground(top)
-    }
-
     fun refreshRooms() {
         scope.launch {
-            _state.update { it.copy(isBusy = true, error = null) }
+            _state.update { it.copy(isLoading = true, error = null) }
             val rooms = runCatching { service.listRooms() }.getOrElse {
-                _state.update { s -> s.copy(isBusy = false, error = "Failed to load rooms: ${it.message}") }
+                _state.update { s -> s.copy(isLoading = false, error = "Failed to load rooms: ${it.message}") }
                 return@launch
             }
 
@@ -152,33 +155,27 @@ class RoomsController(
                 it.copy(
                     rooms = rooms,
                     lastActivity = cachedActivity,
-                    isBusy = false
+                    isLoading = false
                 )
             }
 
-            // Batch compute unread counts, background, replaces zeros first.
             val unreadMap = withContext(Dispatchers.IO) {
                 coroutineScope {
                     rooms.map { room ->
                         async {
                             val cnt = runCatching {
                                 service.port.roomUnreadStats(room.id)?.messages?.toInt() ?: 0
-                            }
-                                .getOrDefault(0)
+                            }.getOrDefault(0)
                             room.id to cnt
                         }
                     }.associate { it.await() }
                 }
             }
 
-            val lastActivityMap = _state.value.lastActivity
-
             _state.update {
                 it.copy(
                     rooms = rooms,
-                    unread = unreadMap,
-                    lastActivity = lastActivityMap,
-                    isBusy = false
+                    unread = unreadMap
                 )
             }
 
@@ -198,8 +195,7 @@ class RoomsController(
                 async {
                     sem.acquire()
                     try {
-                        val recent =
-                            runCatching { service.loadRecent(room.id, 1) }.getOrElse { emptyList() }
+                        val recent = runCatching { service.loadRecent(room.id, 1) }.getOrElse { emptyList() }
                         val ts = recent.firstOrNull()?.timestamp ?: 0L
                         if (ts > 0) {
                             runCatching { saveLong(dataStore, actKey(room.id), ts) }
