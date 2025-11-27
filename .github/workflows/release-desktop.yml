@@ -1,6 +1,12 @@
+name: Desktop Releases
+
 on:
   workflow_dispatch:
     inputs:
+      version_tag:
+        description: 'Version tag (e.g., 0.9.2)'
+        required: true
+        type: string
       mark_prerelease:
         description: "Mark as prerelease"
         required: true
@@ -12,7 +18,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-release-${{ inputs.version_tag }}
   cancel-in-progress: false
 
 env:
@@ -27,7 +33,9 @@ jobs:
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.version_tag }}  # Checkout the tag
 
       - uses: actions/setup-java@v5
         with:
@@ -95,7 +103,7 @@ jobs:
             ln -sf lib/Mages.png "$APPDIR/mages.png"
             ln -sf lib/Mages.png "$APPDIR/.DirIcon"
             
-            ARCH=${{ matrix.arch }} appimagetool "$APPDIR" "dist/mages-${{ github.ref_name }}-${{ matrix.arch }}.AppImage"
+            ARCH=${{ matrix.arch }} appimagetool "$APPDIR" "dist/mages-${{ inputs.version_tag }}-${{ matrix.arch }}.AppImage"
           fi
 
       - name: Collect desktop artifacts
@@ -123,10 +131,9 @@ jobs:
       - name: Create / Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          prerelease: ${{ github.event.inputs.mark_prerelease }}
-          generate_release_notes: true
+          tag_name: ${{ inputs.version_tag }}
+          name: ${{ inputs.version_tag }}
+          prerelease: ${{ inputs.mark_prerelease }}
           files: dist/*
 
       - name: Dispatch aur-upload.yml
@@ -140,7 +147,7 @@ jobs:
               workflow_id: 'aur-upload.yml',
               ref: 'main',
               inputs: {
-                version_name: '${{ github.ref_name }}'
+                version_name: '${{ inputs.version_tag }}'
               }
             });
-            core.info('Triggered AUR upload for ${{ github.ref_name }}');
+            core.info('Triggered AUR upload for ${{ inputs.version_tag }}');
