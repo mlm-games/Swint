@@ -1,16 +1,18 @@
 package org.mlm.mages.ui.screens
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.ui.RoomsUiState
 import org.mlm.mages.ui.components.common.RoomListItem
@@ -32,16 +34,43 @@ fun RoomsScreen(
     onOpenCreateRoom: () -> Unit,
     onOpenSpaces: () -> Unit,
 ) {
-    val filtered = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    // Sort rooms by recency (last activity) with unread at top
+    val sortedRooms = remember(state.rooms, state.unread, state.lastActivity) {
+        state.rooms.sortedWith(
+            compareByDescending<RoomSummary> { (state.unread[it.id] ?: 0) > 0 }
+                .thenByDescending { state.lastActivity[it.id] ?: 0L }
+        )
+    }
+
+    val filtered = remember(sortedRooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
         val q = state.roomSearchQuery.trim()
-        var list = if (q.isBlank()) state.rooms
-        else state.rooms.filter {
+        var list = if (q.isBlank()) sortedRooms
+        else sortedRooms.filter {
             it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true)
         }
         if (state.unreadOnly) {
             list = list.filter { (state.unread[it.id] ?: 0) > 0 }
         }
         list
+    }
+
+    // Scroll to top when first room changes (new unread activity)
+    val firstRoomId = filtered.firstOrNull()?.id
+    LaunchedEffect(firstRoomId) {
+        if (firstRoomId != null && listState.firstVisibleItemIndex > 0) {
+            listState.animateScrollToItem(0)
+        }
+    }
+
+    // Show FAB when not at top and there's unread activity
+    val showScrollToTopFab by remember(listState, filtered, state.unread) {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > 2 &&
+                    filtered.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true
+        }
     }
 
     Scaffold(
@@ -100,7 +129,7 @@ fun RoomsScreen(
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
 
-                    // Search
+                // Search
                 OutlinedTextField(
                     value = state.roomSearchQuery,
                     onValueChange = onSearch,
@@ -127,11 +156,28 @@ fun RoomsScreen(
                     )
                 }
             }
+        },
+        floatingActionButton = {
+            AnimatedVisibility(
+                visible = showScrollToTopFab,
+                enter = scaleIn() + fadeIn(),
+                exit = scaleOut() + fadeOut()
+            ) {
+                ExtendedFloatingActionButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) {
+                    Icon(Icons.Default.KeyboardArrowUp, "Scroll to top")
+                    Spacer(Modifier.width(8.dp))
+                    Text("New activity")
+                }
+            }
         }
     ) { innerPadding ->
         when {
             state.isLoading && state.rooms.isEmpty() -> {
-                ShimmerList(modifier = Modifier.fillMaxSize())
+                ShimmerList(modifier = Modifier.fillMaxSize().padding(innerPadding))
             }
             filtered.isEmpty() -> {
                 EmptyState(
@@ -146,10 +192,11 @@ fun RoomsScreen(
             }
             else -> {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize().padding(innerPadding),
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
-                    items(filtered.reversed(), key = { it.id }) { room ->
+                    items(filtered, key = { it.id }) { room ->
                         RoomListItem(
                             room = room,
                             unreadCount = state.unread[room.id] ?: 0,

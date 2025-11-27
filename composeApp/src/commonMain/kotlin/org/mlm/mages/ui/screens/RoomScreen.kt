@@ -82,6 +82,12 @@ fun RoomScreen(
         if (isNearBottom) onMarkReadHere(last)
     }
 
+    LaunchedEffect(events.size) {
+        if (isNearBottom && events.isNotEmpty()) {
+            listState.animateScrollToItem(events.lastIndex)
+        }
+    }
+
     Scaffold(
         topBar = {
             Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
