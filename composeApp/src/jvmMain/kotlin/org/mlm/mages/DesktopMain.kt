@@ -1,3 +1,5 @@
+@file:Suppress("AssignedValueIsNeverRead")
+
 package org.mlm.mages
 
 import androidx.compose.runtime.DisposableEffect
