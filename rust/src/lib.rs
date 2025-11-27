@@ -579,6 +579,38 @@ macro_rules! unsub {
     }};
 }
 
+macro_rules! with_room_async {
+    ($self:expr, $room_id:expr, $body:expr) => {{
+        RT.block_on(async {
+            let rid = match OwnedRoomId::try_from($room_id) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let room = match $self.inner.get_room(&rid) {
+                Some(r) => r,
+                None => return false,
+            };
+            $body(room, rid).await
+        })
+    }};
+}
+
+macro_rules! with_timeline_async {
+    ($self:expr, $room_id:expr, $body:expr) => {{
+        RT.block_on(async {
+            let rid = match OwnedRoomId::try_from($room_id) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let tl = match get_timeline_for(&$self.inner, &rid).await {
+                Some(t) => t,
+                None => return false,
+            };
+            $body(tl, rid).await
+        })
+    }};
+}
+
 #[export]
 impl Client {
     #[uniffi::constructor]
@@ -830,14 +862,7 @@ impl Client {
     }
 
     pub fn set_typing(&self, room_id: String, typing: bool) -> bool {
-        RT.block_on(async {
-            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
-                return false;
-            };
-            let Some(room) = self.inner.get_room(&rid) else {
-                return false;
-            };
-            // Typing notice stays active ~4s server-side; safe to debounce on client.
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
             room.typing_notice(typing).await.is_ok()
         })
     }
@@ -1009,12 +1034,7 @@ impl Client {
     }
 
     pub fn unobserve_verification_inbox(&self, sub_id: u64) -> bool {
-        if let Some(h) = self.inbox_subs.lock().unwrap().remove(&sub_id) {
-            h.abort();
-            true
-        } else {
-            false
-        }
+        unsub!(self, inbox_subs, sub_id)
     }
 
     pub fn check_verification_request(&self, user_id: String, flow_id: String) -> bool {
@@ -1075,12 +1095,7 @@ impl Client {
     }
 
     pub fn unobserve_connection(&self, sub_id: u64) -> bool {
-        if let Some(h) = self.connection_subs.lock().unwrap().remove(&sub_id) {
-            h.abort();
-            true
-        } else {
-            false
-        }
+        unsub!(self, connection_subs, sub_id)
     }
 
     pub fn observe_sends(&self, observer: Box<dyn SendObserver>) -> u64 {
@@ -1168,21 +1183,8 @@ impl Client {
     }
 
     pub fn mark_read(&self, room_id: String) -> bool {
-        RT.block_on(async {
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
-                return false;
-            };
-            let Some(room) = self.inner.get_room(&room_id) else {
-                return false;
-            };
-            let Ok(tl) = room.timeline().await else {
-                return false;
-            };
-            // Use the UI helper
-            match tl.mark_as_read(ReceiptType::Read).await {
-                Ok(_) => true, // success even if no new receipt was sent
-                Err(_) => false,
-            }
+        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+            tl.mark_as_read(ReceiptType::Read).await.is_ok()
         })
     }
 
@@ -1298,104 +1300,66 @@ impl Client {
     }
 
     pub fn react(&self, room_id: String, event_id: String, emoji: String) -> bool {
-        RT.block_on(async {
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
+        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+            let Ok(eid) = EventId::parse(&event_id) else {
                 return false;
             };
-            let Ok(eid) = EventId::parse(event_id) else {
+            let Some(item) = tl.item_by_event_id(&eid).await else {
                 return false;
             };
-            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
-                return false;
-            };
-            let Some(item) = timeline.item_by_event_id(&eid).await else {
-                return false;
-            };
-            let item_id: TimelineEventItemId = item.identifier();
-            timeline.toggle_reaction(&item_id, &emoji).await.is_ok()
+            let item_id = item.identifier();
+            tl.toggle_reaction(&item_id, &emoji).await.is_ok()
         })
     }
 
     pub fn reply(&self, room_id: String, in_reply_to: String, body: String) -> bool {
-        RT.block_on(async {
+        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
             use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation as MsgNoRel;
 
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
+            let Ok(reply_to) = EventId::parse(&in_reply_to) else {
                 return false;
             };
-            let Ok(reply_to) = EventId::parse(in_reply_to) else {
-                return false;
-            };
-            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
-                return false;
-            };
-
             let content = MsgNoRel::text_plain(body);
-            timeline.send_reply(content, reply_to.to_owned()).await.is_ok()
+            tl.send_reply(content, reply_to.to_owned()).await.is_ok()
         })
     }
 
     pub fn edit(&self, room_id: String, target_event_id: String, new_body: String) -> bool {
-        RT.block_on(async {
+        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
             use matrix_sdk::room::edit::EditedContent;
             use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation as MsgNoRel;
 
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
+            let Ok(eid) = EventId::parse(&target_event_id) else {
                 return false;
             };
-            let Ok(eid) = EventId::parse(target_event_id) else {
-                return false;
-            };
-            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
-                return false            };
-
-            let Some(item) = timeline.item_by_event_id(&eid).await else {
+            let Some(item) = tl.item_by_event_id(&eid).await else {
                 return false;
             };
             let item_id = item.identifier();
             let edited = EditedContent::RoomMessage(MsgNoRel::text_plain(new_body));
 
-            timeline.edit(&item_id, edited).await.is_ok()
+            tl.edit(&item_id, edited).await.is_ok()
         })
     }
 
     pub fn paginate_backwards(&self, room_id: String, count: u16) -> bool {
-        RT.block_on(async {
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
-                return false;
-            };
-            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
-                return false;
-            };
-            timeline.paginate_backwards(count).await.unwrap_or(false)
+        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+            tl.paginate_backwards(count).await.unwrap_or(false)
         })
     }
 
     pub fn paginate_forwards(&self, room_id: String, count: u16) -> bool {
-        RT.block_on(async {
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
-                return false;
-            };
-            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
-                return false;
-            };
-            timeline.paginate_forwards(count).await.unwrap_or(false)
+        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+            tl.paginate_forwards(count).await.unwrap_or(false)
         })
     }
 
     pub fn redact(&self, room_id: String, event_id: String, reason: Option<String>) -> bool {
-        RT.block_on(async {
-            let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            let Ok(eid) = EventId::parse(&event_id) else {
                 return false;
             };
-            let Ok(eid) = EventId::parse(event_id) else {
-                return false;
-            };
-            if let Some(room) = self.inner.get_room(&room_id) {
-                room.redact(&eid, reason.as_deref(), None).await.is_ok()
-            } else {
-                false
-            }
+            room.redact(&eid, reason.as_deref(), None).await.is_ok()
         })
     }
 
@@ -1445,14 +1409,8 @@ impl Client {
     }
 
     pub fn unobserve_typing(&self, sub_id: u64) -> bool {
-        if let Some(h) = self.typing_subs.lock().unwrap().remove(&sub_id) {
-            h.abort();
-            true
-        } else {
-            false
-        }
+        unsub!(self, typing_subs, sub_id)
     }
-
     pub fn observe_receipts(&self, room_id: String, observer: Box<dyn ReceiptsObserver>) -> u64 {
         let client = self.inner.clone();
         let Ok(rid) = OwnedRoomId::try_from(room_id) else {
@@ -1472,12 +1430,7 @@ impl Client {
     }
 
     pub fn unobserve_receipts(&self, sub_id: u64) -> bool {
-        if let Some(h) = self.receipts_subs.lock().unwrap().remove(&sub_id) {
-            h.abort();
-            true
-        } else {
-            false
-        }
+        unsub!(self, receipts_subs, sub_id)
     }
 
     pub fn dm_peer_user_id(&self, room_id: String) -> Option<String> {
@@ -1569,12 +1522,7 @@ impl Client {
     }
 
     pub fn stop_call_inbox(&self, token: u64) -> bool {
-        if let Some(h) = self.call_subs.lock().unwrap().remove(&token) {
-            h.abort();
-            true
-        } else {
-            false
-        }
+        unsub!(self, call_subs, token)
     }
 
     pub fn send_attachment_bytes(
@@ -2226,31 +2174,19 @@ impl Client {
 
     // Set room name (state event)
     pub fn set_room_name(&self, room_id: String, name: String) -> bool {
-        RT.block_on(async {
-            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
-                return false;
-            };
-            let content = RoomNameEventContent::new(name);
-            if let Some(room) = self.inner.get_room(&rid) {
-                room.send_state_event(content).await.is_ok()
-            } else {
-                false
-            }
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            room.send_state_event(RoomNameEventContent::new(name))
+                .await
+                .is_ok()
         })
     }
 
     // Set room topic
     pub fn set_room_topic(&self, room_id: String, topic: String) -> bool {
-        RT.block_on(async {
-            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
-                return false;
-            };
-            let content = RoomTopicEventContent::new(topic);
-            if let Some(room) = self.inner.get_room(&rid) {
-                room.send_state_event(content).await.is_ok()
-            } else {
-                false
-            }
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            room.send_state_event(RoomTopicEventContent::new(topic))
+                .await
+                .is_ok()
         })
     }
 
@@ -2618,14 +2554,10 @@ impl Client {
         self.room_list_subs.lock().unwrap().insert(id, h);
         id
     }
+
     pub fn unobserve_room_list(&self, token: u64) -> bool {
         self.room_list_cmds.lock().unwrap().remove(&token);
-        if let Some(h) = self.room_list_subs.lock().unwrap().remove(&token) {
-            h.abort();
-            true
-        } else {
-            false
-        }
+        unsub!(self, room_list_subs, token)
     }
 
     pub fn search_users(
@@ -3413,18 +3345,11 @@ impl Client {
 
     /// Invite a user to a space.
     pub fn space_invite_user(&self, space_id: String, user_id: String) -> bool {
-        RT.block_on(async {
-            let Ok(rid) = ruma::OwnedRoomId::try_from(space_id) else {
-                return false;
-            };
+        with_room_async!(self, space_id, |room: Room, _rid| async move {
             let Ok(uid) = ruma::OwnedUserId::try_from(user_id) else {
                 return false;
             };
-            if let Some(room) = self.inner.get_room(&rid) {
-                room.invite_user_by_id(&uid).await.is_ok()
-            } else {
-                false
-            }
+            room.invite_user_by_id(&uid).await.is_ok()
         })
     }
 }
