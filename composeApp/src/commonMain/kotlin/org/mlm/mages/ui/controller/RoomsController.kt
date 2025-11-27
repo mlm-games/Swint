@@ -53,30 +53,10 @@ class RoomsController(
                     it.copy(
                         rooms = items.map { e -> RoomSummary(e.roomId, e.name) },
                         unread = items.associate { e -> e.roomId to e.unread.toInt() },
-                        lastActivity = items.associate { e -> e.roomId to e.lastTs },
                         isLoading = false
                     )
                 }
                 initialized = true
-
-                scope.launch {
-                    val zeros = items.filter { it.unread.toInt() == 0 }.take(20)
-                    if (zeros.isEmpty()) return@launch
-                    val pairs = coroutineScope {
-                        zeros.map { e ->
-                            async {
-                                val cnt = runCatching { service.port.roomUnreadStats(e.roomId)?.messages?.toInt() ?: 0 }
-                                    .getOrDefault(0)
-                                e.roomId to cnt
-                            }
-                        }.toList().awaitAll()
-                    }
-                    _state.update { st ->
-                        val m = st.unread.toMutableMap()
-                        pairs.forEach { (rid, cnt) -> if ((m[rid] ?: 0) == 0 && cnt > 0) m[rid] = cnt }
-                        st.copy(unread = m)
-                    }
-                }
 
                 items.forEach { entry ->
                     startNotificationObserver(entry.roomId, entry.name)
@@ -84,21 +64,7 @@ class RoomsController(
             }
 
             override fun onUpdate(item: MatrixPort.RoomListEntry) {
-                _state.update { st ->
-                    val updatedRooms = st.rooms.toMutableList().apply {
-                        val i = indexOfFirst { it.id == item.roomId }
-                        val rs = RoomSummary(item.roomId, item.name)
-                        if (i >= 0) set(i, rs) else add(rs)
-                    }
-                    st.copy(
-                        rooms = updatedRooms,
-                        unread = st.unread.toMutableMap().apply { put(item.roomId, item.unread.toInt()) },
-                        lastActivity = st.lastActivity.toMutableMap().apply { put(item.roomId, item.lastTs) },
-                        isLoading = false
-                    )
-                }
-
-                startNotificationObserver(item.roomId, item.name)
+                // Better for Maintainability, Rust always sends full list via onReset
             }
         })
 
@@ -133,85 +99,29 @@ class RoomsController(
         })
     }
 
-    fun refreshRooms() {
+    fun refreshUnreadCounts() {
         scope.launch {
-            _state.update { it.copy(isLoading = true, error = null) }
-            val rooms = runCatching { service.listRooms() }.getOrElse {
-                _state.update { s -> s.copy(isLoading = false, error = "Failed to load rooms: ${it.message}") }
+            _state.update { it.copy(isLoading = true) }
+
+            val currentRooms = _state.value.rooms
+            if (currentRooms.isEmpty()) {
+                _state.update { it.copy(isLoading = false) }
                 return@launch
             }
 
-            val cachedActivity = withContext(Dispatchers.IO) {
-                buildMap {
-                    for (r in rooms) {
-                        val ts = runCatching { loadLong(dataStore, actKey(r.id)) }.getOrNull()
-                        if (ts != null) put(r.id, ts)
+            val unreadMap = coroutineScope {
+                currentRooms.map { room ->
+                    async {
+                        val cnt = runCatching {
+                            service.port.roomUnreadStats(room.id)?.messages?.toInt() ?: 0
+                        }.getOrDefault(0)
+                        room.id to cnt
                     }
-                }
+                }.associate { it.await() }
             }
 
-            _state.update {
-                it.copy(
-                    rooms = rooms,
-                    lastActivity = cachedActivity,
-                    isLoading = false
-                )
-            }
-
-            val unreadMap = withContext(Dispatchers.IO) {
-                coroutineScope {
-                    rooms.map { room ->
-                        async {
-                            val cnt = runCatching {
-                                service.port.roomUnreadStats(room.id)?.messages?.toInt() ?: 0
-                            }.getOrDefault(0)
-                            room.id to cnt
-                        }
-                    }.associate { it.await() }
-                }
-            }
-
-            _state.update {
-                it.copy(
-                    rooms = rooms,
-                    unread = unreadMap
-                )
-            }
-
-            val missing = rooms.filter { it.id !in cachedActivity }
-            if (missing.isNotEmpty()) {
-                fillLastActivityBackground(missing)
-            }
-        }
-    }
-
-    private fun actKey(roomId: String) = "room_last_activity_ts:$roomId"
-
-    private fun fillLastActivityBackground(rooms: List<RoomSummary>) {
-        scope.launch {
-            val sem = kotlinx.coroutines.sync.Semaphore(permits = 8)
-            val updates = rooms.map { room ->
-                async {
-                    sem.acquire()
-                    try {
-                        val recent = runCatching { service.loadRecent(room.id, 1) }.getOrElse { emptyList() }
-                        val ts = recent.firstOrNull()?.timestamp ?: 0L
-                        if (ts > 0) {
-                            runCatching { saveLong(dataStore, actKey(room.id), ts) }
-                        }
-                        room.id to ts
-                    } finally {
-                        sem.release()
-                    }
-                }
-            }.associate { it.await() }
-
-            if (updates.isNotEmpty()) {
-                _state.update { st ->
-                    val merged = st.lastActivity.toMutableMap()
-                    for ((rid, ts) in updates) if (ts > 0) merged[rid] = ts
-                    st.copy(lastActivity = merged)
-                }
+            _state.update { st ->
+                st.copy(unread = unreadMap, isLoading = false)
             }
         }
     }
@@ -257,5 +167,4 @@ class RoomsController(
         }
         notificationJobs[roomId] = job
     }
-
 }

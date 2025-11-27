@@ -1,3 +1,7 @@
+use matrix_sdk_ui::{
+    eyeball_im::Vector,
+    timeline::{AttachmentConfig, AttachmentSource},
+};
 use mime::Mime;
 use once_cell::sync::Lazy;
 use std::{
@@ -7,12 +11,12 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
 use uniffi::{Enum, Object, Record, export, setup_scaffolding};
 
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::StreamExt;
 use matrix_sdk::{
     Client as SdkClient, OwnedServerName, Room, RoomMemberships, SessionTokens,
     authentication::{matrix::MatrixSession, oauth::OAuthError},
@@ -34,7 +38,7 @@ use matrix_sdk::{
 use matrix_sdk::{
     encryption::BackupDownloadStrategy,
     ruma::{
-        DeviceId, EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
+        EventId, OwnedDeviceId, OwnedRoomId, OwnedUserId,
         api::client::{
             media::get_content_thumbnail::v3::Method as ThumbnailMethod,
             receipt::create_receipt::v3::ReceiptType,
@@ -61,25 +65,21 @@ use matrix_sdk::{
 };
 use matrix_sdk_ui::{
     encryption_sync_service::{EncryptionSyncService, WithLocking},
-    eyeball_im::{self, VectorDiff},
+    eyeball_im::VectorDiff,
     notification_client::{
         NotificationClient, NotificationEvent, NotificationProcessSetup, NotificationStatus,
     },
-    room_list_service::{RoomList, filters},
+    room_list_service::filters,
     sync_service::{State, SyncService},
     timeline::{
         EventSendState, EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
-        TimelineEventItemId, TimelineFocus, TimelineItem, TimelineItemContent,
+        TimelineItem, TimelineItemContent,
     },
 };
-use ruma::api::client::{
-    membership::join_room_by_id::v3::Request as JoinByIdReq,
-    membership::leave_room::v3::Request as LeaveReq, room::create_room::v3 as create_room_v3,
-};
+use ruma::api::client::room::create_room::v3 as create_room_v3;
 use thiserror::Error;
 
 use ruma::{
-    OwnedEventId,
     api::{
         Direction,
         client::relations::get_relating_events_with_rel_type_and_event_type as get_relating,
@@ -90,21 +90,8 @@ use ruma::{
         room::message::{Relation as MsgRelation, RoomMessageEventContent},
     },
 };
-use ruma::{
-    api::client::{
-        space::get_hierarchy::v1 as space_hierarchy_v1,
-        state::send_state_event::v3 as send_state_v3,
-    },
-    events::{StateEventType, space::child::SpaceChildEventContent},
-};
-use serde_json::value::RawValue;
-use std::panic::AssertUnwindSafe;
 
-use eyeball_im::VectorDiff as EyeVectorDiff;
-use matrix_sdk_ui::timeline::{
-    EventTimelineItem as UiEventTimelineItem, Timeline as UiTimeline,
-    TimelineItem as UiTimelineItem,
-};
+use std::panic::AssertUnwindSafe;
 
 // UniFFI macro-first setup
 setup_scaffolding!();
@@ -1534,7 +1521,6 @@ impl Client {
         progress: Option<Box<dyn ProgressObserver>>,
     ) -> bool {
         RT.block_on(async {
-            use matrix_sdk_ui::timeline::{AttachmentConfig, AttachmentSource};
             let Ok(rid) = OwnedRoomId::try_from(room_id) else {
                 return false;
             };
@@ -1568,7 +1554,6 @@ impl Client {
         filename: Option<String>,
         progress: Option<Box<dyn ProgressObserver>>,
     ) -> bool {
-        use matrix_sdk_ui::timeline::{AttachmentConfig, AttachmentSource};
         RT.block_on(async {
             let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
                 return false;
@@ -1638,7 +1623,6 @@ impl Client {
         let obs: Arc<dyn SyncObserver> = Arc::from(observer);
         let svc_slot = self.sync_service.clone();
         let h = RT.spawn(async move {
-            use futures_util::StreamExt;
             use std::time::Duration;
 
             obs.on_state(SyncStatus {
@@ -2310,7 +2294,6 @@ impl Client {
     /// One-shot sync used when a push arrives; small timeout and no backoff
     pub fn wake_sync_once(&self, timeout_ms: u32) -> bool {
         RT.block_on(async {
-            use std::time::Duration;
             let settings =
                 SyncSettings::default().timeout(Duration::from_millis(timeout_ms as u64));
             self.inner.sync_once(settings).await.is_ok()
@@ -2335,7 +2318,6 @@ impl Client {
 
     pub fn own_last_read(&self, room_id: String) -> OwnReceipt {
         RT.block_on(async {
-            use matrix_sdk_ui::timeline::Timeline;
             let Ok(rid) = ruma::OwnedRoomId::try_from(room_id.clone()) else {
                 return OwnReceipt {
                     event_id: None,
@@ -2434,35 +2416,19 @@ impl Client {
     }
 
     pub fn observe_room_list(&self, observer: Box<dyn RoomListObserver>) -> u64 {
-        use futures_util::StreamExt;
-        use std::panic::AssertUnwindSafe;
-
         let obs: std::sync::Arc<dyn RoomListObserver> = std::sync::Arc::from(observer);
         let svc_slot = self.sync_service.clone();
         let id = self.next_sub_id();
 
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<RoomListCmd>();
-        let id_for_map = id;
-        self.room_list_cmds
-            .lock()
-            .unwrap()
-            .insert(id_for_map, cmd_tx);
+        self.room_list_cmds.lock().unwrap().insert(id, cmd_tx);
 
         let h = RT.spawn(async move {
-        // Wait for sync service
-        let svc = {
-            let mut attempts = 0;
-            loop {
-                if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
-                    break s;
-                }
-                attempts += 1;
-                if attempts > 100 {
-                    eprintln!("observe_room_list: SyncService not available after timeout");
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let svc = loop {
+            if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
+                break s;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         };
 
         let rls = svc.room_list_service();
@@ -2477,13 +2443,13 @@ impl Client {
         let (stream, controller) = all.entries_with_dynamic_adapters(50);
         tokio::pin!(stream);
 
-        controller.set_filter(Box::new(
-            matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
-        ));
+        controller.set_filter(Box::new(filters::new_filter_non_left()));
+
+        // Maintain local ordered state
+        let mut rooms = Vector::<matrix_sdk::Room>::new();
 
         loop {
             tokio::select! {
-                // Apply filter updates.
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {
                         RoomListCmd::SetUnreadOnly(unread_only) => {
@@ -2498,52 +2464,87 @@ impl Client {
                         }
                     }
                 }
-                // Forward room list diffs.
                 Some(diffs) = stream.next() => {
+                    let mut changed = false;
+
                     for diff in diffs {
                         match diff {
                             VectorDiff::Reset { values } => {
-                                let snapshot: Vec<_> = values
-                                    .iter()
-                                    .map(|room| RoomListEntry {
-                                        room_id: room.room_id().to_string(),
-                                        name: room
-                                            .cached_display_name()
-                                            .map(|n| n.to_string())
-                                            .unwrap_or_else(|| room.room_id().to_string()),
-                                        unread: room.unread_notification_counts().notification_count
-                                            as u64,
-                                        last_ts: 0,
-                                    })
-                                    .collect();
-
-                                let obs_clone = obs.clone();
-                                let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
-                                    obs_clone.on_reset(snapshot)
-                                }));
+                                rooms = values;
+                                changed = true;
                             }
-                            VectorDiff::Set { value, .. }
-                            | VectorDiff::Insert { value, .. }
-                            | VectorDiff::PushBack { value }
-                            | VectorDiff::PushFront { value } => {
-                                let entry = RoomListEntry {
-                                    room_id: value.room_id().to_string(),
-                                    name: value
-                                        .cached_display_name()
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| value.room_id().to_string()),
-                                    unread: value.unread_notification_counts().notification_count
-                                        as u64,
-                                    last_ts: 0,
-                                };
-
-                                let obs_clone = obs.clone();
-                                let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
-                                    obs_clone.on_update(entry)
-                                }));
+                            VectorDiff::Clear => {
+                                rooms.clear();
+                                changed = true;
                             }
-                            _ => {}
+                            VectorDiff::PushFront { value } => {
+                                rooms.insert(0, value);
+                                changed = true;
+                            }
+                            VectorDiff::PushBack { value } => {
+                                rooms.push_back(value);
+                                changed = true;
+                            }
+                            VectorDiff::PopFront => {
+                                if !rooms.is_empty() {
+                                    rooms.remove(0);
+                                    changed = true;
+                                }
+                            }
+                            VectorDiff::PopBack => {
+                                rooms.pop_back();
+                                changed = true;
+                            }
+                            VectorDiff::Insert { index, value } => {
+                                let idx = index as usize;
+                                if idx <= rooms.len() {
+                                    rooms.insert(idx, value);
+                                    changed = true;
+                                }
+                            }
+                            VectorDiff::Set { index, value } => {
+                                let idx = index as usize;
+                                if idx < rooms.len() {
+                                    rooms[idx] = value;
+                                    changed = true;
+                                }
+                            }
+                            VectorDiff::Remove { index } => {
+                                let idx = index as usize;
+                                if idx < rooms.len() {
+                                    rooms.remove(idx);
+                                    changed = true;
+                                }
+                            }
+                            VectorDiff::Truncate { length } => {
+                                rooms.truncate(length as usize);
+                                changed = true;
+                            }
+                            VectorDiff::Append {values} => {
+                                rooms.append(values);
+                                changed = true;
+                            }
                         }
+                    }
+
+                    if changed {
+                        let snapshot: Vec<RoomListEntry> = rooms
+                            .iter()
+                            .map(|room| RoomListEntry {
+                                room_id: room.room_id().to_string(),
+                                name: room
+                                    .cached_display_name()
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| room.room_id().to_string()),
+                                unread: room.unread_notification_counts().notification_count as u64,
+                                last_ts: 0, // Not needed - order is correct from SDK
+                            })
+                            .collect();
+
+                        let obs_clone = obs.clone();
+                        let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                            obs_clone.on_reset(snapshot);
+                        }));
                     }
                 }
                 else => break,
@@ -3363,7 +3364,6 @@ impl Client {
     ) {
         let verifs = self.verifs.clone();
         let h = RT.spawn(async move {
-            use std::time::{Duration, Instant};
             let deadline = Instant::now() + Duration::from_secs(120);
             obs.on_phase(flow_id.clone(), SasPhase::Requested);
 

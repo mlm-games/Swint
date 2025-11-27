@@ -37,23 +37,21 @@ fun RoomsScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    // Sort rooms by recency (last activity) with unread at top
-    val sortedRooms = remember(state.rooms, state.unread, state.lastActivity) {
-        state.rooms.sortedWith(
-            compareByDescending<RoomSummary> { (state.unread[it.id] ?: 0) > 0 }
-                .thenByDescending { state.lastActivity[it.id] ?: 0L }
-        )
-    }
+    // Matrix rooms are already sorted via sdk in reversed order (by recency from bottom)
+    val filtered = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
+        var list = state.rooms
 
-    val filtered = remember(sortedRooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
         val q = state.roomSearchQuery.trim()
-        var list = if (q.isBlank()) sortedRooms
-        else sortedRooms.filter {
-            it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true)
+        if (q.isNotBlank()) {
+            list = list.filter {
+                it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true)
+            }
         }
+
         if (state.unreadOnly) {
             list = list.filter { (state.unread[it.id] ?: 0) > 0 }
         }
+
         list
     }
 

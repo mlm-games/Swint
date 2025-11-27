@@ -124,9 +124,9 @@ fun App(
                         val ui by roomsController.state.collectAsState()
                         RoomsScreen(
                             state = ui,
-                            onRefresh = roomsController::refreshRooms,
+                            onRefresh = roomsController::refreshUnreadCounts,
                             onSearch = roomsController::setSearchQuery,
-                            onOpen = { roomsController.open(it) },
+                            onOpen = { roomsController.open(it)},
                             onOpenSecurity = { backStack.add(Route.Security) },
                             onToggleUnreadOnly = { roomsController.toggleUnreadOnly() },
                             onOpenDiscover = { backStack.add(Route.Discover) },
