@@ -194,6 +194,9 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'release-desktop.yml',
-              ref: '${{ needs.prepare-version.outputs.version_name }}'
+              ref: 'main',
+              inputs: {
+                version_tag: '${{ needs.prepare-version.outputs.version_name }}',
+                mark_prerelease: '${{ inputs.mark_prerelease }}'
+              }
             });
-            core.info('Triggered desktop builds for ${{ needs.prepare-version.outputs.version_name }}');
