@@ -135,7 +135,6 @@ interface MatrixPort {
     fun whoami(): String?  // "@user:server" or null if not logged in
 
     suspend fun enqueueText(roomId: String, body: String, txnId: String? = null): String
-    fun startSendWorker()
     fun observeSends(): Flow<SendUpdate>
 
 //    suspend fun setMediaRetentionPolicy(
@@ -196,10 +195,6 @@ interface MatrixPort {
     fun enterBackground()
 
     suspend fun logout(): Boolean
-
-    suspend fun cancelTxn(txnId: String): Boolean
-    suspend fun retryTxnNow(txnId: String): Boolean
-    suspend fun pendingSends(): UInt
 
     suspend fun checkVerificationRequest(userId: String, flowId: String): Boolean
 

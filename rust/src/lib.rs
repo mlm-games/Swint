@@ -101,7 +101,6 @@ use serde_json::value::RawValue;
 use std::panic::AssertUnwindSafe;
 
 use eyeball_im::VectorDiff as EyeVectorDiff;
-use matrix_sdk::ruma::{OwnedEventId as OwnedEventId_Tl, OwnedRoomId as OwnedRoomId_Tl};
 use matrix_sdk_ui::timeline::{
     EventTimelineItem as UiEventTimelineItem, Timeline as UiTimeline,
     TimelineItem as UiTimelineItem,
@@ -409,146 +408,25 @@ pub struct SpaceHierarchyPage {
     pub next_batch: Option<String>,
 }
 
-#[derive(Record, Clone)]
-pub struct TlMessageDto {
-    pub item_id: String,
-    pub event_id: String,
-    pub room_id: String,
-    pub sender: String,
-    pub body: String,
-    pub timestamp_ms: u64,
-    pub send_state: Option<String>, // "Sending" | "Sent" | "Failed"
-    pub txn_id: Option<String>,
-    pub reply_to_event_id: Option<String>,
-    pub reply_to_sender: Option<String>,
-    pub reply_to_body: Option<String>,
-    pub attachment_mxc: Option<String>,
-    pub attachment_kind: Option<String>, // "Image" | "Video" | "File"
-    pub duration_ms: Option<u64>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub thread_root_event_id: Option<String>,
-}
-
-#[derive(Enum, Clone)]
-pub enum TlVecDiffDto {
-    Append { values: Vec<TlMessageDto> },
-    PushBack { value: TlMessageDto },
-    PushFront { value: TlMessageDto },
+#[derive(Clone, Enum)]
+pub enum TimelineDiffKind {
+    Append { values: Vec<MessageEvent> },
+    PushBack { value: MessageEvent },
+    PushFront { value: MessageEvent },
     PopBack,
     PopFront,
-    Insert { index: u32, value: TlMessageDto },
+    Insert { index: u32, value: MessageEvent },
     Remove { index: u32 },
-    Set { index: u32, value: TlMessageDto },
+    Set { index: u32, value: MessageEvent },
     Truncate { length: u32 },
-    Reset { values: Vec<TlMessageDto> },
+    Reset { values: Vec<MessageEvent> },
     Clear,
 }
 
-#[export(callback_interface)]
-pub trait TlObserver: Send + Sync {
-    fn on_diffs(&self, batch: Vec<TlVecDiffDto>);
+#[uniffi::export(callback_interface)]
+pub trait TimelineObserver: Send + Sync {
+    fn on_diff(&self, diff: TimelineDiffKind);
     fn on_error(&self, message: String);
-}
-
-#[derive(Object, Clone)]
-pub struct TimelineHandle {
-    client: matrix_sdk::Client,
-    room_id: OwnedRoomId_Tl,
-    timeline: std::sync::Arc<UiTimeline>,
-    task: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
-}
-
-#[export]
-impl TimelineHandle {
-    // Snapshot for first paint
-    pub fn initial(&self) -> Vec<TlMessageDto> {
-        RT.block_on(async {
-            let (items, _stream) = self.timeline.subscribe().await;
-            items
-                .iter()
-                .filter_map(|it| map_tl_item(it.as_ref(), &self.room_id))
-                .collect()
-        })
-    }
-
-    // Start/replace the background stream task
-    pub fn register(&self, observer: Box<dyn TlObserver>) {
-        if let Some(prev) = self.task.lock().unwrap().take() {
-            prev.abort();
-        }
-        let obs: std::sync::Arc<dyn TlObserver> = std::sync::Arc::from(observer);
-        let tl = self.timeline.clone();
-        let rid = self.room_id.clone();
-
-        let task = RT.spawn(async move {
-            let (_init, mut stream) = tl.subscribe().await;
-            while let Some(batch) = stream.next().await {
-                let mapped: Vec<TlVecDiffDto> = batch
-                    .into_iter()
-                    .filter_map(|d| map_tl_vecdiff(d, &rid))
-                    .collect();
-                if !mapped.is_empty() {
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        obs.on_diffs(mapped)
-                    }));
-                }
-            }
-        });
-        *self.task.lock().unwrap() = Some(task);
-    }
-
-    pub fn paginate_back(&self, count: u16) -> bool {
-        RT.block_on(async { self.timeline.paginate_backwards(count).await })
-            .unwrap_or(false)
-    }
-    pub fn paginate_forward(&self, count: u16) -> bool {
-        RT.block_on(async { self.timeline.paginate_forwards(count).await })
-            .unwrap_or(false)
-    }
-
-    pub fn fetch_details(&self, event_id: String) -> bool {
-        RT.block_on(async {
-            let eid: OwnedEventId_Tl = match event_id.try_into() {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
-            self.timeline
-                .fetch_details_for_event(eid.as_ref())
-                .await
-                .is_ok()
-        })
-    }
-
-    pub fn send_text(&self, body: String) -> bool {
-        RT.block_on(async {
-            use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
-            self.timeline
-                .send(RoomMessageEventContent::text_plain(body).into())
-                .await
-                .is_ok()
-        })
-    }
-
-    pub fn send_read_receipt(&self, event_id: String) -> bool {
-        RT.block_on(async {
-            use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
-            let eid: OwnedEventId_Tl = match event_id.try_into() {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
-            self.timeline
-                .send_single_receipt(ReceiptType::Read, eid)
-                .await
-                .unwrap_or(false)
-        })
-    }
-
-    pub fn abort(&self) {
-        if let Some(prev) = self.task.lock().unwrap().take() {
-            prev.abort();
-        }
-    }
 }
 
 fn cache_dir(dir: &PathBuf) -> PathBuf {
@@ -681,13 +559,24 @@ pub trait SendObserver: Send + Sync {
     fn on_update(&self, update: SendUpdate);
 }
 
-#[export(callback_interface)]
-pub trait TimelineDiffObserver: Send + Sync {
-    fn on_insert(&self, event: MessageEvent);
-    fn on_update(&self, event: MessageEvent);
-    fn on_remove(&self, item_id: String);
-    fn on_clear(&self);
-    fn on_reset(&self, events: Vec<MessageEvent>);
+macro_rules! sub_manager {
+    ($self:expr, $subs:ident, $spawn:expr) => {{
+        let id = $self.next_sub_id();
+        let h = RT.spawn($spawn);
+        $self.$subs.lock().unwrap().insert(id, h);
+        id
+    }};
+}
+
+macro_rules! unsub {
+    ($self:expr, $subs:ident, $id:expr) => {{
+        if let Some(h) = $self.$subs.lock().unwrap().remove(&$id) {
+            h.abort();
+            true
+        } else {
+            false
+        }
+    }};
 }
 
 #[export]
@@ -982,7 +871,15 @@ impl Client {
             let mut out: Vec<MessageEvent> = items
                 .iter()
                 .rev()
-                .filter_map(|it| it.as_event().and_then(|ev| map_event(ev, room_id.as_str())))
+                .filter_map(|it| {
+                    it.as_event().and_then(|ev| {
+                        map_timeline_event(
+                            ev,
+                            room_id.as_str(),
+                            Some(&it.unique_id().0.to_string()),
+                        )
+                    })
+                })
                 .take(limit as usize)
                 .collect();
             out.reverse();
@@ -990,203 +887,62 @@ impl Client {
         })
     }
 
-    pub fn observe_room_timeline_diffs(
-        &self,
-        room_id: String,
-        observer: Box<dyn TimelineDiffObserver>,
-    ) -> u64 {
+    pub fn observe_timeline(&self, room_id: String, observer: Box<dyn TimelineObserver>) -> u64 {
         let client = self.inner.clone();
         let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
             return 0;
         };
-        let obs: Arc<dyn TimelineDiffObserver> = Arc::from(observer);
+        let obs: Arc<dyn TimelineObserver> = Arc::from(observer);
 
-        let id = self.next_sub_id();
-        let h = RT.spawn(async move {
+        sub_manager!(self, timeline_subs, async move {
             let Some(room) = client.get_room(&room_id) else {
                 return;
             };
             let Ok(tl) = room.timeline().await else {
                 return;
             };
-
-            // Wrap Timeline in Arc immediately after obtaining it
             let tl = Arc::new(tl);
-
             let (items, mut stream) = tl.subscribe().await;
 
             // Initial snapshot
             let initial: Vec<_> = items
                 .iter()
                 .filter_map(|it| {
-                    let uid = it.unique_id().0.to_string();
-                    it.as_event()
-                        .and_then(|ei| map_event_with_uid(ei, room_id.as_str(), &uid))
+                    it.as_event().and_then(|ei| {
+                        map_timeline_event(
+                            ei,
+                            room_id.as_str(),
+                            Some(&it.unique_id().0.to_string()),
+                        )
+                    })
                 })
                 .collect();
-            obs.on_reset(initial);
+            obs.on_diff(TimelineDiffKind::Reset { values: initial });
 
+            // Fetch missing reply details
             for it in items.iter() {
                 if let Some(ev) = it.as_event() {
                     if let Some(eid) = missing_reply_event_id(ev) {
-                        // Now clone the Arc (simpler syntax)
                         let tlc = tl.clone();
-                        RT.spawn(async move {
+                        tokio::spawn(async move {
                             let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
                         });
                     }
                 }
             }
 
-            let mut items = items.clone();
-
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
-                    match diff {
-                        VectorDiff::Append { values } => {
-                            for value in values {
-                                items.push_back(value.clone());
-                                let uid = value.unique_id().0.to_string();
-                                if let Some(ei) = value.as_event() {
-                                    if let Some(eid) = missing_reply_event_id(ei) {
-                                        let tlc = tl.clone();
-                                        RT.spawn(async move {
-                                            let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
-                                        });
-                                    }
-                                    if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid)
-                                    {
-                                        obs.on_insert(ev);
-                                    }
-                                }
-                            }
-                        }
-                        VectorDiff::PushBack { value } => {
-                            items.push_back(value.clone());
-                            let uid = value.unique_id().0.to_string();
-                            if let Some(ei) = value.as_event() {
-                                if let Some(eid) = missing_reply_event_id(ei) {
-                                    let tlc = tl.clone();
-                                    RT.spawn(async move {
-                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
-                                    });
-                                }
-                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
-                                    obs.on_insert(ev);
-                                }
-                            }
-                        }
-                        VectorDiff::PushFront { value } => {
-                            items.push_front(value.clone());
-                            let uid = value.unique_id().0.to_string();
-                            if let Some(ei) = value.as_event() {
-                                if let Some(eid) = missing_reply_event_id(ei) {
-                                    let tlc = tl.clone();
-                                    RT.spawn(async move {
-                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
-                                    });
-                                }
-                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
-                                    obs.on_insert(ev);
-                                }
-                            }
-                        }
-                        VectorDiff::PopFront => {
-                            if let Some(item) = items.pop_front() {
-                                obs.on_remove(item.unique_id().0.to_string());
-                            }
-                        }
-                        VectorDiff::PopBack => {
-                            if let Some(item) = items.pop_back() {
-                                obs.on_remove(item.unique_id().0.to_string());
-                            }
-                        }
-                        VectorDiff::Insert { index, value } => {
-                            items.insert(index, value.clone());
-                            let uid = value.unique_id().0.to_string();
-                            if let Some(ei) = value.as_event() {
-                                if let Some(eid) = missing_reply_event_id(ei) {
-                                    let tlc = tl.clone();
-                                    RT.spawn(async move {
-                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
-                                    });
-                                }
-                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
-                                    obs.on_insert(ev);
-                                }
-                            }
-                        }
-                        VectorDiff::Set { index, value } => {
-                            if index < items.len() {
-                                items[index] = value.clone();
-                            }
-                            let uid = value.unique_id().0.to_string();
-                            if let Some(ei) = value.as_event() {
-                                if let Some(eid) = missing_reply_event_id(ei) {
-                                    let tlc = tl.clone();
-                                    RT.spawn(async move {
-                                        let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
-                                    });
-                                }
-                                if let Some(ev) = map_event_with_uid(ei, room_id.as_str(), &uid) {
-                                    obs.on_update(ev);
-                                }
-                            }
-                        }
-                        VectorDiff::Remove { index } => {
-                            if index < items.len() {
-                                let uid = items[index].unique_id().0.to_string();
-                                items.remove(index);
-                                obs.on_remove(uid);
-                            }
-                        }
-                        VectorDiff::Truncate { length } => {
-                            while items.len() > length {
-                                if let Some(item) = items.pop_back() {
-                                    obs.on_remove(item.unique_id().0.to_string());
-                                }
-                            }
-                        }
-                        VectorDiff::Clear => {
-                            items.clear();
-                            obs.on_clear();
-                        }
-                        VectorDiff::Reset { values } => {
-                            items = values.clone();
-                            let events = values
-                                .iter()
-                                .filter_map(|it| {
-                                    let uid = it.unique_id().0.to_string();
-                                    it.as_event().and_then(|ei| {
-                                        if let Some(eid) = missing_reply_event_id(ei) {
-                                            let tlc = tl.clone();
-                                            RT.spawn(async move {
-                                                let _ =
-                                                    tlc.fetch_details_for_event(eid.as_ref()).await;
-                                            });
-                                        }
-                                        map_event_with_uid(ei, room_id.as_str(), &uid)
-                                    })
-                                })
-                                .collect::<Vec<_>>();
-                            obs.on_reset(events);
-                        }
+                    if let Some(mapped) = map_vec_diff(diff, &room_id, &tl) {
+                        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| obs.on_diff(mapped)));
                     }
                 }
             }
-        });
-
-        self.timeline_subs.lock().unwrap().insert(id, h);
-        id
+        })
     }
 
-    pub fn unobserve_room_timeline(&self, sub_id: u64) -> bool {
-        if let Some(h) = self.timeline_subs.lock().unwrap().remove(&sub_id) {
-            h.abort();
-            true
-        } else {
-            false
-        }
+    pub fn unobserve_timeline(&self, sub_id: u64) -> bool {
+        unsub!(self, timeline_subs, sub_id)
     }
 
     pub fn start_verification_inbox(&self, observer: Box<dyn VerificationInboxObserver>) -> u64 {
@@ -2583,25 +2339,6 @@ impl Client {
         })
     }
 
-    pub fn start_send_worker(&self) {
-        // No-op: SDK handles sending/retries internally; worker removed.
-    }
-
-    pub fn cancel_txn(&self, _txn_id: String) -> bool {
-        // Not needed without a custom queue
-        false
-    }
-
-    pub fn retry_txn_now(&self, _txn_id: String) -> bool {
-        // Same.
-        false
-    }
-
-    pub fn pending_sends(&self) -> u32 {
-        // No queue anymore.
-        0
-    }
-
     /// Register/Update HTTP pusher for UnifiedPush/Matrix gateway (e.g. ntfy)
     pub fn register_unifiedpush(
         &self,
@@ -2641,76 +2378,6 @@ impl Client {
             let settings =
                 SyncSettings::default().timeout(Duration::from_millis(timeout_ms as u64));
             self.inner.sync_once(settings).await.is_ok()
-        })
-    }
-
-    pub fn render_notification(
-        &self,
-        room_id: String,
-        event_id: String,
-    ) -> Result<Option<RenderedNotification>, FfiError> {
-        RT.block_on(async {
-            let rid = ruma::OwnedRoomId::try_from(room_id.clone())
-                .map_err(|_| FfiError::Msg("bad room_id".into()))?;
-            let eid = ruma::OwnedEventId::try_from(event_id.clone())
-                .map_err(|_| FfiError::Msg("bad event_id".into()))?;
-
-            // We prefer SingleProcess on Android
-            let sync = {
-                let g = self.sync_service.lock().unwrap();
-                g.as_ref()
-                    .cloned()
-                    .ok_or_else(|| FfiError::Msg("SyncService not ready".into()))?
-            };
-
-            let nc = NotificationClient::new(
-                self.inner.clone(),
-                NotificationProcessSetup::SingleProcess { sync_service: sync },
-            )
-            .await
-            .map_err(|e| FfiError::Msg(format!("notif client: {e}")))?;
-
-            match nc.get_notification(&rid, &eid).await {
-                Ok(NotificationStatus::Event(item)) => {
-                    // Title
-                    let room_name = item.room_computed_display_name.clone();
-
-                    // Sender + fallback body (for regular messages)
-                    let mut sender = item
-                        .sender_display_name
-                        .clone()
-                        .unwrap_or_else(|| item.event.sender().localpart().to_string());
-                    let mut body = String::from("New event");
-                    if let NotificationEvent::Timeline(ev) = &item.event {
-                        if let ruma::events::AnySyncTimelineEvent::MessageLike(
-                            ruma::events::AnySyncMessageLikeEvent::RoomMessage(m),
-                        ) = ev.as_ref()
-                        {
-                            if let Some(orig) = m.as_original() {
-                                sender = item
-                                    .sender_display_name
-                                    .clone()
-                                    .unwrap_or_else(|| orig.sender.localpart().to_string());
-                                // Use plain/fallback text
-                                body = orig.content.body().to_string();
-                            }
-                        }
-                    }
-
-                    Ok(Some(RenderedNotification {
-                        room_id: rid.to_string(),
-                        event_id: eid.to_string(),
-                        room_name,
-                        sender,
-                        body,
-                        is_noisy: item.is_noisy.unwrap_or(false),
-                        has_mention: item.has_mention.unwrap_or(false),
-                    }))
-                }
-                Ok(NotificationStatus::EventFilteredOut) => Ok(None),
-                Ok(NotificationStatus::EventNotFound) => Ok(None),
-                Err(e) => Err(FfiError::Msg(format!("notif fetch: {e}"))),
-            }
         })
     }
 
@@ -3760,44 +3427,6 @@ impl Client {
             }
         })
     }
-
-    pub fn open_timeline(
-        &self,
-        room_id: String,
-        thread_root: Option<String>,
-    ) -> Result<std::sync::Arc<TimelineHandle>, FfiError> {
-        let rid: OwnedRoomId_Tl =
-            OwnedRoomId_Tl::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
-        let Some(room) = self.inner.get_room(&rid) else {
-            return Err(FfiError::Msg("Room not found".into()));
-        };
-
-        let tl: std::sync::Arc<UiTimeline> = if let Some(root) = thread_root {
-            let eid: OwnedEventId_Tl =
-                OwnedEventId_Tl::try_from(root).map_err(|e| FfiError::Msg(e.to_string()))?;
-            std::sync::Arc::new(
-                RT.block_on(async {
-                    room.timeline_builder()
-                        .with_focus(TimelineFocus::Thread { root_event_id: eid })
-                        .build()
-                        .await
-                })
-                .map_err(|e| FfiError::Msg(e.to_string()))?,
-            )
-        } else {
-            std::sync::Arc::new(
-                RT.block_on(async { room.timeline().await })
-                    .map_err(|e| FfiError::Msg(e.to_string()))?,
-            )
-        };
-
-        Ok(std::sync::Arc::new(TimelineHandle {
-            client: self.inner.clone(),
-            room_id: rid,
-            timeline: tl,
-            task: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        }))
-    }
 }
 
 impl Client {
@@ -3843,308 +3472,16 @@ impl Client {
 
 // ---------- Helpers ----------
 
-fn map_tl_vecdiff(
-    diff: EyeVectorDiff<std::sync::Arc<UiTimelineItem>>,
-    room_id: &OwnedRoomId_Tl,
-) -> Option<TlVecDiffDto> {
-    use EyeVectorDiff::*;
-    match diff {
-        Append { values } => {
-            let vals = values
-                .iter()
-                .filter_map(|it| map_tl_item(it.as_ref(), room_id))
-                .collect::<Vec<_>>();
-            Some(TlVecDiffDto::Append { values: vals })
-        }
-        PushBack { value } => {
-            map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::PushBack { value: v })
-        }
-        PushFront { value } => {
-            map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::PushFront { value: v })
-        }
-        PopBack => Some(TlVecDiffDto::PopBack),
-        PopFront => Some(TlVecDiffDto::PopFront),
-        Insert { index, value } => {
-            map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::Insert {
-                index: index as u32,
-                value: v,
-            })
-        }
-        Remove { index } => Some(TlVecDiffDto::Remove {
-            index: index as u32,
-        }),
-        Set { index, value } => map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::Set {
-            index: index as u32,
-            value: v,
-        }),
-        Truncate { length } => Some(TlVecDiffDto::Truncate {
-            length: length as u32,
-        }),
-        Reset { values } => {
-            let vals = values
-                .iter()
-                .filter_map(|it| map_tl_item(it.as_ref(), room_id))
-                .collect::<Vec<_>>();
-            Some(TlVecDiffDto::Reset { values: vals })
-        }
-        Clear => Some(TlVecDiffDto::Clear),
-    }
-}
-
-fn map_tl_item(item: &UiTimelineItem, room_id: &OwnedRoomId_Tl) -> Option<TlMessageDto> {
-    use matrix_sdk::ruma::events::room::message::MessageType as MT;
-    use matrix_sdk_ui::timeline::TimelineDetails;
-
-    let ev = item.as_event()?; // &EventTimelineItem
-
-    let ts: u64 = ev.timestamp().0.into();
-    let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-    let txn_id = ev.transaction_id().map(|t| t.to_string());
-    let send_state = ev.send_state().map(|s| {
-        match s {
-            matrix_sdk_ui::timeline::EventSendState::NotSentYet { .. } => "Sending",
-            matrix_sdk_ui::timeline::EventSendState::Sent { .. } => "Sent",
-            matrix_sdk_ui::timeline::EventSendState::SendingFailed { .. } => "Failed",
-        }
-        .to_owned()
-    });
-
-    let content = ev.content();
-
-    let thread_root = content.thread_root().map(|eid| eid.to_string());
-
-    let mut reply_to_event_id = None;
-    let mut reply_to_sender = None;
-    let mut reply_to_body = None;
-    let mut attachment_mxc = None;
-    let mut attachment_kind = None;
-    let mut duration = None;
-    let mut width = None;
-    let mut height = None;
-    let body: String;
-
-    match ev.content() {
-        TimelineItemContent::MsgLike(ml) => {
-            if let Some(details) = &ml.in_reply_to {
-                reply_to_event_id = Some(details.event_id.to_string());
-                if let TimelineDetails::Ready(embed) = &details.event {
-                    reply_to_sender = Some(embed.sender.to_string());
-                    if let Some(m) = embed.content.as_message() {
-                        reply_to_body = Some(m.body().to_owned());
-                    }
-                }
-            }
-
-            if let Some(msg) = ml.as_message() {
-                let raw_body = msg.body().to_owned();
-
-                match msg.msgtype() {
-                    MT::Image(c) => {
-                        attachment_mxc = tl_mxc_from_source(&c.source);
-                        attachment_kind = Some("Image".into());
-                        if let Some(info) = &c.info {
-                            width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
-                            height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
-                        }
-                    }
-                    MT::Video(c) => {
-                        attachment_mxc = tl_mxc_from_source(&c.source);
-                        attachment_kind = Some("Video".into());
-                        if let Some(info) = &c.info {
-                            width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
-                            height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
-                            if let Some(d) = info.duration {
-                                duration = Some(d.as_millis() as u64);
-                            }
-                        }
-                    }
-                    MT::File(c) => {
-                        attachment_mxc = tl_mxc_from_source(&c.source);
-                        attachment_kind = Some("File".into());
-                    }
-                    _ => {}
-                }
-
-                let mut text = if reply_to_event_id.is_some() {
-                    strip_reply_fallback(&raw_body)
-                } else if raw_body.trim().is_empty() {
-                    "Encrypted or unsupported message.".to_owned()
-                } else {
-                    raw_body
-                };
-
-                if msg.is_edited() {
-                    text.push_str(" \n(edited)");
-                }
-                body = text;
-            } else {
-                // Non-message MsgLike (sticker, poll, redacted, etc.)
-                body = tl_render_msg_like(ml);
-            }
-        }
-        TimelineItemContent::MembershipChange(change) => {
-            body = tl_render_membership_change(ev, change);
-        }
-        TimelineItemContent::ProfileChange(change) => {
-            body = tl_render_profile_change(ev, change);
-        }
-        TimelineItemContent::OtherState(state) => {
-            body = tl_render_other_state(ev, state);
-        }
-        TimelineItemContent::FailedToParseMessageLike { event_type, .. } => {
-            body = format!("Unsupported message-like event: {}", event_type);
-        }
-        TimelineItemContent::FailedToParseState { event_type, .. } => {
-            body = format!("Unsupported state event: {}", event_type);
-        }
-        TimelineItemContent::CallInvite => {
-            body = "Started a call".to_string();
-        }
-        TimelineItemContent::CallNotify => {
-            body = "Call notification".to_string();
-        }
-    }
-
-    Some(TlMessageDto {
-        item_id: format!("{:?}", ev.identifier()),
-        event_id,
-        room_id: room_id.to_string(),
-        sender: ev.sender().to_string(),
-        body,
-        timestamp_ms: ts,
-        send_state,
-        txn_id,
-        reply_to_event_id,
-        reply_to_sender,
-        reply_to_body,
-        attachment_mxc,
-        attachment_kind,
-        duration_ms: duration,
-        width,
-        height,
-        thread_root_event_id: thread_root,
-    })
-}
-
-fn tl_render_msg_like(ml: &MsgLikeContent) -> String {
-    use MsgLikeKind::*;
-    match &ml.kind {
-        Message(m) => {
-            let mut s = m.body().to_owned();
-            if s.trim().is_empty() {
-                s = "Encrypted or unsupported message.".to_owned();
-            }
-            if m.is_edited() {
-                s.push_str(" \n(edited)");
-            }
-            s
-        }
-        Sticker(_) => "sent a sticker".to_string(),
-        Poll(_) => "started a poll".to_string(),
-        Redacted => "Message deleted".to_string(),
-        UnableToDecrypt(_) => "Unable to decrypt this message".to_string(),
-    }
-}
-
-fn tl_render_membership_change(
-    ev: &UiEventTimelineItem,
-    ch: &matrix_sdk_ui::timeline::RoomMembershipChange,
-) -> String {
-    use matrix_sdk_ui::timeline::MembershipChange as MC;
-
-    let actor = ev.sender().to_string();
-    let subject = ch.user_id().to_string();
-
-    match ch.change() {
-        Some(MC::Joined) => format!("{subject} joined the room"),
-        Some(MC::Left) => format!("{subject} left the room"),
-        Some(MC::Invited) => format!("{actor} invited {subject}"),
-        Some(MC::Kicked) => format!("{actor} removed {subject}"),
-        Some(MC::Banned) => format!("{actor} banned {subject}"),
-        Some(MC::Unbanned) => format!("{actor} unbanned {subject}"),
-        Some(MC::InvitationAccepted) => format!("{subject} accepted the invite"),
-        Some(MC::InvitationRejected) => format!("{subject} rejected the invite"),
-        Some(MC::InvitationRevoked) => format!("{actor} revoked the invite for {subject}"),
-        Some(MC::KickedAndBanned) => format!("{actor} removed and banned {subject}"),
-        Some(MC::Knocked) => format!("{subject} knocked"),
-        Some(MC::KnockAccepted) => format!("{actor} accepted {subject}"),
-        Some(MC::KnockDenied) => format!("{actor} denied {subject}"),
-        _ => format!("{subject} updated membership"),
-    }
-}
-
-fn tl_render_profile_change(
-    _ev: &UiEventTimelineItem,
-    pc: &matrix_sdk_ui::timeline::MemberProfileChange,
-) -> String {
-    let subject = pc.user_id().to_string();
-
-    if let Some(ch) = pc.displayname_change() {
-        match (&ch.old, &ch.new) {
-            (None, Some(new)) => return format!("{subject} set their display name to '{new}'"),
-            (Some(old), Some(new)) if old != new => {
-                return format!("{subject} changed their display name from '{old}' to '{new}'");
-            }
-            (Some(_), None) => return format!("{subject} removed their display name"),
-            _ => {}
-        }
-    }
-
-    if pc.avatar_url_change().is_some() {
-        return format!("{subject} updated their avatar");
-    }
-
-    format!("{subject} updated their profile")
-}
-
-fn tl_render_other_state(
-    ev: &UiEventTimelineItem,
-    s: &matrix_sdk_ui::timeline::OtherState,
-) -> String {
-    use matrix_sdk_ui::timeline::AnyOtherFullStateEventContent as A;
-
-    let actor = ev.sender().to_string();
-    match s.content() {
-        A::RoomName(c) => {
-            let mut name = "";
-            if let ruma::events::FullStateEventContent::Original { content, .. } = c {
-                name = &content.name;
-            }
-            format!("{actor} changed the room name to {name}")
-        }
-        A::RoomTopic(c) => {
-            let mut topic = "";
-            if let ruma::events::FullStateEventContent::Original { content, .. } = c {
-                topic = &content.topic;
-            }
-            format!("{actor} changed the topic to {topic}")
-        }
-        A::RoomAvatar(_) => format!("{actor} changed the room avatar"),
-        A::RoomEncryption(_) => "Encryption enabled for this room".to_string(),
-        A::RoomPinnedEvents(_) => format!("{actor} updated pinned events"),
-        A::RoomPowerLevels(_) => format!("{actor} changed power levels"),
-        A::RoomCanonicalAlias(_) => format!("{actor} changed the main address"),
-        _ => {
-            let ty = s.content().event_type().to_string();
-            format!("{actor} updated state: {ty}")
-        }
-    }
-}
-
-fn tl_mxc_from_source(src: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {
-    use matrix_sdk::ruma::events::room::MediaSource as MS;
-    match src {
-        MS::Plain(mxc) => Some(mxc.to_string()),
-        MS::Encrypted(file) => Some(file.url.to_string()),
-    }
-}
-
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
     let room = client.get_room(room_id)?;
     room.timeline().await.ok()
 }
 
-fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
+fn map_timeline_event(
+    ev: &EventTimelineItem,
+    room_id: &str,
+    item_id: Option<&str>,
+) -> Option<MessageEvent> {
     let ts: u64 = ev.timestamp().0.into();
     let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
     let txn_id = ev.transaction_id().map(|t| t.to_string());
@@ -4155,12 +3492,16 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
         None => None,
     };
 
+    let item_id_str = item_id
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{:?}", ev.identifier()));
+
     let mut reply_to_event_id: Option<String> = None;
     let mut reply_to_sender: Option<String> = None;
     let mut reply_to_body: Option<String> = None;
     let mut attachment: Option<AttachmentInfo> = None;
     let thread_root_event_id = ev.content().thread_root().map(|id| id.to_string());
-    let body;
+    let body: String;
 
     match ev.content() {
         TimelineItemContent::MsgLike(ml) => {
@@ -4175,95 +3516,7 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
             }
 
             if let Some(msg) = ml.as_message() {
-                use matrix_sdk::ruma::events::room::message::MessageType as MT;
-                let mt = msg.msgtype();
-                match mt {
-                    MT::Image(c) => {
-                        let mxc = mxc_from_media_source(&c.source);
-                        let (w, h, size, mime, thumb) = if let Some(info) = &c.info {
-                            (
-                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.size.map(|v| u64::from(v)),
-                                info.mimetype.clone(),
-                                info.thumbnail_source
-                                    .as_ref()
-                                    .and_then(|s| mxc_from_media_source(s)),
-                            )
-                        } else {
-                            (None, None, None, None, None)
-                        };
-                        if let Some(mxc_uri) = mxc {
-                            attachment = Some(AttachmentInfo {
-                                kind: AttachmentKind::Image,
-                                mxc_uri,
-                                mime,
-                                size_bytes: size,
-                                width: w,
-                                height: h,
-                                duration_ms: None,
-                                thumbnail_mxc_uri: thumb,
-                            });
-                        }
-                    }
-                    MT::Video(c) => {
-                        let mxc = mxc_from_media_source(&c.source);
-                        let (w, h, size, mime, dur, thumb) = if let Some(info) = &c.info {
-                            (
-                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.size.map(|v| u64::from(v)),
-                                info.mimetype.clone(),
-                                info.duration.map(|d| d.as_millis() as u64),
-                                info.thumbnail_source
-                                    .as_ref()
-                                    .and_then(|s| mxc_from_media_source(s)),
-                            )
-                        } else {
-                            (None, None, None, None, None, None)
-                        };
-                        if let Some(mxc_uri) = mxc {
-                            attachment = Some(AttachmentInfo {
-                                kind: AttachmentKind::Video,
-                                mxc_uri: mxc_uri.clone(),
-                                mime,
-                                size_bytes: size,
-                                width: w,
-                                height: h,
-                                duration_ms: dur,
-                                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc_uri.clone())),
-                            });
-                        }
-                    }
-                    MT::File(c) => {
-                        let mxc = mxc_from_media_source(&c.source);
-                        let (size, mime, thumb) = if let Some(info) = &c.info {
-                            (
-                                info.size.map(|v| u64::from(v)),
-                                info.mimetype.clone(),
-                                info.thumbnail_source
-                                    .as_ref()
-                                    .and_then(|s| mxc_from_media_source(s)),
-                            )
-                        } else {
-                            (None, None, None)
-                        };
-                        if let Some(mxc_uri) = mxc {
-                            attachment = Some(AttachmentInfo {
-                                kind: AttachmentKind::File,
-                                mxc_uri,
-                                mime,
-                                size_bytes: size,
-                                width: None,
-                                height: None,
-                                duration_ms: None,
-                                thumbnail_mxc_uri: thumb,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-
+                attachment = extract_attachment(&msg);
                 let raw = msg.body();
                 body = if reply_to_event_id.is_some() {
                     strip_reply_fallback(raw)
@@ -4271,7 +3524,7 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
                     render_message_text(&msg)
                 };
             } else {
-                body = render_timeline_text(ev);
+                body = render_msg_like(ev, ml);
             }
         }
         _ => {
@@ -4280,7 +3533,7 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     }
 
     Some(MessageEvent {
-        item_id: format!("{:?}", ev.identifier()),
+        item_id: item_id_str,
         event_id,
         room_id: room_id.to_string(),
         sender: ev.sender().to_string(),
@@ -4296,152 +3549,94 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
     })
 }
 
-fn map_event_with_uid(ev: &EventTimelineItem, room_id: &str, uid: &str) -> Option<MessageEvent> {
-    let ts: u64 = ev.timestamp().0.into();
-    let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
-    let txn_id = ev.transaction_id().map(|t| t.to_string());
-    let send_state = match ev.send_state() {
-        Some(EventSendState::NotSentYet { .. }) => Some(SendState::Sending),
-        Some(EventSendState::SendingFailed { .. }) => Some(SendState::Failed),
-        Some(EventSendState::Sent { .. }) => Some(SendState::Sent),
-        None => None,
-    };
-
-    let mut reply_to_event_id: Option<String> = None;
-    let mut reply_to_sender: Option<String> = None;
-    let mut reply_to_body: Option<String> = None;
-    let thread_root_event_id: Option<String> = ev.content().thread_root().map(|id| id.to_string());
-    let body;
-    let mut attachment: Option<AttachmentInfo> = None;
-
-    match ev.content() {
-        TimelineItemContent::MsgLike(ml) => {
-            if let Some(details) = &ml.in_reply_to {
-                reply_to_event_id = Some(details.event_id.to_string());
-                if let matrix_sdk_ui::timeline::TimelineDetails::Ready(embed) = &details.event {
-                    reply_to_sender = Some(embed.sender.to_string());
-                    if let Some(m) = embed.content.as_message() {
-                        reply_to_body = Some(m.body().to_owned());
-                    }
-                }
-            }
-            if let Some(msg) = ml.as_message() {
-                use matrix_sdk::ruma::events::room::message::MessageType as MT;
-                let mt = msg.msgtype();
-                match mt {
-                    MT::Image(c) => {
-                        let mxc = mxc_from_media_source(&c.source);
-                        let (w, h, size, mime, thumb) = if let Some(info) = &c.info {
-                            (
-                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.size.map(|v| u64::from(v)),
-                                info.mimetype.clone(),
-                                info.thumbnail_source
-                                    .as_ref()
-                                    .and_then(|s| mxc_from_media_source(s)),
-                            )
-                        } else {
-                            (None, None, None, None, None)
-                        };
-                        if let Some(mxc_uri) = mxc {
-                            attachment = Some(AttachmentInfo {
-                                kind: AttachmentKind::Image,
-                                mxc_uri,
-                                mime,
-                                size_bytes: size,
-                                width: w,
-                                height: h,
-                                duration_ms: None,
-                                thumbnail_mxc_uri: thumb,
-                            });
-                        }
-                    }
-                    MT::Video(c) => {
-                        let mxc = mxc_from_media_source(&c.source);
-                        let (w, h, size, mime, dur, thumb) = if let Some(info) = &c.info {
-                            (
-                                info.width.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.height.map(|v| u32::try_from(v).unwrap_or(0)),
-                                info.size.map(|v| u64::from(v)),
-                                info.mimetype.clone(),
-                                info.duration.map(|d| d.as_millis() as u64),
-                                info.thumbnail_source
-                                    .as_ref()
-                                    .and_then(|s| mxc_from_media_source(s)),
-                            )
-                        } else {
-                            (None, None, None, None, None, None)
-                        };
-                        if let Some(mxc_uri) = mxc {
-                            attachment = Some(AttachmentInfo {
-                                kind: AttachmentKind::Video,
-                                mxc_uri: mxc_uri.clone(),
-                                mime,
-                                size_bytes: size,
-                                width: w,
-                                height: h,
-                                duration_ms: dur,
-                                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc_uri.clone())),
-                            });
-                        }
-                    }
-                    MT::File(c) => {
-                        let mxc = mxc_from_media_source(&c.source);
-                        let (size, mime, thumb) = if let Some(info) = &c.info {
-                            (
-                                info.size.map(|v| u64::from(v)),
-                                info.mimetype.clone(),
-                                info.thumbnail_source
-                                    .as_ref()
-                                    .and_then(|s| mxc_from_media_source(s)),
-                            )
-                        } else {
-                            (None, None, None)
-                        };
-                        if let Some(mxc_uri) = mxc {
-                            attachment = Some(AttachmentInfo {
-                                kind: AttachmentKind::File,
-                                mxc_uri,
-                                mime,
-                                size_bytes: size,
-                                width: None,
-                                height: None,
-                                duration_ms: None,
-                                thumbnail_mxc_uri: thumb,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-                let raw = msg.body();
-                body = if reply_to_event_id.is_some() {
-                    strip_reply_fallback(raw)
-                } else {
-                    render_message_text(&msg)
-                };
-            } else {
-                body = render_timeline_text(ev);
-            }
+fn extract_attachment(msg: &matrix_sdk_ui::timeline::Message) -> Option<AttachmentInfo> {
+    use matrix_sdk::ruma::events::room::message::MessageType as MT;
+    match msg.msgtype() {
+        MT::Image(c) => {
+            let mxc = mxc_from_media_source(&c.source)?;
+            let (w, h, size, mime, thumb) = c
+                .info
+                .as_ref()
+                .map(|info| {
+                    (
+                        info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                        info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                        info.size.map(u64::from),
+                        info.mimetype.clone(),
+                        info.thumbnail_source
+                            .as_ref()
+                            .and_then(mxc_from_media_source),
+                    )
+                })
+                .unwrap_or_default();
+            Some(AttachmentInfo {
+                kind: AttachmentKind::Image,
+                mxc_uri: mxc,
+                mime,
+                size_bytes: size,
+                width: w,
+                height: h,
+                duration_ms: None,
+                thumbnail_mxc_uri: thumb,
+            })
         }
-        _ => body = render_timeline_text(ev),
+        MT::Video(c) => {
+            let mxc = mxc_from_media_source(&c.source)?;
+            let (w, h, size, mime, dur, thumb) = c
+                .info
+                .as_ref()
+                .map(|info| {
+                    (
+                        info.width.map(|v| u32::try_from(v).unwrap_or(0)),
+                        info.height.map(|v| u32::try_from(v).unwrap_or(0)),
+                        info.size.map(u64::from),
+                        info.mimetype.clone(),
+                        info.duration.map(|d| d.as_millis() as u64),
+                        info.thumbnail_source
+                            .as_ref()
+                            .and_then(mxc_from_media_source),
+                    )
+                })
+                .unwrap_or_default();
+            Some(AttachmentInfo {
+                kind: AttachmentKind::Video,
+                mxc_uri: mxc.clone(),
+                mime,
+                size_bytes: size,
+                width: w,
+                height: h,
+                duration_ms: dur,
+                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc)),
+            })
+        }
+        MT::File(c) => {
+            let mxc = mxc_from_media_source(&c.source)?;
+            let (size, mime, thumb) = c
+                .info
+                .as_ref()
+                .map(|info| {
+                    (
+                        info.size.map(u64::from),
+                        info.mimetype.clone(),
+                        info.thumbnail_source
+                            .as_ref()
+                            .and_then(mxc_from_media_source),
+                    )
+                })
+                .unwrap_or_default();
+            Some(AttachmentInfo {
+                kind: AttachmentKind::File,
+                mxc_uri: mxc,
+                mime,
+                size_bytes: size,
+                width: None,
+                height: None,
+                duration_ms: None,
+                thumbnail_mxc_uri: thumb,
+            })
+        }
+        _ => None,
     }
-
-    Some(MessageEvent {
-        item_id: uid.to_string(),
-        event_id,
-        room_id: room_id.to_string(),
-        sender: ev.sender().to_string(),
-        body,
-        timestamp_ms: ts,
-        send_state,
-        txn_id,
-        reply_to_event_id,
-        reply_to_sender,
-        reply_to_body,
-        attachment,
-        thread_root_event_id,
-    })
 }
 
 async fn map_event_id_via_timeline(
@@ -4454,7 +3649,7 @@ async fn map_event_id_via_timeline(
     };
     let _ = tl.fetch_details_for_event(eid.as_ref()).await;
     let item = tl.item_by_event_id(eid).await?;
-    map_event(&item, rid.as_str())
+    map_timeline_event(&item, rid.as_str(), Some(eid.as_str())) // TODO: fix item_id usage
 }
 
 fn render_timeline_text(ev: &EventTimelineItem) -> String {
@@ -4688,6 +3883,91 @@ fn missing_reply_event_id(ev: &EventTimelineItem) -> Option<matrix_sdk::ruma::Ow
         }
     }
     None
+}
+
+fn map_vec_diff(
+    diff: VectorDiff<Arc<TimelineItem>>,
+    room_id: &OwnedRoomId,
+    tl: &Arc<Timeline>,
+) -> Option<TimelineDiffKind> {
+    match diff {
+        VectorDiff::Append { values } => {
+            let vals: Vec<_> = values
+                .iter()
+                .filter_map(|v| {
+                    v.as_event().and_then(|ei| {
+                        fetch_reply_if_needed(ei, tl);
+                        map_timeline_event(ei, room_id.as_str(), Some(&v.unique_id().0.to_string()))
+                    })
+                })
+                .collect();
+            Some(TimelineDiffKind::Append { values: vals })
+        }
+        VectorDiff::PushBack { value } => value
+            .as_event()
+            .and_then(|ei| {
+                fetch_reply_if_needed(ei, tl);
+                map_timeline_event(ei, room_id.as_str(), Some(&value.unique_id().0.to_string()))
+            })
+            .map(|v| TimelineDiffKind::PushBack { value: v }),
+        VectorDiff::PushFront { value } => value
+            .as_event()
+            .and_then(|ei| {
+                fetch_reply_if_needed(ei, tl);
+                map_timeline_event(ei, room_id.as_str(), Some(&value.unique_id().0.to_string()))
+            })
+            .map(|v| TimelineDiffKind::PushFront { value: v }),
+        VectorDiff::Insert { index, value } => value
+            .as_event()
+            .and_then(|ei| {
+                fetch_reply_if_needed(ei, tl);
+                map_timeline_event(ei, room_id.as_str(), Some(&value.unique_id().0.to_string()))
+            })
+            .map(|v| TimelineDiffKind::Insert {
+                index: index as u32,
+                value: v,
+            }),
+        VectorDiff::Set { index, value } => value
+            .as_event()
+            .and_then(|ei| {
+                fetch_reply_if_needed(ei, tl);
+                map_timeline_event(ei, room_id.as_str(), Some(&value.unique_id().0.to_string()))
+            })
+            .map(|v| TimelineDiffKind::Set {
+                index: index as u32,
+                value: v,
+            }),
+        VectorDiff::Remove { index } => Some(TimelineDiffKind::Remove {
+            index: index as u32,
+        }),
+        VectorDiff::PopBack => Some(TimelineDiffKind::PopBack),
+        VectorDiff::PopFront => Some(TimelineDiffKind::PopFront),
+        VectorDiff::Truncate { length } => Some(TimelineDiffKind::Truncate {
+            length: length as u32,
+        }),
+        VectorDiff::Clear => Some(TimelineDiffKind::Clear),
+        VectorDiff::Reset { values } => {
+            let vals: Vec<_> = values
+                .iter()
+                .filter_map(|v| {
+                    v.as_event().and_then(|ei| {
+                        fetch_reply_if_needed(ei, tl);
+                        map_timeline_event(ei, room_id.as_str(), Some(&v.unique_id().0.to_string()))
+                    })
+                })
+                .collect();
+            Some(TimelineDiffKind::Reset { values: vals })
+        }
+    }
+}
+
+fn fetch_reply_if_needed(ei: &EventTimelineItem, tl: &Arc<Timeline>) {
+    if let Some(eid) = missing_reply_event_id(ei) {
+        let tlc = tl.clone();
+        tokio::spawn(async move {
+            let _ = tlc.fetch_details_for_event(eid.as_ref()).await;
+        });
+    }
 }
 
 #[export(callback_interface)]

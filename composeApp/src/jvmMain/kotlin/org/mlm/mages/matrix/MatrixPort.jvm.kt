@@ -11,7 +11,6 @@ import org.mlm.mages.AttachmentInfo
 import org.mlm.mages.AttachmentKind
 import mages.Client as FfiClient
 import mages.RoomSummary as FfiRoom
-import mages.MessageEvent as FfiEvent
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.platform.MagesPaths
@@ -55,106 +54,31 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.recentEvents(roomId, limit.toUInt()).map { it.toModel() }
 
     override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
-        val handle = client.openTimeline(roomId, null)
-
-        runCatching {
-            val init = handle.initial().map { it.toModel() }
-            trySendBlocking(TimelineDiff.Reset(init))
-        }
-
-        val view = java.util.concurrent.CopyOnWriteArrayList<MessageEvent>()
-
-        val obs = object : mages.TlObserver {
-            override fun onDiffs(batch: List<mages.TlVecDiffDto>) {
-                for (d in batch) {
-                    when (d) {
-                        is mages.TlVecDiffDto.Reset -> {
-                            val items = d.values.map { it.toModel() }
-                            view.clear(); view.addAll(items)
-                            trySendBlocking(TimelineDiff.Reset(items))
-                        }
-                        is mages.TlVecDiffDto.Clear -> {
-                            view.clear()
-                            trySendBlocking(TimelineDiff.Clear)
-                        }
-                        is mages.TlVecDiffDto.Append -> {
-                            d.values.forEach { v ->
-                                val m = v.toModel()
-                                view.add(m)
-                                trySendBlocking(TimelineDiff.Insert(m))
-                            }
-                        }
-                        is mages.TlVecDiffDto.PushBack -> {
-                            val m = d.value.toModel()
-                            view.add(m)
-                            trySendBlocking(TimelineDiff.Insert(m))
-                        }
-                        is mages.TlVecDiffDto.PushFront -> {
-                            val m = d.value.toModel()
-                            view.add(0, m)
-                            trySendBlocking(TimelineDiff.Insert(m))
-                        }
-                        is mages.TlVecDiffDto.Insert -> {
-                            val idx = d.index.toInt().coerceIn(0, view.size)
-                            val m = d.value.toModel()
-                            view.add(idx, m)
-                            trySendBlocking(TimelineDiff.Insert(m))
-                        }
-                        is mages.TlVecDiffDto.Set -> {
-                            val idx = d.index.toInt()
-                            if (idx in 0 until view.size) {
-                                val m = d.value.toModel()
-                                view[idx] = m
-                                trySendBlocking(TimelineDiff.Update(m))
-                            } else {
-                                val m = d.value.toModel()
-                                view.add(m)
-                                trySendBlocking(TimelineDiff.Insert(m))
-                            }
-                        }
-                        is mages.TlVecDiffDto.Remove -> {
-                            val idx = d.index.toInt()
-                            if (idx in 0 until view.size) {
-                                val removed = view.removeAt(idx)
-                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
-                            } else {
-                                // out-of-range; rebuild safely from snapshot
-                                trySendBlocking(TimelineDiff.Reset(view.toList()))
-                            }
-                        }
-                        is mages.TlVecDiffDto.Truncate -> {
-                            val keep = d.length.toInt().coerceIn(0, view.size)
-                            while (view.size > keep) {
-                                val removed = view.removeAt(view.lastIndex)
-                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
-                            }
-                        }
-                        is mages.TlVecDiffDto.PopFront -> {
-                            if (view.isNotEmpty()) {
-                                val removed = view.removeAt(0)
-                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
-                            }
-                        }
-                        is mages.TlVecDiffDto.PopBack -> {
-                            if (view.isNotEmpty()) {
-                                val removed = view.removeAt(view.lastIndex)
-                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
-                            }
-                        }
+        val obs = object : mages.TimelineObserver {
+            override fun onDiff(diff: mages.TimelineDiffKind) {
+                val mapped: TimelineDiff<MessageEvent> = when (diff) {
+                    is mages.TimelineDiffKind.Reset -> TimelineDiff.Reset(diff.values.map { it.toModel() })
+                    is mages.TimelineDiffKind.Clear -> TimelineDiff.Clear
+                    is mages.TimelineDiffKind.Append -> {
+                        diff.values.forEach { trySendBlocking(TimelineDiff.Insert(it.toModel())) }
+                        return
                     }
+                    is mages.TimelineDiffKind.PushBack -> TimelineDiff.Insert(diff.value.toModel())
+                    is mages.TimelineDiffKind.PushFront -> TimelineDiff.Insert(diff.value.toModel())
+                    is mages.TimelineDiffKind.Insert -> TimelineDiff.Insert(diff.value.toModel())
+                    is mages.TimelineDiffKind.Set -> TimelineDiff.Update(diff.value.toModel())
+                    is mages.TimelineDiffKind.Remove -> TimelineDiff.Remove(diff.index.toString())
+                    is mages.TimelineDiffKind.PopFront -> return // handled by Remove
+                    is mages.TimelineDiffKind.PopBack -> return
+                    is mages.TimelineDiffKind.Truncate -> return
                 }
+                trySendBlocking(mapped)
             }
-            override fun onError(message: String) {
-                // TODO: route to logs/snackbar
-            }
+            override fun onError(message: String) { /* log */ }
         }
 
-        // Start streaming
-        runCatching { handle.register(obs) }
-
-        awaitClose {
-            runCatching { handle.abort() }
-        }
+        val token = client.observeTimeline(roomId, obs)
+        awaitClose { client.unobserveTimeline(token) }
     }
 
     override fun observeConnection(observer: MatrixPort.ConnectionObserver): ULong {
@@ -200,8 +124,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
         client.enqueueText(roomId, body, txnId)
-
-    override fun startSendWorker() = client.startSendWorker()
 
     override fun observeSends(): Flow<SendUpdate> = callbackFlow {
         val obs = object : mages.SendObserver {
@@ -404,33 +326,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.startUserSas(userId, obs)
     }
 
-//    override suspend fun startVerification(
-//        targetUser: String,
-//        targetDevice: String,
-//        observer: VerificationObserver
-//    ): Boolean {
-//        val cb = object : mages.VerificationObserver {
-//            override fun onPhase(flowId: String, phase: mages.SasPhase) {
-//                observer.onPhase(flowId, when (phase) {
-//                    mages.SasPhase.REQUESTED -> SasPhase.Requested
-//                    mages.SasPhase.READY -> SasPhase.Ready
-//                    mages.SasPhase.EMOJIS -> SasPhase.Emojis
-//                    mages.SasPhase.CONFIRMED -> SasPhase.Confirmed
-//                    mages.SasPhase.CANCELLED -> SasPhase.Cancelled
-//                    mages.SasPhase.FAILED -> SasPhase.Failed
-//                    mages.SasPhase.DONE -> SasPhase.Done
-//                })
-//            }
-//            override fun onEmojis(payload: SasEmojis) {
-//                observer.onEmojis(payload.flowId, payload.otherUser, payload.otherDevice, payload.emojis)
-//            }
-//            override fun onError(flowId: String, message: String) {
-//                observer.onError(flowId, message)
-//            }
-//        }
-//        return client.startVerification(targetUser, targetDevice, cb)
-//    }
-
     override suspend fun acceptVerification(
         flowId: String,
         otherUserId: String?,
@@ -485,11 +380,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override suspend fun logout(): Boolean = client.logout()
-    override suspend fun cancelTxn(txnId: String): Boolean =
-        client.cancelTxn(txnId)
-
-    override suspend fun retryTxnNow(txnId: String): Boolean =
-        client.retryTxnNow(txnId)
 
     override suspend fun retryByTxn(roomId: String, txnId: String): Boolean {
         return client.retryByTxn(roomId, txnId)
@@ -501,9 +391,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
     ): Result<String> {
         return runCatching { client.downloadToCacheFile(mxcUri, filenameHint).path }
     }
-
-    override suspend fun pendingSends(): UInt =
-        client.pendingSends()
 
     override suspend fun checkVerificationRequest(userId: String, flowId: String): Boolean =
         client.checkVerificationRequest(userId, flowId)
@@ -607,7 +494,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         roomId: String,
         eventId: String,
     ): RenderedNotification? =
-        client.renderNotification(roomId, eventId)?.let {
+        client.fetchNotification(roomId, eventId)?.let {
             RenderedNotification(
                 roomId = it.roomId,
                 eventId = it.eventId,
@@ -910,54 +797,44 @@ class RustMatrixPort(hs: String) : MatrixPort {
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
-private fun FfiEvent.toModel() = MessageEvent(
+
+private fun mages.MessageEvent.toModel() = MessageEvent(
     itemId = itemId,
     eventId = eventId,
     roomId = roomId,
     sender = sender,
     body = body,
     timestamp = timestampMs.toLong(),
+    sendState = sendState?.toKotlin(),
     txnId = txnId,
-    attachment = attachment?.let {
-        AttachmentInfo(
-            kind = when (it.kind) {
-                mages.AttachmentKind.IMAGE -> AttachmentKind.Image
-                mages.AttachmentKind.VIDEO -> AttachmentKind.Video
-                mages.AttachmentKind.FILE -> AttachmentKind.File
-            },
-            mxcUri = it.mxcUri,
-            thumbnailMxcUri = it.thumbnailMxcUri,
-            mime = it.mime,
-            durationMs = it.durationMs?.toLong()
-        )
-    },
+    replyToEventId = replyToEventId,
+    replyToSender = replyToSender,
+    replyToBody = replyToBody,
+    attachment = attachment?.toModel(),
     threadRootEventId = threadRootEventId
 )
 
-private fun mages.TlMessageDto.toModel(): MessageEvent = MessageEvent(
-    itemId = itemId,
-    eventId = eventId,
-    roomId = roomId,
-    sender = sender,
-    body = body,
-    timestamp = timestampMs.toLong(),
-    txnId = txnId,
-    // You can enrich attachment later if needed
-    attachment = attachmentMxc?.let { mxc ->
-        AttachmentInfo(
-            kind = when (attachmentKind) {
-                "Image" -> AttachmentKind.Image
-                "Video" -> AttachmentKind.Video
-                "File"  -> AttachmentKind.File
-                else    -> AttachmentKind.File
-            },
-            mxcUri = mxc,
-            thumbnailMxcUri = null,
-            mime = null,
-            durationMs = durationMs?.toLong()
-        )
+private fun mages.SendState.toKotlin(): SendState = when (this) {
+    mages.SendState.SENDING -> SendState.Sending
+    mages.SendState.SENT -> SendState.Sent
+    mages.SendState.FAILED -> SendState.Failed
+    mages.SendState.ENQUEUED -> SendState.Enqueued
+    mages.SendState.RETRYING -> SendState.Retrying
+}
+
+private fun mages.AttachmentInfo.toModel() = AttachmentInfo(
+    kind = when (kind) {
+        mages.AttachmentKind.IMAGE -> AttachmentKind.Image
+        mages.AttachmentKind.VIDEO -> AttachmentKind.Video
+        mages.AttachmentKind.FILE -> AttachmentKind.File
     },
-    threadRootEventId = threadRootEventId
+    mxcUri = mxcUri,
+    mime = mime,
+    sizeBytes = sizeBytes?.toLong(),
+    width = width?.toInt(),
+    height = height?.toInt(),
+    durationMs = durationMs?.toLong(),
+    thumbnailMxcUri = thumbnailMxcUri
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)
