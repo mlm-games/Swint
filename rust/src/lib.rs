@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
-use uniffi::{Enum, Record};
+use uniffi::{Enum, Object, Record, export, setup_scaffolding};
 
 use futures_util::{StreamExt, TryStreamExt};
 use matrix_sdk::{
@@ -108,7 +108,7 @@ use matrix_sdk_ui::timeline::{
 };
 
 // UniFFI macro-first setup
-uniffi::setup_scaffolding!();
+setup_scaffolding!();
 
 // Types exposed to Kotlin
 #[derive(Clone, Record)]
@@ -126,7 +126,7 @@ pub enum ConnectionState {
     Reconnecting { attempt: u32, next_retry_secs: u32 },
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait ConnectionObserver: Send + Sync {
     fn on_connection_change(&self, state: ConnectionState);
 }
@@ -191,17 +191,17 @@ pub struct SyncStatus {
     pub message: Option<String>,
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait SyncObserver: Send + Sync {
     fn on_state(&self, status: SyncStatus);
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait TypingObserver: Send + Sync {
     fn on_update(&self, names: Vec<String>);
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait ReceiptsObserver: Send + Sync {
     fn on_changed(&self);
 }
@@ -215,12 +215,12 @@ pub struct CallInvite {
     pub ts_ms: u64,
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait CallObserver: Send + Sync {
     fn on_invite(&self, invite: CallInvite); // Optional future: on_hangup, on_answer…
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait ProgressObserver: Send + Sync {
     fn on_progress(&self, sent: u64, total: Option<u64>);
 }
@@ -231,7 +231,7 @@ pub struct DownloadResult {
     pub bytes: u64,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct RenderedNotification {
     pub room_id: String,
     pub event_id: String,
@@ -242,14 +242,14 @@ pub struct RenderedNotification {
     pub has_mention: bool,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct UnreadStats {
     pub messages: u64,
     pub notifications: u64,
     pub mentions: u64,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct RoomProfile {
     pub room_id: String,
     pub name: String,
@@ -259,7 +259,7 @@ pub struct RoomProfile {
     pub is_dm: bool,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct MemberSummary {
     pub user_id: String,
     pub display_name: Option<String>,
@@ -271,7 +271,7 @@ enum RoomListCmd {
     SetUnreadOnly(bool),
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct ThreadPage {
     pub root_event_id: String,
     pub room_id: String,
@@ -280,7 +280,7 @@ pub struct ThreadPage {
     pub prev_batch: Option<String>,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct ThreadSummary {
     pub root_event_id: String,
     pub room_id: String,
@@ -288,7 +288,7 @@ pub struct ThreadSummary {
     pub latest_ts_ms: Option<u64>,
 }
 
-#[derive(uniffi::Record, Clone)]
+#[derive(Record, Clone)]
 pub struct OwnReceipt {
     pub event_id: Option<String>,
     pub ts_ms: Option<u64>,
@@ -313,20 +313,20 @@ pub struct SasEmojis {
     pub emojis: Vec<String>,
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait VerificationObserver: Send + Sync {
     fn on_phase(&self, flow_id: String, phase: SasPhase);
     fn on_emojis(&self, payload: SasEmojis);
     fn on_error(&self, flow_id: String, message: String);
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait VerificationInboxObserver: Send + Sync {
     fn on_request(&self, flow_id: String, from_user: String, from_device: String);
     fn on_error(&self, message: String);
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct RoomListEntry {
     pub room_id: String,
     pub name: String,
@@ -334,14 +334,14 @@ pub struct RoomListEntry {
     pub last_ts: u64,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct DirectoryUser {
     pub user_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct PublicRoom {
     pub room_id: String,
     pub name: Option<String>,
@@ -353,33 +353,33 @@ pub struct PublicRoom {
     pub guest_can_join: bool,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct PublicRoomsPage {
     pub rooms: Vec<PublicRoom>,
     pub next_batch: Option<String>,
     pub prev_batch: Option<String>,
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait RoomListObserver: Send + Sync {
     fn on_reset(&self, items: Vec<RoomListEntry>);
     fn on_update(&self, item: RoomListEntry);
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct InviteSummary {
     pub room_id: String,
     pub name: String,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct ReactionSummary {
     pub key: String,
     pub count: u32,
     pub me: bool,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct SpaceInfo {
     pub room_id: String,
     pub name: String,
@@ -389,7 +389,7 @@ pub struct SpaceInfo {
     pub is_public: bool,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct SpaceChildInfo {
     pub room_id: String,
     pub name: Option<String>,
@@ -403,13 +403,13 @@ pub struct SpaceChildInfo {
     pub suggested: bool,
 }
 
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, Record)]
 pub struct SpaceHierarchyPage {
     pub children: Vec<SpaceChildInfo>,
     pub next_batch: Option<String>,
 }
 
-#[derive(uniffi::Record, Clone)]
+#[derive(Record, Clone)]
 pub struct TlMessageDto {
     pub item_id: String,
     pub event_id: String,
@@ -430,7 +430,7 @@ pub struct TlMessageDto {
     pub thread_root_event_id: Option<String>,
 }
 
-#[derive(uniffi::Enum, Clone)]
+#[derive(Enum, Clone)]
 pub enum TlVecDiffDto {
     Append { values: Vec<TlMessageDto> },
     PushBack { value: TlMessageDto },
@@ -445,13 +445,13 @@ pub enum TlVecDiffDto {
     Clear,
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait TlObserver: Send + Sync {
     fn on_diffs(&self, batch: Vec<TlVecDiffDto>);
     fn on_error(&self, message: String);
 }
 
-#[derive(uniffi::Object, Clone)]
+#[derive(Object, Clone)]
 pub struct TimelineHandle {
     client: matrix_sdk::Client,
     room_id: OwnedRoomId_Tl,
@@ -459,7 +459,7 @@ pub struct TimelineHandle {
     task: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
-#[uniffi::export]
+#[export]
 impl TimelineHandle {
     // Snapshot for first paint
     pub fn initial(&self) -> Vec<TlMessageDto> {
@@ -634,7 +634,7 @@ struct VerifFlow {
 
 type VerifMap = Arc<Mutex<HashMap<String, VerifFlow>>>;
 
-#[derive(uniffi::Object)]
+#[derive(Object)]
 pub struct Client {
     inner: SdkClient,
     store_dir: PathBuf,
@@ -676,12 +676,12 @@ pub struct SendUpdate {
     pub error: Option<String>,
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait SendObserver: Send + Sync {
     fn on_update(&self, update: SendUpdate);
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait TimelineDiffObserver: Send + Sync {
     fn on_insert(&self, event: MessageEvent);
     fn on_update(&self, event: MessageEvent);
@@ -690,7 +690,7 @@ pub trait TimelineDiffObserver: Send + Sync {
     fn on_reset(&self, events: Vec<MessageEvent>);
 }
 
-#[uniffi::export]
+#[export]
 impl Client {
     #[uniffi::constructor]
     pub fn new(homeserver_url: String, store_dir: String) -> Self {
@@ -4690,7 +4690,7 @@ fn missing_reply_event_id(ev: &EventTimelineItem) -> Option<matrix_sdk::ruma::Ow
     None
 }
 
-#[uniffi::export(callback_interface)]
+#[export(callback_interface)]
 pub trait UrlOpener: Send + Sync {
     fn open(&self, url: String) -> bool;
 }
