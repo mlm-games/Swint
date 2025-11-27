@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.nav.*
+import org.mlm.mages.platform.BackHandler
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberOpenBrowser
 import org.mlm.mages.ui.base.rememberSnackbarController
@@ -28,6 +29,11 @@ fun App(
 ) {
     MainTheme {
         val nav = rememberNavigator(initial = Route.Login)
+
+        BackHandler(enabled = nav.current != Route.Login && nav.current != Route.Rooms) {
+            nav.pop()
+        }
+
         val snackbar = rememberSnackbarController()
         var showCreateRoom by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
