@@ -153,7 +153,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         runCatching { handle.register(obs) }
 
         awaitClose {
-            runCatching { handle.close() }
+            runCatching { handle.abort() }
         }
     }
 
