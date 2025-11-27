@@ -20,6 +20,7 @@ import org.mlm.mages.MatrixService
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.matrix.ReceiptsObserver
 import org.mlm.mages.matrix.TimelineDiff
+import org.mlm.mages.platform.Notifier
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.AttachmentData
 
@@ -113,6 +114,9 @@ class RoomController(
     }
 
     private fun observeTimeline() {
+
+        Notifier.setCurrentRoom(_state.value.roomId)
+
         scope.launch {
             // Buffer diffs so downstream work (reactions, thumbnails, thread counts) never blocks the source
             service.timelineDiffs(_state.value.roomId)
@@ -141,6 +145,7 @@ class RoomController(
                                 if (diff.item.eventId.isNotBlank()) {
                                     launch { refreshReactionsFor(diff.item.eventId) }
                                 }
+                                notifyIfNeeded(diff.item)
                                 prefetchThumbnailsForEvents(listOf(diff.item))
                             }
                         }
@@ -229,6 +234,22 @@ class RoomController(
                 recomputeReadStatuses()
             }
         })
+    }
+
+    private fun notifyIfNeeded(event: MessageEvent) {
+        val myId = _state.value.myUserId ?: return
+        val senderIsMe = event.sender == myId
+
+        if (Notifier.shouldNotify(_state.value.roomId, senderIsMe)) {
+            val senderName = event.sender
+                .removePrefix("@")
+                .substringBefore(":")
+
+            Notifier.notifyRoom(
+                title = "$senderName in ${_state.value.roomName}",
+                body = event.body.take(100)
+            )
+        }
     }
 
     private fun recomputeDerived() {
@@ -490,5 +511,12 @@ class RoomController(
                 }
             }
         }
+    }
+
+    fun onCleared() {
+        Notifier.setCurrentRoom(null)
+        typingToken?.let { service.stopTypingObserver(it) }
+        receiptsToken?.let { service.port.stopReceiptsObserver(it) }
+        ownReceiptToken?.let { service.port.stopReceiptsObserver(it) }
     }
 }

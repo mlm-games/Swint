@@ -17,7 +17,7 @@ import org.mlm.mages.storage.provideAppDataStore
 object Notifier {
     /// fetches last 20 events per room, shows only those newer than stored lastReadTs
     suspend fun showNewEventNotifications(ctx: Context, service: MatrixService) {
-        val ds = org.mlm.mages.storage.provideAppDataStore(ctx)
+        val ds = provideAppDataStore(ctx)
         val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (mgr.getNotificationChannel("messages") == null) {

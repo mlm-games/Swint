@@ -130,6 +130,12 @@ fun App(
                         val controller = remember(route.roomId) {
                             RoomController(service, dataStore, route.roomId, route.name)
                         }
+                        DisposableEffect(route.roomId) {
+                            onDispose {
+                                controller.onCleared()
+                            }
+                        }
+
                         val ui by controller.state.collectAsState()
                         val openExternal = rememberFileOpener()
                         RoomScreen(

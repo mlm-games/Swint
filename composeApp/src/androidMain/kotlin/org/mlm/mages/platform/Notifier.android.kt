@@ -8,6 +8,8 @@ import org.mlm.mages.R
 
 actual object Notifier {
     private const val CHANNEL_ID = "messages"
+    private var currentRoomId: String? = null
+
     actual fun notifyRoom(title: String, body: String) {
         val ctx = AppCtx.get() ?: return
         val mgr = ctx.getSystemService<NotificationManager>() ?: return
@@ -24,5 +26,19 @@ actual object Notifier {
             .setAutoCancel(true)
             .build()
         mgr.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), n)
+    }
+
+    actual fun setCurrentRoom(roomId: String?) {
+        currentRoomId = roomId
+    }
+
+    actual fun setWindowFocused(focused: Boolean) {
+        // Not needed on Android
+    }
+
+    actual fun shouldNotify(roomId: String, senderIsMe: Boolean): Boolean {
+        if (senderIsMe) return false
+        if (currentRoomId == roomId) return false
+        return true
     }
 }

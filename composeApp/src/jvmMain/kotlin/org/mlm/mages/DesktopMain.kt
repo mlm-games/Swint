@@ -1,5 +1,6 @@
 package org.mlm.mages
 
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,6 +23,7 @@ import org.freedesktop.dbus.types.Variant
 import org.jetbrains.compose.resources.painterResource
 import org.mlm.mages.matrix.createMatrixPort
 import org.mlm.mages.platform.MagesPaths
+import org.mlm.mages.platform.Notifier
 import org.mlm.mages.storage.loadBoolean
 import org.mlm.mages.storage.loadString
 import org.mlm.mages.storage.provideAppDataStore
@@ -87,7 +89,20 @@ fun main() = application {
             state = windowState,
             title = "Mages"
         ) {
-            // Hide on minimize
+            LaunchedEffect(Unit) {
+                java.awt.Frame.getFrames().firstOrNull()?.addWindowFocusListener(
+                    object : java.awt.event.WindowFocusListener {
+                        override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
+                            Notifier.setWindowFocused(true)
+                        }
+
+                        override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
+                            Notifier.setWindowFocused(false)
+                        }
+                    }
+                )
+            }
+                // Hide on minimize
 //            LaunchedEffect(Unit) {
 //                val composeWindow = SwingUtilities.getWindowAncestor(window.rootPane) as? ComposeWindow
 //                composeWindow?.addWindowStateListener { e ->
