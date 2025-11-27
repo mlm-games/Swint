@@ -194,7 +194,6 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'release-desktop.yml',
-              ref: 'main',
               inputs: {
                 version_tag: '${{ needs.prepare-version.outputs.version_name }}',
                 mark_prerelease: '${{ inputs.mark_prerelease }}'
