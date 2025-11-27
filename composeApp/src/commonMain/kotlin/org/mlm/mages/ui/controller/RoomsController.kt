@@ -98,18 +98,6 @@ class RoomsController(
                     )
                 }
 
-                if (item.unread.toInt() == 0) {
-                    scope.launch {
-                        val cnt = runCatching { service.port.roomUnreadStats(item.roomId)?.messages?.toInt() ?: 0 }
-                            .getOrDefault(0)
-                        if (cnt > 0) {
-                            _state.update { st ->
-                                st.copy(unread = st.unread.toMutableMap().apply { put(item.roomId, cnt) })
-                            }
-                        }
-                    }
-                }
-
                 startNotificationObserver(item.roomId, item.name)
             }
         })
@@ -263,6 +251,7 @@ class RoomsController(
                     }
                 }
             } catch (e: Exception) {
+                e.printStackTrace()
                 notificationJobs.remove(roomId)
             }
         }
