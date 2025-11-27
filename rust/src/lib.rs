@@ -69,7 +69,7 @@ use matrix_sdk_ui::{
     sync_service::{State, SyncService},
     timeline::{
         EventSendState, EventTimelineItem, MsgLikeContent, MsgLikeKind, RoomExt as _, Timeline,
-        TimelineEventItemId, TimelineItem, TimelineItemContent,
+        TimelineEventItemId, TimelineFocus, TimelineItem, TimelineItemContent,
     },
 };
 use ruma::api::client::{
@@ -99,6 +99,13 @@ use ruma::{
 };
 use serde_json::value::RawValue;
 use std::panic::AssertUnwindSafe;
+
+use eyeball_im::VectorDiff as EyeVectorDiff;
+use matrix_sdk::ruma::{OwnedEventId as OwnedEventId_Tl, OwnedRoomId as OwnedRoomId_Tl};
+use matrix_sdk_ui::timeline::{
+    EventTimelineItem as UiEventTimelineItem, Timeline as UiTimeline,
+    TimelineItem as UiTimelineItem,
+};
 
 // UniFFI macro-first setup
 uniffi::setup_scaffolding!();
@@ -400,6 +407,148 @@ pub struct SpaceChildInfo {
 pub struct SpaceHierarchyPage {
     pub children: Vec<SpaceChildInfo>,
     pub next_batch: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone)]
+pub struct TlMessageDto {
+    pub item_id: String,
+    pub event_id: String,
+    pub room_id: String,
+    pub sender: String,
+    pub body: String,
+    pub timestamp_ms: u64,
+    pub send_state: Option<String>, // "Sending" | "Sent" | "Failed"
+    pub txn_id: Option<String>,
+    pub reply_to_event_id: Option<String>,
+    pub reply_to_sender: Option<String>,
+    pub reply_to_body: Option<String>,
+    pub attachment_mxc: Option<String>,
+    pub attachment_kind: Option<String>, // "Image" | "Video" | "File"
+    pub duration_ms: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub thread_root_event_id: Option<String>,
+}
+
+#[derive(uniffi::Enum, Clone)]
+pub enum TlVecDiffDto {
+    Append { values: Vec<TlMessageDto> },
+    PushBack { value: TlMessageDto },
+    PushFront { value: TlMessageDto },
+    PopBack,
+    PopFront,
+    Insert { index: u32, value: TlMessageDto },
+    Remove { index: u32 },
+    Set { index: u32, value: TlMessageDto },
+    Truncate { length: u32 },
+    Reset { values: Vec<TlMessageDto> },
+    Clear,
+}
+
+#[uniffi::export(callback_interface)]
+pub trait TlObserver: Send + Sync {
+    fn on_diffs(&self, batch: Vec<TlVecDiffDto>);
+    fn on_error(&self, message: String);
+}
+
+#[derive(uniffi::Object, Clone)]
+pub struct TimelineHandle {
+    client: matrix_sdk::Client,
+    room_id: OwnedRoomId_Tl,
+    timeline: std::sync::Arc<UiTimeline>,
+    task: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+#[uniffi::export]
+impl TimelineHandle {
+    // Snapshot for first paint
+    pub fn initial(&self) -> Vec<TlMessageDto> {
+        RT.block_on(async {
+            let (items, _stream) = self.timeline.subscribe().await;
+            items
+                .iter()
+                .filter_map(|it| map_tl_item(it.as_ref(), &self.room_id))
+                .collect()
+        })
+    }
+
+    // Start/replace the background stream task
+    pub fn register(&self, observer: Box<dyn TlObserver>) {
+        if let Some(prev) = self.task.lock().unwrap().take() {
+            prev.abort();
+        }
+        let obs: std::sync::Arc<dyn TlObserver> = std::sync::Arc::from(observer);
+        let tl = self.timeline.clone();
+        let rid = self.room_id.clone();
+
+        let task = RT.spawn(async move {
+            let (_init, mut stream) = tl.subscribe().await;
+            while let Some(batch) = stream.next().await {
+                let mapped: Vec<TlVecDiffDto> = batch
+                    .into_iter()
+                    .filter_map(|d| map_tl_vecdiff(d, &rid))
+                    .collect();
+                if !mapped.is_empty() {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        obs.on_diffs(mapped)
+                    }));
+                }
+            }
+        });
+        *self.task.lock().unwrap() = Some(task);
+    }
+
+    pub fn paginate_back(&self, count: u16) -> bool {
+        RT.block_on(async { self.timeline.paginate_backwards(count).await })
+            .unwrap_or(false)
+    }
+    pub fn paginate_forward(&self, count: u16) -> bool {
+        RT.block_on(async { self.timeline.paginate_forwards(count).await })
+            .unwrap_or(false)
+    }
+
+    pub fn fetch_details(&self, event_id: String) -> bool {
+        RT.block_on(async {
+            let eid: OwnedEventId_Tl = match event_id.try_into() {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            self.timeline
+                .fetch_details_for_event(eid.as_ref())
+                .await
+                .is_ok()
+        })
+    }
+
+    pub fn send_text(&self, body: String) -> bool {
+        RT.block_on(async {
+            use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+            self.timeline
+                .send(RoomMessageEventContent::text_plain(body).into())
+                .await
+                .is_ok()
+        })
+    }
+
+    pub fn send_read_receipt(&self, event_id: String) -> bool {
+        RT.block_on(async {
+            use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
+            let eid: OwnedEventId_Tl = match event_id.try_into() {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            self.timeline
+                .send_single_receipt(ReceiptType::Read, eid)
+                .await
+                .unwrap_or(false)
+        })
+    }
+
+    pub fn abort(&self) {
+        if let Some(prev) = self.task.lock().unwrap().take() {
+            prev.abort();
+        }
+    }
 }
 
 fn cache_dir(dir: &PathBuf) -> PathBuf {
@@ -3611,6 +3760,44 @@ impl Client {
             }
         })
     }
+
+    pub fn open_timeline(
+        &self,
+        room_id: String,
+        thread_root: Option<String>,
+    ) -> Result<std::sync::Arc<TimelineHandle>, FfiError> {
+        let rid: OwnedRoomId_Tl =
+            OwnedRoomId_Tl::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+        let Some(room) = self.inner.get_room(&rid) else {
+            return Err(FfiError::Msg("Room not found".into()));
+        };
+
+        let tl: std::sync::Arc<UiTimeline> = if let Some(root) = thread_root {
+            let eid: OwnedEventId_Tl =
+                OwnedEventId_Tl::try_from(root).map_err(|e| FfiError::Msg(e.to_string()))?;
+            std::sync::Arc::new(
+                RT.block_on(async {
+                    room.timeline_builder()
+                        .with_focus(TimelineFocus::Thread { root_event_id: eid })
+                        .build()
+                        .await
+                })
+                .map_err(|e| FfiError::Msg(e.to_string()))?,
+            )
+        } else {
+            std::sync::Arc::new(
+                RT.block_on(async { room.timeline().await })
+                    .map_err(|e| FfiError::Msg(e.to_string()))?,
+            )
+        };
+
+        Ok(std::sync::Arc::new(TimelineHandle {
+            client: self.inner.clone(),
+            room_id: rid,
+            timeline: tl,
+            task: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }))
+    }
 }
 
 impl Client {
@@ -3656,6 +3843,165 @@ impl Client {
 
 // ---------- Helpers ----------
 
+fn map_tl_vecdiff(
+    diff: EyeVectorDiff<std::sync::Arc<UiTimelineItem>>,
+    room_id: &OwnedRoomId_Tl,
+) -> Option<TlVecDiffDto> {
+    use EyeVectorDiff::*;
+    match diff {
+        Append { values } => {
+            let vals = values
+                .iter()
+                .filter_map(|it| map_tl_item(it.as_ref(), room_id))
+                .collect::<Vec<_>>();
+            Some(TlVecDiffDto::Append { values: vals })
+        }
+        PushBack { value } => {
+            map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::PushBack { value: v })
+        }
+        PushFront { value } => {
+            map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::PushFront { value: v })
+        }
+        PopBack => Some(TlVecDiffDto::PopBack),
+        PopFront => Some(TlVecDiffDto::PopFront),
+        Insert { index, value } => {
+            map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::Insert {
+                index: index as u32,
+                value: v,
+            })
+        }
+        Remove { index } => Some(TlVecDiffDto::Remove {
+            index: index as u32,
+        }),
+        Set { index, value } => map_tl_item(value.as_ref(), room_id).map(|v| TlVecDiffDto::Set {
+            index: index as u32,
+            value: v,
+        }),
+        Truncate { length } => Some(TlVecDiffDto::Truncate {
+            length: length as u32,
+        }),
+        Reset { values } => {
+            let vals = values
+                .iter()
+                .filter_map(|it| map_tl_item(it.as_ref(), room_id))
+                .collect::<Vec<_>>();
+            Some(TlVecDiffDto::Reset { values: vals })
+        }
+        Clear => Some(TlVecDiffDto::Clear),
+    }
+}
+
+fn map_tl_item(item: &UiTimelineItem, room_id: &OwnedRoomId_Tl) -> Option<TlMessageDto> {
+    use matrix_sdk::ruma::events::room::message::MessageType as MT;
+    use matrix_sdk_ui::timeline::TimelineDetails;
+
+    let ev = item.as_event()?; // &EventTimelineItem
+
+    let ts: u64 = ev.timestamp().0.into();
+    let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
+    let txn_id = ev.transaction_id().map(|t| t.to_string());
+    let send_state = ev.send_state().map(|s| {
+        match s {
+            matrix_sdk_ui::timeline::EventSendState::NotSentYet { .. } => "Sending",
+            matrix_sdk_ui::timeline::EventSendState::Sent { .. } => "Sent",
+            matrix_sdk_ui::timeline::EventSendState::SendingFailed { .. } => "Failed",
+        }
+        .to_owned()
+    });
+
+    let content = ev.content();
+
+    let thread_root = content.thread_root().map(|eid| eid.to_string()); // docs: thread_root() -> Option<OwnedEventId>. <!--citation:1-->
+
+    let mut reply_to_event_id = None;
+    let mut reply_to_sender = None;
+    let mut reply_to_body = None;
+    if let Some(ird) = content.in_reply_to() {
+        reply_to_event_id = Some(ird.event_id.to_string());
+        if let TimelineDetails::Ready(embed) = &ird.event {
+            reply_to_sender = Some(embed.sender.to_string());
+            if let Some(m) = embed.content.as_message() {
+                reply_to_body = Some(m.body().to_owned());
+            }
+        }
+    }
+
+    let mut body = String::new();
+    let mut attachment_mxc = None;
+    let mut attachment_kind = None;
+    let mut duration = None;
+    let mut width = None;
+    let mut height = None;
+
+    if let Some(msg) = content.as_message() {
+        body = msg.body().to_owned();
+
+        match msg.msgtype() {
+            MT::Image(c) => {
+                attachment_mxc = tl_mxc_from_source(&c.source);
+                attachment_kind = Some("Image".into());
+                if let Some(info) = &c.info {
+                    width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
+                    height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
+                }
+            }
+            MT::Video(c) => {
+                attachment_mxc = tl_mxc_from_source(&c.source);
+                attachment_kind = Some("Video".into());
+                if let Some(info) = &c.info {
+                    width = info.width.and_then(|v| u32::try_from(u64::from(v)).ok());
+                    height = info.height.and_then(|v| u32::try_from(u64::from(v)).ok());
+                    if let Some(d) = info.duration {
+                        duration = Some(d.as_millis() as u64);
+                    }
+                }
+            }
+            MT::File(c) => {
+                attachment_mxc = tl_mxc_from_source(&c.source);
+                attachment_kind = Some("File".into());
+            }
+            _ => {}
+        }
+
+        if body.trim().is_empty() {
+            body = "Encrypted or unsupported message.".into();
+        }
+        if msg.is_edited() {
+            body.push_str(" \n(edited)");
+        }
+    } else {
+        body = "Event".into();
+    }
+
+    Some(TlMessageDto {
+        item_id: format!("{:?}", ev.identifier()),
+        event_id,
+        room_id: room_id.to_string(),
+        sender: ev.sender().to_string(),
+        body,
+        timestamp_ms: ts,
+        send_state,
+        txn_id,
+        reply_to_event_id,
+        reply_to_sender,
+        reply_to_body,
+        attachment_mxc,
+        attachment_kind,
+        duration_ms: duration,
+        width,
+        height,
+        thread_root_event_id: thread_root,
+    })
+}
+
+fn tl_mxc_from_source(src: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {
+    use matrix_sdk::ruma::events::room::MediaSource as MS;
+    match src {
+        MS::Plain(mxc) => Some(mxc.to_string()),
+        MS::Encrypted(file) => Some(file.url.to_string()),
+    }
+}
+
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
     let room = client.get_room(room_id)?;
     room.timeline().await.ok()
@@ -3681,7 +4027,6 @@ fn map_event(ev: &EventTimelineItem, room_id: &str) -> Option<MessageEvent> {
 
     match ev.content() {
         TimelineItemContent::MsgLike(ml) => {
-            // Reply details
             if let Some(details) = &ml.in_reply_to {
                 reply_to_event_id = Some(details.event_id.to_string());
                 if let matrix_sdk_ui::timeline::TimelineDetails::Ready(embed) = &details.event {

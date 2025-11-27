@@ -59,8 +59,18 @@ class RoomController(
         recomputeDerived()
     }
 
+    /**
+     * Keep all non-message events (membership, state changes, etc.)
+     */
     private fun filterOutThreadReplies(events: List<MessageEvent>): List<MessageEvent> {
         return events.filter { it.threadRootEventId == null }
+    }
+
+    /**
+     * Events are included if they are not thread replies.
+     */
+    private fun shouldIncludeInMainTimeline(event: MessageEvent): Boolean {
+        return event.threadRootEventId == null
     }
 
     private fun loadInitial() {
@@ -74,7 +84,7 @@ class RoomController(
             // Prefetch thumbnails just for visible, recent items
             prefetchThumbnailsForEvents(filtered.takeLast(8))
 
-            // Don’t block the first render — fetch deeper history on a background coroutine
+            // Don't block the first render — fetch deeper history on a background coroutine
             if (filtered.size < 40) {
                 launch {
                     val hitStart = service.paginateBack(_state.value.roomId, 50)
@@ -122,34 +132,58 @@ class RoomController(
                         }
                         is TimelineDiff.Clear -> _state.update { it.copy(events = emptyList()) }
                         is TimelineDiff.Insert -> {
-                            if (diff.item.threadRootEventId == null) {
+                            if (shouldIncludeInMainTimeline(diff.item)) {
                                 _state.update { s ->
                                     val next = (s.events + diff.item).distinctBy { it.itemId }.sortedBy { e -> e.timestamp }
                                     s.copy(events = next)
                                 }
                                 // Secondary updates off the hot path
-                                launch { refreshReactionsFor(diff.item.eventId) }
+                                if (diff.item.eventId.isNotBlank()) {
+                                    launch { refreshReactionsFor(diff.item.eventId) }
+                                }
                                 prefetchThumbnailsForEvents(listOf(diff.item))
                             }
                         }
                         is TimelineDiff.Update -> {
-                            if (diff.item.threadRootEventId == null) {
-                                _state.update { s ->
-                                    val idx = s.events.indexOfFirst { it.itemId == diff.item.itemId }
-                                    val next = if (idx >= 0) {
-                                        s.events.toMutableList().apply { set(idx, diff.item) }
-                                    } else {
-                                        s.events + diff.item
+                            val wasInTimeline = _state.value.events.any { it.itemId == diff.item.itemId }
+                            val shouldBeInTimeline = shouldIncludeInMainTimeline(diff.item)
+                            
+                            when {
+                                // Item should stay in timeline - update it
+                                wasInTimeline && shouldBeInTimeline -> {
+                                    _state.update { s ->
+                                        val idx = s.events.indexOfFirst { it.itemId == diff.item.itemId }
+                                        val next = if (idx >= 0) {
+                                            s.events.toMutableList().apply { set(idx, diff.item) }
+                                        } else {
+                                            s.events + diff.item
+                                        }
+                                        s.copy(events = next.sortedBy { e -> e.timestamp })
                                     }
-                                    s.copy(events = next.sortedBy { e -> e.timestamp })
+                                    if (diff.item.eventId.isNotBlank()) {
+                                        launch { refreshReactionsFor(diff.item.eventId) }
+                                    }
+                                    prefetchThumbnailsForEvents(listOf(diff.item))
                                 }
-                                launch { refreshReactionsFor(diff.item.eventId) }
-                                prefetchThumbnailsForEvents(listOf(diff.item))
-                            } else {
-                                // Item became a thread reply, remove from main timeline
-                                _state.update { s ->
-                                    s.copy(events = s.events.filterNot { it.itemId == diff.item.itemId })
+                                // Item became a thread reply - remove from main timeline
+                                wasInTimeline && !shouldBeInTimeline -> {
+                                    _state.update { s ->
+                                        s.copy(events = s.events.filterNot { it.itemId == diff.item.itemId })
+                                    }
                                 }
+                                // Item wasn't in timeline but should be now (rare case)
+                                !wasInTimeline && shouldBeInTimeline -> {
+                                    _state.update { s ->
+                                        val next = (s.events + diff.item).distinctBy { it.itemId }.sortedBy { e -> e.timestamp }
+                                        s.copy(events = next)
+                                    }
+                                    if (diff.item.eventId.isNotBlank()) {
+                                        launch { refreshReactionsFor(diff.item.eventId) }
+                                    }
+                                    prefetchThumbnailsForEvents(listOf(diff.item))
+                                }
+                                // Item wasn't and shouldn't be in timeline - nothing to do
+                                else -> { /* no-op */ }
                             }
                         }
                         is TimelineDiff.Remove -> _state.update { s ->
@@ -159,11 +193,20 @@ class RoomController(
 
                     // Update a few thread summaries rather than all
                     when (diff) {
-                        is TimelineDiff.Insert -> launch { refreshThreadSummaryFor(diff.item.eventId) }
-                        is TimelineDiff.Update -> launch { refreshThreadSummaryFor(diff.item.eventId) }
-                        is TimelineDiff.Reset -> _state.value.events.takeLast(5).forEach { ev ->
-                            launch { refreshThreadSummaryFor(ev.eventId) }
+                        is TimelineDiff.Insert -> {
+                            if (diff.item.eventId.isNotBlank()) {
+                                launch { refreshThreadSummaryFor(diff.item.eventId) }
+                            }
                         }
+                        is TimelineDiff.Update -> {
+                            if (diff.item.eventId.isNotBlank()) {
+                                launch { refreshThreadSummaryFor(diff.item.eventId) }
+                            }
+                        }
+                        is TimelineDiff.Reset -> _state.value.events
+                            .filter { it.eventId.isNotBlank() }
+                            .takeLast(5)
+                            .forEach { ev -> launch { refreshThreadSummaryFor(ev.eventId) } }
                         else -> {}
                     }
 
@@ -311,6 +354,7 @@ class RoomController(
     }
 
     fun react(ev: MessageEvent, emoji: String) {
+        if (ev.eventId.isBlank()) return
         scope.launch {
             runCatching { service.port.react(_state.value.roomId, ev.eventId, emoji) }
             refreshReactionsFor(ev.eventId)
@@ -345,7 +389,7 @@ class RoomController(
                     true
                 } ?: false
 
-                // Fallback snapshot if diffs didn’t land in time
+                // Fallback snapshot if diffs didn't land in time
                 if (!arrived) {
                     val snap = service.loadRecent(
                         s.roomId,
@@ -367,12 +411,14 @@ class RoomController(
     }
 
     fun markReadHere(ev: MessageEvent) {
+        if (ev.eventId.isBlank()) return
         scope.launch {
             service.markReadAt(ev.roomId, ev.eventId)
         }
     }
 
     fun delete(ev: MessageEvent) {
+        if (ev.eventId.isBlank()) return
         scope.launch { service.redact(_state.value.roomId, ev.eventId, null) }
     }
 
@@ -384,6 +430,7 @@ class RoomController(
             }
             // Skip if already cached
             if (_state.value.thumbByEvent.containsKey(ev.eventId)) return@forEach
+            if (ev.eventId.isBlank()) return@forEach
 
             val mxc = a.thumbnailMxcUri ?: a.mxcUri
             scope.launch {
@@ -414,6 +461,7 @@ class RoomController(
     }
 
     private fun refreshReactionsFor(eventId: String) {
+        if (eventId.isBlank()) return
         val rid = _state.value.roomId
         scope.launch {
             val chips = runCatching { service.port.reactions(rid, eventId) }.getOrDefault(emptyList())
@@ -430,6 +478,7 @@ class RoomController(
     }
 
     private fun refreshThreadSummaryFor(eventId: String) {
+        if (eventId.isBlank()) return
         val rid = _state.value.roomId
         scope.launch {
             // Slightly lighter than before to avoid hammering

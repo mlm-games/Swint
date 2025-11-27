@@ -55,29 +55,106 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.recentEvents(roomId, limit.toUInt()).map { it.toModel() }
 
     override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
-        val obs = object : mages.TimelineDiffObserver {
-            override fun onInsert(event: mages.MessageEvent) {
-                trySendBlocking(TimelineDiff.Insert(event.toModel()))
+        val handle = client.openTimeline(roomId, null)
+
+        runCatching {
+            val init = handle.initial().map { it.toModel() }
+            trySendBlocking(TimelineDiff.Reset(init))
+        }
+
+        val view = java.util.concurrent.CopyOnWriteArrayList<MessageEvent>()
+
+        val obs = object : mages.TlObserver {
+            override fun onDiffs(batch: List<mages.TlVecDiffDto>) {
+                for (d in batch) {
+                    when (d) {
+                        is mages.TlVecDiffDto.Reset -> {
+                            val items = d.values.map { it.toModel() }
+                            view.clear(); view.addAll(items)
+                            trySendBlocking(TimelineDiff.Reset(items))
+                        }
+                        is mages.TlVecDiffDto.Clear -> {
+                            view.clear()
+                            trySendBlocking(TimelineDiff.Clear)
+                        }
+                        is mages.TlVecDiffDto.Append -> {
+                            d.values.forEach { v ->
+                                val m = v.toModel()
+                                view.add(m)
+                                trySendBlocking(TimelineDiff.Insert(m))
+                            }
+                        }
+                        is mages.TlVecDiffDto.PushBack -> {
+                            val m = d.value.toModel()
+                            view.add(m)
+                            trySendBlocking(TimelineDiff.Insert(m))
+                        }
+                        is mages.TlVecDiffDto.PushFront -> {
+                            val m = d.value.toModel()
+                            view.add(0, m)
+                            trySendBlocking(TimelineDiff.Insert(m))
+                        }
+                        is mages.TlVecDiffDto.Insert -> {
+                            val idx = d.index.toInt().coerceIn(0, view.size)
+                            val m = d.value.toModel()
+                            view.add(idx, m)
+                            trySendBlocking(TimelineDiff.Insert(m))
+                        }
+                        is mages.TlVecDiffDto.Set -> {
+                            val idx = d.index.toInt()
+                            if (idx in 0 until view.size) {
+                                val m = d.value.toModel()
+                                view[idx] = m
+                                trySendBlocking(TimelineDiff.Update(m))
+                            } else {
+                                val m = d.value.toModel()
+                                view.add(m)
+                                trySendBlocking(TimelineDiff.Insert(m))
+                            }
+                        }
+                        is mages.TlVecDiffDto.Remove -> {
+                            val idx = d.index.toInt()
+                            if (idx in 0 until view.size) {
+                                val removed = view.removeAt(idx)
+                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
+                            } else {
+                                // out-of-range; rebuild safely from snapshot
+                                trySendBlocking(TimelineDiff.Reset(view.toList()))
+                            }
+                        }
+                        is mages.TlVecDiffDto.Truncate -> {
+                            val keep = d.length.toInt().coerceIn(0, view.size)
+                            while (view.size > keep) {
+                                val removed = view.removeAt(view.lastIndex)
+                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
+                            }
+                        }
+                        is mages.TlVecDiffDto.PopFront -> {
+                            if (view.isNotEmpty()) {
+                                val removed = view.removeAt(0)
+                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
+                            }
+                        }
+                        is mages.TlVecDiffDto.PopBack -> {
+                            if (view.isNotEmpty()) {
+                                val removed = view.removeAt(view.lastIndex)
+                                trySendBlocking(TimelineDiff.Remove(removed.itemId))
+                            }
+                        }
+                    }
+                }
             }
-
-            override fun onUpdate(event: mages.MessageEvent) {
-                trySendBlocking(TimelineDiff.Update(event.toModel()))
-            }
-
-            override fun onRemove(itemId: String) {
-                trySendBlocking(TimelineDiff.Remove(itemId))
-            } // was eventId
-
-            override fun onClear() {
-                trySendBlocking(TimelineDiff.Clear)
-            }
-
-            override fun onReset(events: List<mages.MessageEvent>) {
-                trySendBlocking(TimelineDiff.Reset(events.map { it.toModel() }))
+            override fun onError(message: String) {
+                // TODO: route to logs/snackbar
             }
         }
-        val subId: ULong = client.observeRoomTimelineDiffs(roomId, obs)
-        awaitClose { client.unobserveRoomTimeline(subId) }
+
+        // Start streaming
+        runCatching { handle.register(obs) }
+
+        awaitClose {
+            runCatching { handle.close() }
+        }
     }
 
     override fun observeConnection(observer: MatrixPort.ConnectionObserver): ULong {
@@ -311,7 +388,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 observer.onPhase(flowId, phase.toCommon())
             }
 
-            override fun onEmojis(payload: mages.SasEmojis) {
+            override fun onEmojis(payload: SasEmojis) {
                 observer.onEmojis(
                     payload.flowId,
                     payload.otherUser,
@@ -725,7 +802,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun isSpace(roomId: String): Boolean {
         return try {
             client.isSpace(roomId)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -742,7 +819,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                     isPublic = space.isPublic
                 )
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -755,7 +832,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     ): String? {
         return try {
             client.createSpace(name, topic, isPublic, invitees)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -769,7 +846,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return try {
             client.spaceAddChild(spaceId, childRoomId, order, suggested)
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -781,7 +858,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return try {
             client.spaceRemoveChild(spaceId, childRoomId)
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -818,7 +895,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 },
                 nextBatch = page.nextBatch
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -826,7 +903,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean {
         return try {
             client.spaceInviteUser(spaceId, userId)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -852,6 +929,32 @@ private fun FfiEvent.toModel() = MessageEvent(
             thumbnailMxcUri = it.thumbnailMxcUri,
             mime = it.mime,
             durationMs = it.durationMs?.toLong()
+        )
+    },
+    threadRootEventId = threadRootEventId
+)
+
+private fun mages.TlMessageDto.toModel(): MessageEvent = MessageEvent(
+    itemId = itemId,
+    eventId = eventId,
+    roomId = roomId,
+    sender = sender,
+    body = body,
+    timestamp = timestampMs.toLong(),
+    txnId = txnId,
+    // You can enrich attachment later if needed
+    attachment = attachmentMxc?.let { mxc ->
+        AttachmentInfo(
+            kind = when (attachmentKind) {
+                "Image" -> AttachmentKind.Image
+                "Video" -> AttachmentKind.Video
+                "File"  -> AttachmentKind.File
+                else    -> AttachmentKind.File
+            },
+            mxcUri = mxc,
+            thumbnailMxcUri = null,
+            mime = null,
+            durationMs = durationMs?.toLong()
         )
     },
     threadRootEventId = threadRootEventId
