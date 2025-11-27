@@ -12,6 +12,7 @@ import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.nav.*
 import org.mlm.mages.platform.BackHandler
+import org.mlm.mages.platform.BindLifecycle
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberOpenBrowser
 import org.mlm.mages.ui.base.rememberSnackbarController
@@ -370,22 +371,5 @@ fun App(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun BindLifecycle(service: MatrixService) {
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val obs = object : androidx.lifecycle.DefaultLifecycleObserver {
-            override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
-                service.port.enterForeground()
-            }
-            override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
-                service.port.enterBackground()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(obs)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 }

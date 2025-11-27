@@ -2,8 +2,11 @@ package org.mlm.mages.platform
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.core.app.NotificationCompat
 import androidx.core.content.getSystemService
+import org.mlm.mages.MatrixService
 import org.mlm.mages.R
 
 actual object Notifier {
@@ -40,5 +43,22 @@ actual object Notifier {
         if (senderIsMe) return false
         if (currentRoomId == roomId) return false
         return true
+    }
+}
+
+@Composable
+actual fun BindLifecycle(service: MatrixService)  {
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = object : androidx.lifecycle.DefaultLifecycleObserver {
+            override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+                service.port.enterForeground()
+            }
+            override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
+                service.port.enterBackground()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 }

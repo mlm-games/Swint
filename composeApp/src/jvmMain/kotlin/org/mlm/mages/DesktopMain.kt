@@ -1,5 +1,6 @@
 package org.mlm.mages
 
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,7 +59,6 @@ fun main() = application {
             return s
         }
     }
-    val windowState = rememberWindowState()
 
     val trayIcon = painterResource(Res.drawable.ic_notif)
 
@@ -85,34 +85,32 @@ fun main() = application {
     if (showWindow) {
         val windowState = rememberWindowState()
         Window(
-            onCloseRequest = ::exitApplication,
+            onCloseRequest = { showWindow = false },
             state = windowState,
             title = "Mages"
         ) {
-            LaunchedEffect(Unit) {
-                java.awt.Frame.getFrames().firstOrNull()?.addWindowFocusListener(
-                    object : java.awt.event.WindowFocusListener {
-                        override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
-                            Notifier.setWindowFocused(true)
-                        }
+            val window = this.window
 
-                        override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
-                            Notifier.setWindowFocused(false)
-                        }
+            DisposableEffect(window) {
+                val listener = object : java.awt.event.WindowFocusListener {
+                    override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
+                        Notifier.setWindowFocused(true)
                     }
-                )
+
+                    override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
+                        Notifier.setWindowFocused(false)
+                    }
+                }
+                window.addWindowFocusListener(listener)
+
+                Notifier.setWindowFocused(window.isFocused)
+
+                onDispose {
+                    window.removeWindowFocusListener(listener)
+                    Notifier.setWindowFocused(false)  // Assume unfocused when window closes
+                }
             }
-                // Hide on minimize
-//            LaunchedEffect(Unit) {
-//                val composeWindow = SwingUtilities.getWindowAncestor(window.rootPane) as? ComposeWindow
-//                composeWindow?.addWindowStateListener { e ->
-//                    val minimized = (e.newState and Frame.ICONIFIED) == Frame.ICONIFIED
-//                    if (minimized) {
-//                        composeWindow.isVisible = false
-//                        showWindow = false
-//                    }
-//                }
-//            }
+
             App(dataStore, get())
         }
     }

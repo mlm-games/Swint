@@ -1,5 +1,7 @@
 package org.mlm.mages.platform
 
+import androidx.compose.runtime.Composable
+import org.mlm.mages.MatrixService
 import org.mlm.mages.NotifierImpl
 
 actual object Notifier {
@@ -23,4 +25,8 @@ actual object Notifier {
         if (windowFocused && currentRoomId == roomId) return false
         return true
     }
+}
+
+@Composable
+actual fun BindLifecycle(service: MatrixService) {
 }
