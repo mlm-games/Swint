@@ -1,133 +1,89 @@
 package org.mlm.mages.nav
 
-import androidx.compose.animation.*
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.tween
-import androidx.compose.runtime.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.Composable
+import androidx.navigation3.runtime.NavBackStack
+import androidx.navigation3.runtime.NavKey
+import androidx.navigation3.ui.NavDisplay
+import androidx.navigation3.scene.Scene
+import androidx.savedstate.serialization.SavedStateConfiguration
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.polymorphic
 
-sealed interface Route {
-    data object Login : Route
-    data object Rooms : Route
-    data class Room(val roomId: String, val name: String) : Route
-    data object Security : Route
-    data object Discover : Route
-    data object Invites : Route
-    data class RoomInfo(val roomId: String) : Route
-    data class Thread(val roomId: String, val rootEventId: String, val roomName: String) : Route
+const val NAV_ANIM_DURATION = 450
 
-    data object Spaces : Route
-    data class SpaceDetail(val spaceId: String, val spaceName: String) : Route
-    data class SpaceSettings(val spaceId: String) : Route
+@Serializable
+sealed interface Route : NavKey {
+    @Serializable data object Login : Route
+    @Serializable data object Rooms : Route
+    @Serializable data class Room(val roomId: String, val name: String) : Route
+    @Serializable data object Security : Route
+    @Serializable data object Discover : Route
+    @Serializable data object Invites : Route
+    @Serializable data class RoomInfo(val roomId: String) : Route
+    @Serializable data class Thread(val roomId: String, val rootEventId: String, val roomName: String) : Route
 
+    @Serializable data object Spaces : Route
+    @Serializable data class SpaceDetail(val spaceId: String, val spaceName: String) : Route
+    @Serializable data class SpaceSettings(val spaceId: String) : Route
 }
 
-/**
- * Route hierarchy for determining transition direction.
- */
-private val Route.depth: Int get() = when (this) {
-    Route.Login -> 0
-    Route.Rooms -> 1
-    Route.Security, Route.Discover, Route.Invites -> 2
-    is Route.Room -> 2
-    is Route.RoomInfo -> 3
-    is Route.Thread -> 3
-    Route.Spaces -> 3
-    is Route.SpaceDetail -> 4
-    is Route.SpaceSettings -> 5
+fun <T : NavKey> NavBackStack<T>.replaceTop(key: T) {
+    if (isEmpty()) add(key) else set(lastIndex, key)
 }
 
-class Navigator(initial: Route) {
-    private val backStack = mutableStateListOf<Route>().apply { add(initial) }
-    val current: Route get() = backStack.last()
-
-    private var _previousRoute: Route? = null
-    val previousRoute: Route? get() = _previousRoute
-
-    fun push(route: Route) {
-        _previousRoute = current
-        backStack += route
-    }
-
-    fun replace(route: Route) {
-        _previousRoute = current
-        if (backStack.isEmpty()) {
-            backStack += route
-        } else {
-            backStack[backStack.lastIndex] = route
-        }
-    }
-
-    fun pop(): Boolean {
-        if (backStack.size > 1) {
-            _previousRoute = current
-            backStack.removeAt(backStack.lastIndex)
-            return true
-        }
-        return false
-    }
-
-    fun popUntil(predicate: (Route) -> Boolean) {
-        while (backStack.size > 1 && !predicate(backStack.last())) {
-            _previousRoute = current
-            backStack.removeAt(backStack.lastIndex)
-        }
-    }
-
-    /**
-     * Determines if navigation is forward (pushing) or backward (popping).
-     */
-    fun isForwardNavigation(): Boolean {
-        val prev = _previousRoute ?: return true
-        return current.depth >= prev.depth
+fun <T : NavKey> NavBackStack<T>.popUntil(predicate: (T) -> Boolean) {
+    while (size > 1 && !predicate(this[lastIndex])) {
+        removeAt(lastIndex)
     }
 }
 
+// Deep links: push Room keys when links arrive
 @Composable
-fun rememberNavigator(initial: Route = Route.Login): Navigator = remember { Navigator(initial) }
-
-/**
- * Collects deep-links and navigates to Room route.
- */
-@Composable
-fun BindDeepLinks(nav: Navigator, deepLinks: Flow<String>?) {
-    LaunchedEffect(deepLinks) {
+fun BindDeepLinks(backStack: NavBackStack<NavKey>, deepLinks: Flow<String>?) {
+    androidx.compose.runtime.LaunchedEffect(deepLinks) {
         deepLinks?.collectLatest { roomId ->
-            nav.push(Route.Room(roomId = roomId, name = roomId))
+            backStack.add(Route.Room(roomId = roomId, name = roomId))
         }
     }
 }
 
 /**
- * Screen transition specifications for consistent animations.
+ * Per-entry metadata for Login to force fade animations for forward/pop/predictive-pop.
+ * This avoids trying to read private NavEntry.key and keeps the exact fade you had.
  */
-object ScreenTransitions {
-    private const val DURATION = 300
+fun loginEntryFadeMetadata(): Map<String, Any> {
+    val fade: androidx.compose.animation.AnimatedContentTransitionScope<Scene<*>>.() -> ContentTransform = {
+        fadeIn(tween(NAV_ANIM_DURATION)) togetherWith fadeOut(tween(NAV_ANIM_DURATION))
+    }
+    return NavDisplay.transitionSpec { fade() } +
+            NavDisplay.popTransitionSpec { fade() } +
+            NavDisplay.predictivePopTransitionSpec { _ -> fade() }
+}
 
-    val slideInFromRight: EnterTransition = slideInHorizontally(
-        initialOffsetX = { it },
-        animationSpec = tween(DURATION)
-    ) + fadeIn(tween(DURATION))
+val routeSerializersModule = SerializersModule {
+    polymorphic(NavKey::class) {
+        subclass(Route.Login::class, Route.Login.serializer())
+        subclass(Route.Rooms::class, Route.Rooms.serializer())
+        subclass(Route.Room::class, Route.Room.serializer())
+        subclass(Route.Security::class, Route.Security.serializer())
+        subclass(Route.Discover::class, Route.Discover.serializer())
+        subclass(Route.Invites::class, Route.Invites.serializer())
+        subclass(Route.RoomInfo::class, Route.RoomInfo.serializer())
+        subclass(Route.Thread::class, Route.Thread.serializer())
+        subclass(Route.Spaces::class, Route.Spaces.serializer())
+        subclass(Route.SpaceDetail::class, Route.SpaceDetail.serializer())
+        subclass(Route.SpaceSettings::class, Route.SpaceSettings.serializer())
+    }
+}
 
-    val slideOutToLeft: ExitTransition = slideOutHorizontally(
-        targetOffsetX = { -it / 3 },
-        animationSpec = tween(DURATION)
-    ) + fadeOut(tween(DURATION))
-
-    val slideInFromLeft: EnterTransition = slideInHorizontally(
-        initialOffsetX = { -it },
-        animationSpec = tween(DURATION)
-    ) + fadeIn(tween(DURATION))
-
-    val slideOutToRight: ExitTransition = slideOutHorizontally(
-        targetOffsetX = { it },
-        animationSpec = tween(DURATION)
-    ) + fadeOut(tween(DURATION))
-
-    val fadeIn: EnterTransition = fadeIn(tween(DURATION))
-    val fadeOut: ExitTransition = fadeOut(tween(DURATION))
-
-    fun forwardTransition(): ContentTransform = slideInFromRight togetherWith slideOutToLeft
-    fun backwardTransition(): ContentTransform = slideInFromLeft togetherWith slideOutToRight
-    fun fadeTransition(): ContentTransform = fadeIn togetherWith fadeOut
+val navSavedStateConfiguration = SavedStateConfiguration {
+    serializersModule = routeSerializersModule
 }

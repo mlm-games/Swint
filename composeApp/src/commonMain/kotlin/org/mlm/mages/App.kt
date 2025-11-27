@@ -1,20 +1,36 @@
 package org.mlm.mages
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.material3.SnackbarHost
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.runtime.*
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
+import androidx.navigation3.runtime.NavBackStack
+import androidx.navigation3.runtime.NavKey
+import androidx.navigation3.runtime.entryProvider
+import androidx.navigation3.runtime.rememberNavBackStack
+import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
+import androidx.navigation3.scene.Scene
+import androidx.navigation3.ui.NavDisplay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.nav.*
-import org.mlm.mages.platform.BackHandler
 import org.mlm.mages.platform.BindLifecycle
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberOpenBrowser
+import org.mlm.mages.ui.animation.forwardTransition
+import org.mlm.mages.ui.animation.popTransition
 import org.mlm.mages.ui.base.rememberSnackbarController
 import org.mlm.mages.ui.components.sheets.CreateRoomSheet
 import org.mlm.mages.ui.controller.*
@@ -29,17 +45,16 @@ fun App(
     deepLinks: Flow<String>? = null
 ) {
     MainTheme {
-        val nav = rememberNavigator(initial = Route.Login)
 
-        BackHandler(enabled = nav.current != Route.Login && nav.current != Route.Rooms) {
-            nav.pop()
-        }
+
+        val backStack: NavBackStack<NavKey> = rememberNavBackStack(navSavedStateConfiguration, Route.Login)
 
         val snackbar = rememberSnackbarController()
-        var showCreateRoom by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
 
-        BindDeepLinks(nav, deepLinks)
+        var showCreateRoom by remember { mutableStateOf(false) }
+
+        BindDeepLinks(backStack, deepLinks)
         BindLifecycle(service)
 
         LaunchedEffect(service) {
@@ -52,7 +67,7 @@ fun App(
             RoomsController(
                 service = service,
                 dataStore = dataStore,
-                onOpenRoom = { room -> nav.push(Route.Room(room.id, room.name)) }
+                onOpenRoom = { room -> backStack.add(Route.Room(room.id, room.name)) }
             )
         }
 
@@ -61,27 +76,36 @@ fun App(
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar.hostState) }
         ) { _ ->
-            AnimatedContent(
-                targetState = nav.current,
-                transitionSpec = {
-                    when {
-                        initialState is Route.Login || targetState is Route.Login ->
-                            ScreenTransitions.fadeTransition()
-                        nav.isForwardNavigation() ->
-                            ScreenTransitions.forwardTransition()
-                        else ->
-                            ScreenTransitions.backwardTransition()
+
+
+            NavDisplay(
+                backStack = backStack,
+
+                entryDecorators = listOf(
+                    rememberSaveableStateHolderNavEntryDecorator(),
+                    rememberViewModelStoreNavEntryDecorator()
+                ),
+
+                transitionSpec = forwardTransition,
+                popTransitionSpec = popTransition,
+                predictivePopTransitionSpec = { _ -> popTransition.invoke(this) },
+
+                onBack = {
+                    val top = backStack.lastOrNull()
+                    val blockBack = top == Route.Login || top == Route.Rooms
+                    if (!blockBack && backStack.size > 1) {
+                        backStack.removeAt(backStack.lastIndex)
                     }
                 },
-                label = "screen_transition"
-            ) { route ->
-                when (route) {
-                    Route.Login -> {
+
+                entryProvider = entryProvider {
+
+                    entry<Route.Login>(metadata = loginEntryFadeMetadata()) {
                         val controller = remember {
                             LoginController(
                                 service = service,
                                 dataStore = dataStore,
-                                onLoggedIn = { nav.replace(Route.Rooms) }
+                                onLoggedIn = { backStack.replaceTop(Route.Rooms) }
                             )
                         }
                         val ui by controller.state.collectAsState()
@@ -95,19 +119,20 @@ fun App(
                         )
                     }
 
-                    Route.Rooms -> {
+
+                    entry<Route.Rooms> {
                         val ui by roomsController.state.collectAsState()
                         RoomsScreen(
                             state = ui,
                             onRefresh = roomsController::refreshRooms,
                             onSearch = roomsController::setSearchQuery,
                             onOpen = { roomsController.open(it) },
-                            onOpenSecurity = { nav.push(Route.Security) },
+                            onOpenSecurity = { backStack.add(Route.Security) },
                             onToggleUnreadOnly = { roomsController.toggleUnreadOnly() },
-                            onOpenDiscover = { nav.push(Route.Discover) },
-                            onOpenInvites = { nav.push(Route.Invites) },
+                            onOpenDiscover = { backStack.add(Route.Discover) },
+                            onOpenInvites = { backStack.add(Route.Invites) },
                             onOpenCreateRoom = { showCreateRoom = true },
-                            onOpenSpaces = { nav.push(Route.Spaces) },
+                            onOpenSpaces = { backStack.add(Route.Spaces) },
                         )
                         if (showCreateRoom) {
                             CreateRoomSheet(
@@ -116,7 +141,7 @@ fun App(
                                         val roomId = service.port.createRoom(name, topic, invitees)
                                         if (roomId != null) {
                                             showCreateRoom = false
-                                            nav.push(Route.Room(roomId, name ?: roomId))
+                                            backStack.add(Route.Room(roomId, name ?: roomId))
                                         } else {
                                             snackbar.showError("Failed to create room")
                                         }
@@ -127,21 +152,19 @@ fun App(
                         }
                     }
 
-                    is Route.Room -> {
-                        val controller = remember(route.roomId) {
-                            RoomController(service, dataStore, route.roomId, route.name)
-                        }
-                        DisposableEffect(route.roomId) {
-                            onDispose {
-                                controller.onCleared()
-                            }
-                        }
 
+                    entry<Route.Room> { key ->
+                        val controller = remember(key.roomId) {
+                            RoomController(service, dataStore, key.roomId, key.name)
+                        }
+                        DisposableEffect(key.roomId) {
+                            onDispose { controller.onCleared() }
+                        }
                         val ui by controller.state.collectAsState()
                         val openExternal = rememberFileOpener()
                         RoomScreen(
                             state = ui,
-                            onBack = { nav.pop() },
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                             onSetInput = controller::setInput,
                             onSend = controller::send,
                             onReply = controller::startReply,
@@ -161,18 +184,21 @@ fun App(
                                     openExternal(path, mime)
                                 }
                             },
-                            onOpenInfo = { nav.push(Route.RoomInfo(route.roomId)) },
-                            onOpenThread = { nav.push(Route.Thread(route.roomId, it.eventId, ui.roomName)) }
+                            onOpenInfo = { backStack.add(Route.RoomInfo(key.roomId)) },
+                            onOpenThread = { ev ->
+                                backStack.add(Route.Thread(key.roomId, ev.eventId, ui.roomName))
+                            }
                         )
                     }
 
-                    Route.Security -> {
+
+                    entry<Route.Security> {
                         var selectedTab by remember { mutableIntStateOf(0) }
                         val controller = remember { SecurityController(service) }
                         val ui by controller.state.collectAsState()
                         SecurityScreen(
                             state = ui,
-                            onBack = { nav.pop() },
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                             onRefreshDevices = controller::refreshDevices,
                             onToggleTrust = controller::toggleTrust,
                             onStartSelfVerify = controller::startSelfVerify,
@@ -190,91 +216,104 @@ fun App(
                                 scope.launch {
                                     val ok = service.logout()
                                     service.port.close()
-                                    if (ok) { nav.replace(Route.Login) }
+                                    if (ok) { backStack.replaceTop(Route.Login) }
                                 }
                             }
                         )
                     }
 
-                    Route.Discover -> {
+
+                    entry<Route.Discover> {
                         val controller = remember { DiscoverController(service) }
                         val ui by controller.state.collectAsState()
                         DiscoverScreen(
                             state = ui,
                             onQuery = controller::setQuery,
-                            onClose = { nav.pop() },
+                            onClose = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                             onOpenUser = { u ->
                                 val rid = controller.ensureDm(u.userId)
-                                if (rid != null) nav.push(Route.Room(rid, u.displayName ?: u.userId))
+                                if (rid != null) backStack.add(Route.Room(rid, u.displayName ?: u.userId))
                             },
                             onOpenRoom = { room ->
                                 val rid = controller.joinOrOpen(room.alias ?: room.roomId)
-                                if (rid != null) nav.push(Route.Room(rid, room.name ?: room.alias ?: room.roomId))
+                                if (rid != null) backStack.add(
+                                    Route.Room(rid, room.name ?: room.alias ?: room.roomId)
+                                )
                             }
                         )
                     }
 
-                    Route.Invites -> {
+
+                    entry<Route.Invites> {
                         val controller = remember { InvitesController(service.port) }
                         val ui by controller.state.collectAsState()
                         InvitesScreen(
                             invites = ui.invites,
                             busy = ui.busy,
                             error = ui.error,
-                            onBack = { nav.pop() },
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                             onRefresh = controller::refresh,
                             onAccept = { controller.accept(it) },
                             onDecline = { controller.decline(it) },
-                            onOpenRoom = { roomId, title -> nav.push(Route.Room(roomId, title)) }
+                            onOpenRoom = { roomId, title -> backStack.add(Route.Room(roomId, title)) }
                         )
                     }
 
-                    is Route.RoomInfo -> {
-                        val controller = remember(route.roomId) { RoomInfoController(service, route.roomId) }
-                        val state by controller.state.collectAsState()
 
+                    entry<Route.RoomInfo> { key ->
+                        val controller = remember(key.roomId) { RoomInfoController(service, key.roomId) }
+                        val state by controller.state.collectAsState()
                         RoomInfoScreen(
                             state = state,
-                            onBack = { nav.pop() },
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                             onRefresh = controller::refresh,
                             onNameChange = controller::updateName,
                             onTopicChange = controller::updateTopic,
                             onSaveName = { controller.saveName() },
                             onSaveTopic = { controller.saveTopic() },
                             onLeave = { controller.leave() },
-                            onLeaveSuccess = { nav.popUntil { it is Route.Rooms } }
+                            onLeaveSuccess = {
+                                backStack.popUntil { it is Route.Rooms }
+                            }
                         )
                     }
 
-                    is Route.Thread -> {
-                        val controller = remember(route.roomId, route.rootEventId) {
-                            ThreadController(service, route.roomId, route.rootEventId)
+
+                    entry<Route.Thread> { key ->
+                        val controller = remember(key.roomId, key.rootEventId) {
+                            ThreadController(service, key.roomId, key.rootEventId)
                         }
                         val ui by controller.state.collectAsState()
-
                         ThreadScreen(
                             state = ui,
                             myUserId = service.port.whoami(),
                             onReact = controller::react,
-                            onBack = { nav.pop() },
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                             onLoadMore = controller::loadMore,
                             onSendThread = { text, replyToId ->
-                                val ok = service.port.sendThreadText(route.roomId, route.rootEventId, text, replyToId)
+                                val ok = service.port.sendThreadText(
+                                    key.roomId,
+                                    key.rootEventId,
+                                    text,
+                                    replyToId
+                                )
                                 if (ok) controller.refresh()
                                 ok
                             },
-                            onEdit = { event -> controller.startEdit(event) },
-                            onDelete = { event -> controller.delete(event) },
-                            onRetry = { event -> controller.retry(event) },
+                            onEdit = controller::startEdit,
+                            onDelete = controller::delete,
+                            onRetry = controller::retry,
                             snackbarController = snackbar
                         )
                     }
-                    Route.Spaces -> {
+
+
+                    entry<Route.Spaces> {
                         val controller = remember {
                             SpacesController(
                                 service = service,
-                                onOpenRoom = { roomId, name -> nav.push(Route.Room(roomId, name)) },
-                                onOpenSpace = { space -> nav.push(Route.SpaceDetail(space.roomId, space.name)) }
+                                onOpenRoom = { roomId, name -> backStack.add(Route.Room(roomId, name)) },
+                                onOpenSpace = { space -> backStack.add(Route.SpaceDetail(space.roomId, space.name)) }
                             )
                         }
                         val ui by controller.state.collectAsState()
@@ -284,7 +323,7 @@ fun App(
                             val createController = remember {
                                 CreateSpaceController(
                                     service = service,
-                                    onCreated = { spaceId ->
+                                    onCreated = {
                                         showCreateSpace = false
                                         controller.refresh()
                                     }
@@ -305,34 +344,33 @@ fun App(
                         } else {
                             SpacesScreen(
                                 state = ui,
-                                onBack = { nav.pop() },
+                                onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                                 onRefresh = controller::refresh,
                                 onSearch = controller::setSearchQuery,
-                                onSelectSpace = { space -> controller.openSpace(space) },  // This now navigates
+                                onSelectSpace = { space -> controller.openSpace(space) },
                                 onCreateSpace = { showCreateSpace = true }
                             )
                         }
                     }
 
-                    is Route.SpaceDetail -> {
-                        val controller = remember(route.spaceId) {
+
+                    entry<Route.SpaceDetail> { key ->
+                        val controller = remember(key.spaceId) {
                             SpacesController(
                                 service = service,
-                                onOpenRoom = { roomId, name -> nav.push(Route.Room(roomId, name)) },
-                                onOpenSpace = { space -> nav.push(Route.SpaceDetail(space.roomId, space.name)) }
+                                onOpenRoom = { roomId, name -> backStack.add(Route.Room(roomId, name)) },
+                                onOpenSpace = { space -> backStack.add(Route.SpaceDetail(space.roomId, space.name)) }
                             )
                         }
                         val ui by controller.state.collectAsState()
 
-                        // Load the space hierarchy on first composition
-                        LaunchedEffect(route.spaceId) {
-                            controller.loadHierarchy(route.spaceId)
+                        LaunchedEffect(key.spaceId) {
+                            controller.loadHierarchy(key.spaceId)
                         }
 
-                        // Use selected space from state, or create a minimal one from route params
                         val displaySpace = ui.selectedSpace ?: SpaceInfo(
-                            roomId = route.spaceId,
-                            name = route.spaceName,
+                            roomId = key.spaceId,
+                            name = key.spaceName,
                             topic = null,
                             memberCount = 0,
                             isEncrypted = false,
@@ -345,23 +383,23 @@ fun App(
                             isLoading = ui.isLoadingHierarchy,
                             hasMore = ui.hierarchyNextBatch != null,
                             error = ui.error,
-                            onBack = { nav.pop() },
-                            onRefresh = { controller.loadHierarchy(route.spaceId) },
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
+                            onRefresh = { controller.loadHierarchy(key.spaceId) },
                             onLoadMore = controller::loadMoreHierarchy,
                             onOpenChild = controller::openChild,
-                            onOpenSettings = { nav.push(Route.SpaceSettings(route.spaceId)) }
+                            onOpenSettings = { backStack.add(Route.SpaceSettings(key.spaceId)) }
                         )
                     }
 
-                    is Route.SpaceSettings -> {
-                        val controller = remember(route.spaceId) {
-                            SpaceSettingsController(service, route.spaceId)
+
+                    entry<Route.SpaceSettings> { key ->
+                        val controller = remember(key.spaceId) {
+                            SpaceSettingsController(service, key.spaceId)
                         }
                         val ui by controller.state.collectAsState()
-
                         SpaceSettingsScreen(
                             state = ui,
-                            onBack = { nav.pop() },
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
                             onRefresh = controller::refresh,
                             onAddChild = controller::addChild,
                             onRemoveChild = controller::removeChild,
@@ -369,7 +407,7 @@ fun App(
                         )
                     }
                 }
-            }
+            )
         }
     }
 }

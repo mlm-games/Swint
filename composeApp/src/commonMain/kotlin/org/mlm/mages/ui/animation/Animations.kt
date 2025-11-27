@@ -7,6 +7,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
+import androidx.navigation3.runtime.NavKey
+import androidx.navigation3.scene.Scene
+import org.mlm.mages.nav.NAV_ANIM_DURATION
 import org.mlm.mages.ui.theme.Durations
 
 object AnimationSpecs {
@@ -47,3 +50,18 @@ fun rememberPulseAlpha(index: Int): Float {
     )
     return alpha
 }
+
+val forwardTransition: (AnimatedContentTransitionScope<Scene<NavKey>>.() -> ContentTransform) =
+    {
+        slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(NAV_ANIM_DURATION)) +
+                fadeIn(tween(NAV_ANIM_DURATION)) togetherWith
+                slideOutHorizontally(targetOffsetX = { -it / 3 }, animationSpec = tween(NAV_ANIM_DURATION)) +
+                fadeOut(tween(NAV_ANIM_DURATION))
+    }
+val popTransition: (AnimatedContentTransitionScope<Scene<NavKey>>.() -> ContentTransform) =
+    {
+        slideInHorizontally(initialOffsetX = { -it }, animationSpec = tween(NAV_ANIM_DURATION)) +
+                fadeIn(tween(NAV_ANIM_DURATION)) togetherWith
+                slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(NAV_ANIM_DURATION)) +
+                fadeOut(tween(NAV_ANIM_DURATION))
+    }
