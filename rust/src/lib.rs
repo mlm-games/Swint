@@ -1197,6 +1197,24 @@ impl Client {
         })
     }
 
+    pub fn set_mark_unread(&self, room_id: String, unread: bool) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            room.set_unread_flag(unread).await.is_ok()
+        })
+    }
+
+    pub fn is_marked_unread(&self, room_id: String) -> Option<bool> {
+        RT.block_on(async {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+            Some(room.is_marked_unread())
+        })
+    }
+
     /// Configure the SDK's media retention policy and apply it immediately.
     /// Any `None` will keep the SDK default for that parameter.
     pub fn set_media_retention_policy(
@@ -1418,16 +1436,23 @@ impl Client {
     }
     pub fn observe_receipts(&self, room_id: String, observer: Box<dyn ReceiptsObserver>) -> u64 {
         let client = self.inner.clone();
-        let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+        let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
             return 0;
         };
-        let obs: Arc<dyn ReceiptsObserver> = Arc::from(observer);
+        let obs: std::sync::Arc<dyn ReceiptsObserver> = std::sync::Arc::from(observer);
         let id = self.next_sub_id();
+
         let h = RT.spawn(async move {
-            let stream = client.observe_room_events::<SyncReceiptEvent, Room>(&rid);
-            let mut sub = stream.subscribe();
-            while let Some((_ev, _room)) = sub.next().await {
-                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| obs.on_changed()));
+            let Some(room) = client.get_room(&rid) else {
+                return;
+            };
+            let Ok(tl) = room.timeline().await else {
+                return;
+            };
+            let mut stream = tl.subscribe_own_user_read_receipts_changed().await;
+            use futures_util::StreamExt;
+            while let Some(()) = stream.next().await {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| obs.on_changed()));
             }
         });
         self.receipts_subs.lock().unwrap().insert(id, h);
@@ -2448,133 +2473,133 @@ impl Client {
         self.room_list_cmds.lock().unwrap().insert(id, cmd_tx);
 
         let h = RT.spawn(async move {
-        let svc = loop {
-            if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
-                break s;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        };
+            let svc = loop {
+                if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
+                    break s;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            };
 
-        let rls = svc.room_list_service();
-        let all = match rls.all_rooms().await {
-            Ok(list) => list,
-            Err(e) => {
-                eprintln!("observe_room_list: failed to get all_rooms: {e}");
-                return;
-            }
-        };
+            let rls = svc.room_list_service();
+            let all = match rls.all_rooms().await {
+                Ok(list) => list,
+                Err(e) => {
+                    eprintln!("observe_room_list: failed to get all_rooms: {e}");
+                    return;
+                }
+            };
 
-        let (stream, controller) = all.entries_with_dynamic_adapters(50);
-        tokio::pin!(stream);
+            let (stream, controller) = all.entries_with_dynamic_adapters(50);
+            tokio::pin!(stream);
 
-        controller.set_filter(Box::new(filters::new_filter_non_left()));
+            controller.set_filter(Box::new(filters::new_filter_non_left()));
 
-        // Maintain local ordered state
-        let mut rooms = Vector::<matrix_sdk::Room>::new();
+            // Maintain local ordered state
+            let mut rooms = Vector::<matrix_sdk::Room>::new();
 
-        loop {
-            tokio::select! {
-                Some(cmd) = cmd_rx.recv() => {
-                    match cmd {
-                        RoomListCmd::SetUnreadOnly(unread_only) => {
-                            if unread_only {
-                                controller.set_filter(Box::new(filters::new_filter_all(vec![
-                                    Box::new(filters::new_filter_non_left()),
-                                    Box::new(filters::new_filter_unread()),
-                                ])));
-                            } else {
-                                controller.set_filter(Box::new(filters::new_filter_non_left()));
+            loop {
+                tokio::select! {
+                    Some(cmd) = cmd_rx.recv() => {
+                        match cmd {
+                            RoomListCmd::SetUnreadOnly(unread_only) => {
+                                if unread_only {
+                                    controller.set_filter(Box::new(filters::new_filter_all(vec![
+                                        Box::new(filters::new_filter_non_left()),
+                                        Box::new(filters::new_filter_unread()),
+                                    ])));
+                                } else {
+                                    controller.set_filter(Box::new(filters::new_filter_non_left()));
+                                }
                             }
                         }
                     }
-                }
-                Some(diffs) = stream.next() => {
-                    let mut changed = false;
+                    Some(diffs) = stream.next() => {
+                        let mut changed = false;
 
-                    for diff in diffs {
-                        match diff {
-                            VectorDiff::Reset { values } => {
-                                rooms = values;
-                                changed = true;
-                            }
-                            VectorDiff::Clear => {
-                                rooms.clear();
-                                changed = true;
-                            }
-                            VectorDiff::PushFront { value } => {
-                                rooms.insert(0, value);
-                                changed = true;
-                            }
-                            VectorDiff::PushBack { value } => {
-                                rooms.push_back(value);
-                                changed = true;
-                            }
-                            VectorDiff::PopFront => {
-                                if !rooms.is_empty() {
-                                    rooms.remove(0);
+                        for diff in diffs {
+                            match diff {
+                                VectorDiff::Reset { values } => {
+                                    rooms = values;
                                     changed = true;
                                 }
-                            }
-                            VectorDiff::PopBack => {
-                                rooms.pop_back();
-                                changed = true;
-                            }
-                            VectorDiff::Insert { index, value } => {
-                                let idx = index as usize;
-                                if idx <= rooms.len() {
-                                    rooms.insert(idx, value);
+                                VectorDiff::Clear => {
+                                    rooms.clear();
                                     changed = true;
                                 }
-                            }
-                            VectorDiff::Set { index, value } => {
-                                let idx = index as usize;
-                                if idx < rooms.len() {
-                                    rooms[idx] = value;
+                                VectorDiff::PushFront { value } => {
+                                    rooms.insert(0, value);
                                     changed = true;
                                 }
-                            }
-                            VectorDiff::Remove { index } => {
-                                let idx = index as usize;
-                                if idx < rooms.len() {
-                                    rooms.remove(idx);
+                                VectorDiff::PushBack { value } => {
+                                    rooms.push_back(value);
                                     changed = true;
                                 }
-                            }
-                            VectorDiff::Truncate { length } => {
-                                rooms.truncate(length as usize);
-                                changed = true;
-                            }
-                            VectorDiff::Append {values} => {
-                                rooms.append(values);
-                                changed = true;
+                                VectorDiff::PopFront => {
+                                    if !rooms.is_empty() {
+                                        rooms.remove(0);
+                                        changed = true;
+                                    }
+                                }
+                                VectorDiff::PopBack => {
+                                    rooms.pop_back();
+                                    changed = true;
+                                }
+                                VectorDiff::Insert { index, value } => {
+                                    let idx = index as usize;
+                                    if idx <= rooms.len() {
+                                        rooms.insert(idx, value);
+                                        changed = true;
+                                    }
+                                }
+                                VectorDiff::Set { index, value } => {
+                                    let idx = index as usize;
+                                    if idx < rooms.len() {
+                                        rooms[idx] = value;
+                                        changed = true;
+                                    }
+                                }
+                                VectorDiff::Remove { index } => {
+                                    let idx = index as usize;
+                                    if idx < rooms.len() {
+                                        rooms.remove(idx);
+                                        changed = true;
+                                    }
+                                }
+                                VectorDiff::Truncate { length } => {
+                                    rooms.truncate(length as usize);
+                                    changed = true;
+                                }
+                                VectorDiff::Append {values} => {
+                                    rooms.append(values);
+                                    changed = true;
+                                }
                             }
                         }
-                    }
 
-                    if changed {
-                        let snapshot: Vec<RoomListEntry> = rooms
-                            .iter()
-                            .map(|room| RoomListEntry {
-                                room_id: room.room_id().to_string(),
-                                name: room
-                                    .cached_display_name()
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_else(|| room.room_id().to_string()),
-                                unread: room.unread_notification_counts().notification_count as u64,
-                                last_ts: 0, // Not needed - order is correct from SDK
-                            })
-                            .collect();
+                        if changed {
+                            let snapshot: Vec<RoomListEntry> = rooms
+                                .iter()
+                                .map(|room| RoomListEntry {
+                                    room_id: room.room_id().to_string(),
+                                    name: room
+                                        .cached_display_name()
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| room.room_id().to_string()),
+                                    unread: room.num_unread_notifications(),
+                                    last_ts: 0, // Not needed - order is correct from SDK
+                                })
+                                .collect();
 
-                        let obs_clone = obs.clone();
-                        let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
-                            obs_clone.on_reset(snapshot);
-                        }));
+                            let obs_clone = obs.clone();
+                            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                                obs_clone.on_reset(snapshot);
+                            }));
+                        }
                     }
+                    else => break,
                 }
-                else => break,
             }
-        }
-    });
+        });
 
         self.room_list_subs.lock().unwrap().insert(id, h);
         id
