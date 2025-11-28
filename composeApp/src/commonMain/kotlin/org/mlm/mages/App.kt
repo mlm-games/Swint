@@ -1,13 +1,5 @@
 package org.mlm.mages
 
-import androidx.compose.animation.AnimatedContentTransitionScope
-import androidx.compose.animation.ContentTransform
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.tween
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.runtime.*
@@ -19,7 +11,6 @@ import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
-import androidx.navigation3.scene.Scene
 import androidx.navigation3.ui.NavDisplay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -158,7 +149,10 @@ fun App(
                             RoomController(service, dataStore, key.roomId, key.name)
                         }
                         DisposableEffect(key.roomId) {
-                            onDispose { controller.onCleared() }
+                            onDispose {
+                                controller.onCleared()
+                                roomsController.refreshUnreadCounts() // Hack, check rust side?
+                            }
                         }
                         val ui by controller.state.collectAsState()
                         val openExternal = rememberFileOpener()

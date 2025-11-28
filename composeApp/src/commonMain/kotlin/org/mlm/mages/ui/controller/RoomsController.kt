@@ -158,6 +158,8 @@ class RoomsController(
                                 body = event.body.take(100)
                             )
                         }
+
+                        refreshUnreadCounts()
                     }
                 }
             } catch (e: Exception) {
