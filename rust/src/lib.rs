@@ -6,7 +6,7 @@ use mime::Mime;
 use once_cell::sync::Lazy;
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -1171,7 +1171,7 @@ impl Client {
 
     pub fn mark_read(&self, room_id: String) -> bool {
         with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
-            tl.mark_as_read(ReceiptType::Read).await.is_ok()
+            tl.mark_as_read(ReceiptType::ReadPrivate).await.is_ok()
         })
     }
 
@@ -1183,14 +1183,17 @@ impl Client {
             let Ok(eid) = EventId::parse(event_id) else {
                 return false;
             };
-
             let Some(room) = self.inner.get_room(&room_id) else {
                 return false;
             };
 
-            room.send_single_receipt(ReceiptType::Read, ReceiptThread::Unthreaded, eid.to_owned())
-                .await
-                .is_ok()
+            room.send_single_receipt(
+                ReceiptType::ReadPrivate,
+                ReceiptThread::Unthreaded,
+                eid.to_owned(),
+            )
+            .await
+            .is_ok()
         })
     }
 
@@ -1278,11 +1281,23 @@ impl Client {
         );
         let out = dir.join(safe_name);
 
-        let bytes = RT
-            .block_on(async { self.inner.media().get_media_content(&req, true).await })
-            .map_err(|e| FfiError::Msg(e.to_string()))?;
+        RT.block_on(async {
+            use mime::IMAGE_JPEG;
 
-        std::fs::write(&out, &bytes)?;
+            let handle = self
+                .inner
+                .media()
+                .get_media_file(&req, None, &IMAGE_JPEG, true, None)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            handle
+                .persist(&out)
+                .map_err(|e| FfiError::Msg(format!("persist: {e}")))?;
+
+            Ok::<_, FfiError>(())
+        })?;
+
         Ok(out.to_string_lossy().to_string())
     }
 
@@ -1352,41 +1367,44 @@ impl Client {
 
     pub fn observe_typing(&self, room_id: String, observer: Box<dyn TypingObserver>) -> u64 {
         let client = self.inner.clone();
-        let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
+        let Ok(rid) = OwnedRoomId::try_from(room_id) else {
             return 0;
         };
         let obs: Arc<dyn TypingObserver> = Arc::from(observer);
         let id = self.next_sub_id();
 
         let h = RT.spawn(async move {
-            let stream = client.observe_room_events::<SyncTypingEvent, Room>(&room_id);
-            let mut sub = stream.subscribe();
+            let Some(room) = client.get_room(&rid) else {
+                return;
+            };
+            // Keep the guard alive here.
+            let (_guard, mut rx) = room.subscribe_to_typing_notifications();
 
             let mut cache: HashMap<OwnedUserId, String> = HashMap::new();
             let mut last: Vec<String> = Vec::new();
 
-            while let Some((ev, room)) = sub.next().await {
-                let mut names = Vec::with_capacity(ev.content.user_ids.len());
-                for uid in ev.content.user_ids.iter() {
-                    if let Some(n) = cache.get(uid) {
+            while let Ok(user_ids) = rx.recv().await {
+                let mut names = Vec::with_capacity(user_ids.len());
+                for uid in user_ids {
+                    if let Some(n) = cache.get(&uid) {
                         names.push(n.clone());
                         continue;
                     }
-                    let name = match room.get_member(uid).await {
+                    let name = match room.get_member(&uid).await {
                         Ok(Some(m)) => m
                             .display_name()
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| uid.localpart().to_string()),
                         _ => uid.localpart().to_string(),
                     };
-                    cache.insert(uid.to_owned(), name.clone());
+                    cache.insert(uid.clone(), name.clone());
                     names.push(name);
                 }
                 names.sort();
                 names.dedup();
                 if names != last {
                     last = names.clone();
-                    obs.on_update(names);
+                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| obs.on_update(names)));
                 }
             }
         });
@@ -1590,31 +1608,36 @@ impl Client {
         progress: Option<Box<dyn ProgressObserver>>,
     ) -> Result<DownloadResult, FfiError> {
         RT.block_on(async {
-            use std::io::Write;
-            let mxc: OwnedMxcUri = mxc_uri.into();
+            use mime::APPLICATION_OCTET_STREAM;
 
+            let mxc: OwnedMxcUri = mxc_uri.into();
             let req = MediaRequestParameters {
                 source: MediaSource::Plain(mxc),
                 format: MediaFormat::File,
             };
 
-            let bytes = self
+            let handle = self
                 .inner
                 .media()
-                .get_media_content(&req, true)
+                .get_media_file(&req, None, &APPLICATION_OCTET_STREAM, true, None)
                 .await
                 .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
 
+            // progress (can stat the temp file)
             if let Some(p) = progress.as_ref() {
-                let sz = bytes.len() as u64;
-                p.on_progress(sz, Some(sz));
+                if let Ok(md) = std::fs::metadata(handle.path()) {
+                    p.on_progress(md.len(), Some(md.len()));
+                }
             }
 
-            let mut f = std::fs::File::create(&save_path)?;
-            f.write_all(&bytes)?;
+            handle
+                .persist(Path::new(&save_path))
+                .map_err(|e| FfiError::Msg(format!("persist: {e}")))?;
+
+            let bytes = std::fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0);
             Ok(DownloadResult {
                 path: save_path,
-                bytes: bytes.len() as u64,
+                bytes,
             })
         })
     }
@@ -2318,7 +2341,7 @@ impl Client {
 
     pub fn own_last_read(&self, room_id: String) -> OwnReceipt {
         RT.block_on(async {
-            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id.clone()) else {
+            let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
                 return OwnReceipt {
                     event_id: None,
                     ts_ms: None,
@@ -2336,23 +2359,24 @@ impl Client {
                     ts_ms: None,
                 };
             };
-            let me = self.inner.user_id().to_owned().unwrap();
-            let eid = tl.latest_user_read_receipt_timeline_event_id(me).await;
-            // Try to map to a timestamp if the event is currently known to timeline
-            let ts = if let Some(ref e) = eid {
-                let items = tl.items().await;
-                items.iter().find_map(|it| {
-                    it.as_event()
-                        .and_then(|ev| ev.event_id().map(|id| id == e))
-                        .and_then(|eq| if eq { Some(()) } else { None })
-                        .and_then(|_| it.as_event().map(|ev| ev.timestamp().0.into()))
-                })
-            } else {
-                None
+            let Some(me) = self.inner.user_id() else {
+                return OwnReceipt {
+                    event_id: None,
+                    ts_ms: None,
+                };
             };
-            OwnReceipt {
-                event_id: eid.map(|e| e.to_string()),
-                ts_ms: ts,
+
+            if let Some((eid, receipt)) = tl.latest_user_read_receipt(me).await {
+                let ts = receipt.ts.map(|t| t.0.into());
+                OwnReceipt {
+                    event_id: Some(eid.to_string()),
+                    ts_ms: ts,
+                }
+            } else {
+                OwnReceipt {
+                    event_id: None,
+                    ts_ms: None,
+                }
             }
         })
     }
@@ -2381,7 +2405,6 @@ impl Client {
 
     pub fn mark_fully_read_at(&self, room_id: String, event_id: String) -> bool {
         RT.block_on(async {
-            use ReceiptThread;
             let Ok(rid) = ruma::OwnedRoomId::try_from(room_id) else {
                 return false;
             };
@@ -2389,9 +2412,10 @@ impl Client {
                 return false;
             };
             if let Some(room) = self.inner.get_room(&rid) {
-                room.send_single_receipt(ReceiptType::FullyRead, ReceiptThread::Unthreaded, eid)
-                    .await
-                    .is_ok()
+                let receipts = matrix_sdk::room::Receipts::new()
+                    .private_read_receipt(eid.clone())
+                    .fully_read_marker(eid);
+                room.send_multiple_receipts(receipts).await.is_ok()
             } else {
                 false
             }
@@ -2747,27 +2771,37 @@ impl Client {
             s.trim_matches('_').to_string()
         }
         let hint = filename_hint
-            .as_ref()
-            .map(|h| sanitize(h))
+            .as_deref()
+            .map(sanitize)
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "file.bin".to_string());
-        let fname = format!("dl_{}_{}", now_ms(), hint);
-        let out = dir.join(fname);
+            .unwrap_or_else(|| "file.bin".into());
+        let out = dir.join(format!("dl_{}_{}", now_ms(), hint));
 
-        let mxc: OwnedMxcUri = mxc_uri.into();
-        let req = MediaRequestParameters {
-            source: MediaSource::Plain(mxc),
-            format: MediaFormat::File,
-        };
+        RT.block_on(async {
+            use mime::APPLICATION_OCTET_STREAM;
 
-        let bytes = RT
-            .block_on(async { self.inner.media().get_media_content(&req, true).await })
-            .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
+            let mxc: OwnedMxcUri = mxc_uri.into();
+            let req = MediaRequestParameters {
+                source: MediaSource::Plain(mxc),
+                format: MediaFormat::File,
+            };
 
-        std::fs::write(&out, &bytes)?;
-        Ok(DownloadResult {
-            path: out.to_string_lossy().to_string(),
-            bytes: bytes.len() as u64,
+            let handle = self
+                .inner
+                .media()
+                .get_media_file(&req, None, &APPLICATION_OCTET_STREAM, true, None)
+                .await
+                .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
+
+            handle
+                .persist(&out)
+                .map_err(|e| FfiError::Msg(format!("persist: {e}")))?;
+
+            let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            Ok(DownloadResult {
+                path: out.to_string_lossy().to_string(),
+                bytes,
+            })
         })
     }
 
