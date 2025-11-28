@@ -26,9 +26,6 @@ data class RoomsUiState(
     val unreadOnly: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null,
-
-    val lastActivity: Map<String, Long> = emptyMap(),
-    val lastOutgoing: Map<String, Long> = emptyMap()
 )
 data class RoomUiState(
     val roomId: String,

@@ -1,4 +1,5 @@
 [versions]
+adaptiveNavigation3 = "1.3.0-alpha02"
 agp = "8.13.1"
 android-compileSdk = "36"
 android-minSdk = "24"
@@ -6,6 +7,7 @@ android-targetSdk = "36"
 connector = "3.1.2"
 dbusJavaCore = "5.1.1"
 dbusJavaTransportNativeUnixsocket = "5.1.1"
+navigation3Ui = "1.0.0-alpha05"
 slf4jSimple = "2.0.17"
 up-fcm = "3.0.0"
 up-ui = "1.1.0"
@@ -13,9 +15,9 @@ androidx-activity = "1.12.0"
 androidx-appcompat = "1.7.1"
 androidx-core = "1.17.0"
 androidx-espresso = "3.7.0"
-androidx-lifecycle = "2.9.6"
+androidx-lifecycle = "2.10.0-alpha05"
 androidx-testExt = "1.3.0"
-composeMultiplatform = "1.9.3"
+composeMultiplatform = "1.10.0-beta02"
 datastorePreferencesCore = "1.2.0"
 jna = "5.18.1"
 junit = "4.13.2"
@@ -30,6 +32,7 @@ workRuntimeKtx = "2.11.0"
 browser = "1.9.0"
 
 [libraries]
+adaptive-navigation3 = { module = "org.jetbrains.compose.material3.adaptive:adaptive-navigation3", version.ref = "adaptiveNavigation3" }
 androidx-browser = { module = "androidx.browser:browser" , version.ref = "browser"}
 androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferencesCore" }
 androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
@@ -53,7 +56,9 @@ kotlinx-coroutines-swing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinxDatetime" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+lifecycle-viewmodel-navigation3 = { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "androidx-lifecycle" }
 material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
+navigation3-ui = { module = "org.jetbrains.androidx.navigation3:navigation3-ui", version.ref = "navigation3Ui" }
 net-jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4jSimple" }

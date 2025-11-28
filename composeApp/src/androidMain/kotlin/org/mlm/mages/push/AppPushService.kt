@@ -12,7 +12,6 @@ import org.mlm.mages.matrix.MatrixProvider
 import org.unifiedpush.android.connector.PushService
 import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.data.PushMessage
-import androidx.core.net.toUri
 import kotlinx.coroutines.cancel
 import org.mlm.mages.notifications.getRoomNotifMode
 import org.mlm.mages.notifications.shouldNotify
@@ -58,14 +57,23 @@ class AppPushService : PushService() {
                 runCatching { svc.port.encryptionCatchupOnce() }
                 var shown = 0
                 for ((roomId, eventId) in pairs) {
-                    val notif = runCatching { svc.port.fetchNotification(roomId, eventId) }.getOrNull()
+                    val notif =
+                        runCatching { svc.port.fetchNotification(roomId, eventId) }.getOrNull()
                     if (notif != null) {
                         val ds = provideAppDataStore(this@AppPushService)
-                        val mode = runCatching { getRoomNotifMode(ds, roomId) }.getOrDefault(org.mlm.mages.notifications.RoomNotifMode.Default)
+                        val mode = runCatching {
+                            getRoomNotifMode(
+                                ds,
+                                roomId
+                            )
+                        }.getOrDefault(org.mlm.mages.notifications.RoomNotifMode.Default)
                         if (shouldNotify(mode, notif.hasMention)) {
                             AndroidNotificationHelper.showSingleEvent(
                                 this@AppPushService,
-                                AndroidNotificationHelper.NotificationText(notif.sender, notif.body),
+                                AndroidNotificationHelper.NotificationText(
+                                    notif.sender,
+                                    notif.body
+                                ),
                                 roomId, eventId
                             )
                             shown++
@@ -87,7 +95,10 @@ class AppPushService : PushService() {
         removeEndpoint(applicationContext, instance)
     }
 
-    override fun onRegistrationFailed(reason: org.unifiedpush.android.connector.FailedReason, instance: String) {
+    override fun onRegistrationFailed(
+        reason: org.unifiedpush.android.connector.FailedReason,
+        instance: String
+    ) {
         Log.w("AppPushService", "Registration failed for $instance: $reason")
     }
 
@@ -104,19 +115,12 @@ class AppPushService : PushService() {
         context: Context,
         endpoint: String,
         instance: String,
-        token: String?,
+        token: String?,  // for embedded FCM distributor
     ) {
-        val uri = endpoint.toUri()
-        val pushKey = token ?: uri.getQueryParameter("token") ?: uri.lastPathSegment ?: instance
-        val gatewayUrl =
-            if (endpoint.contains("/_matrix/push/")) {
-                endpoint.substringBefore("?").let { base ->
-                    if (base.endsWith("/notify")) base
-                    else base.substringBefore("/_matrix") + "/_matrix/push/v1/notify"
-                }
-            } else {
-                "https://matrix.gateway.unifiedpush.org/_matrix/push/v1/notify"
-            }
+        val gatewayUrl = GatewayResolver.resolveGateway(endpoint)
+
+        val pushKey = token ?: endpoint
+
         val service = MatrixProvider.get(context)
         if (service.isLoggedIn()) {
             service.port.registerUnifiedPush(
@@ -153,31 +157,37 @@ private fun extractMatrixPushPayload(raw: String): List<Pair<String, String>> {
     return try {
         val obj = org.json.JSONObject(raw)
         val pairs = mutableListOf<Pair<String, String>>()
+
+        // Try Element/spec format {"notification": {e..}}
+        val notification = obj.optJSONObject("notification")
+        if (notification != null) {
+            val eid = notification.optString("event_id", "")
+            val rid = notification.optString("room_id", "")
+            if (eid.isNotBlank() && rid.isNotBlank()) {
+                pairs += rid to eid
+                return pairs
+            }
+        }
+
+        // fallback
         if (obj.has("event_id") && obj.has("room_id")) {
             val eid = obj.optString("event_id")
             val rid = obj.optString("room_id")
             if (eid.isNotBlank() && rid.isNotBlank()) pairs += rid to eid
         }
-        val keys = arrayOf("events", "notifications", "notification")
+
+        // Other fallbacks (array)
+        val keys = arrayOf("events", "notifications")
         for (k in keys) {
-            if (!obj.has(k)) continue
-            val arr = obj.optJSONArray(k)
-            if (arr != null) {
-                for (i in 0 until arr.length()) {
-                    val it = arr.optJSONObject(i) ?: continue
-                    val eid = it.optString("event_id")
-                    val rid = it.optString("room_id")
-                    if (eid.isNotBlank() && rid.isNotBlank()) pairs += rid to eid
-                }
-            } else {
-                val it = obj.optJSONObject(k)
-                if (it != null) {
-                    val eid = it.optString("event_id")
-                    val rid = it.optString("room_id")
-                    if (eid.isNotBlank() && rid.isNotBlank()) pairs += rid to eid
-                }
+            val arr = obj.optJSONArray(k) ?: continue
+            for (i in 0 until arr.length()) {
+                val it = arr.optJSONObject(i) ?: continue
+                val eid = it.optString("event_id")
+                val rid = it.optString("room_id")
+                if (eid.isNotBlank() && rid.isNotBlank()) pairs += rid to eid
             }
         }
+
         pairs.distinct()
     } catch (_: Throwable) {
         emptyList()
