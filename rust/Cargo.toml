@@ -12,7 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uniffi = "0.29.4"
 
-matrix-sdk = { version = "0.14.0", default-features = false, features = [
+matrix-sdk = { version = "0.14", default-features = false, features = [
     "e2e-encryption",
     "sqlite",
     "rustls-tls",
@@ -20,7 +20,7 @@ matrix-sdk = { version = "0.14.0", default-features = false, features = [
     "automatic-room-key-forwarding",
     "bundled-sqlite",
 ] }
-matrix-sdk-ui = { version = "0.14.0", default-features = false, features = [
+matrix-sdk-ui = { version = "0.14", default-features = false, features = [
     "rustls-tls",
 ] }
 futures-util = "0.3"
@@ -36,9 +36,10 @@ tracing = "0.1"
 thiserror = "2"
 mime = "0.3"
 rand = "0.9.2"
-matrix-sdk-base = "0.14.1"
+matrix-sdk-base = "0.14"
 blake3 = "1.8.2"
-matrix-sdk-crypto = "0.14.0"
+matrix-sdk-crypto = "0.14"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [build-dependencies]
 uniffi = { version = "0.29.4", features = ["build"] }

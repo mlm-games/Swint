@@ -17,6 +17,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::{EnvFilter, fmt};
 use uniffi::{Enum, HandleAlloc, Object, Record, export, setup_scaffolding};
 
 use futures_util::StreamExt;
@@ -613,10 +615,29 @@ macro_rules! with_timeline_async {
     }};
 }
 
+static TRACING_INIT: Lazy<()> = Lazy::new(|| {
+    let filter = EnvFilter::from_default_env()
+        .add_directive("mages_ffi=debug".parse().unwrap())
+        .add_directive("matrix_sdk=info".parse().unwrap())
+        .add_directive("matrix_sdk_crypto=info".parse().unwrap());
+
+    fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .without_time() // avoids weird timestamps on Android
+        .init();
+});
+
+fn init_tracing() {
+    Lazy::force(&TRACING_INIT);
+}
+
 #[export]
 impl Client {
     #[uniffi::constructor]
     pub fn new(homeserver_url: String, store_dir: String) -> Self {
+        init_tracing();
+
         let store_dir_path = std::path::PathBuf::from(&store_dir);
         let _ = std::fs::create_dir_all(&store_dir_path);
 
@@ -701,7 +722,6 @@ impl Client {
         RT.block_on(async {
             match this.inner.whoami().await {
                 Ok(_) => {
-                    let _ = this.inner.sync_once(SyncSettings::default()).await;
                     if this.sync_service.lock().unwrap().is_none() {
                         if let Ok(service) = SyncService::builder(this.inner.clone()).build().await
                         {
@@ -725,7 +745,6 @@ impl Client {
                                     },
                                 };
                                 if this.inner.restore_session(session).await.is_ok() {
-                                    let _ = this.inner.sync_once(SyncSettings::default()).await;
                                     if this.sync_service.lock().unwrap().is_none() {
                                         if let Ok(service) =
                                             SyncService::builder(this.inner.clone()).build().await
@@ -837,9 +856,6 @@ impl Client {
                 serde_json::to_string(&info).unwrap(),
             )
             .await?;
-
-            // Warm caches once; ignore errors deliberately (don’t block login success)
-            let _ = self.inner.sync_once(SyncSettings::default()).await;
 
             Ok(())
         })
@@ -979,57 +995,71 @@ impl Client {
 
         let id = self.next_sub_id();
         let h = RT.spawn(async move {
-            let td_handler = client.observe_events::<ToDeviceKeyVerificationRequestEvent, ()>();
-            let mut td_sub = td_handler.subscribe();
+        info!("verification_inbox: start (sub_id={})", id);
 
-            // In‑room requests arrive as a room message with msgtype = m.key.verification.request
-            let ir_handler = client.observe_events::<SyncRoomMessageEvent, Room>();
-            let mut ir_sub = ir_handler.subscribe();
+        let td_handler = client.observe_events::<ToDeviceKeyVerificationRequestEvent, ()>();
+        let mut td_sub = td_handler.subscribe();
+        info!("verification_inbox: subscribed to ToDeviceKeyVerificationRequestEvent");
 
-            loop {
-                tokio::select! {
-                    maybe = td_sub.next() => {
-                        if let Some((ev, ())) = maybe {
-                            let flow_id    = ev.content.transaction_id.to_string(); // to‑device uses txn id
-                            let from_user  = ev.sender.to_string();
-                            let from_device= ev.content.from_device.to_string();
+        let ir_handler = client.observe_events::<SyncRoomMessageEvent, Room>();
+        let mut ir_sub = ir_handler.subscribe();
+        info!("verification_inbox: subscribed to SyncRoomMessageEvent");
 
-                            inbox.lock().unwrap().insert(
-                                flow_id.clone(),
-                                (ev.sender, ev.content.from_device.clone()),
-                            );
+        loop {
+            tokio::select! {
+                maybe = td_sub.next() => {
+                    info!("verification_inbox: to-device next = {:?}", maybe.as_ref().map(|(ev, _)| &ev.content.transaction_id));
+                    if let Some((ev, ())) = maybe {
+                        let flow_id    = ev.content.transaction_id.to_string();
+                        let from_user  = ev.sender.to_string();
+                        let from_device= ev.content.from_device.to_string();
 
-                            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                                obs.on_request(flow_id, from_user, from_device);
-                            }));
-                        } else { break; }
+                        inbox.lock().unwrap().insert(
+                            flow_id.clone(),
+                            (ev.sender, ev.content.from_device.clone()),
+                        );
+
+                        info!("verification_inbox: got to-device request flow_id={} from {} / {}",
+                              flow_id, from_user, from_device);
+
+                        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            obs.on_request(flow_id, from_user, from_device);
+                        }));
+                    } else {
+                        info!("verification_inbox: to-device stream ended");
+                        break;
                     }
+                }
 
-                    // in‑room
-                    maybe = ir_sub.next() => {
-                        if let Some((ev, _room)) = maybe {
-                            if let SyncRoomMessageEvent::Original(o) = ev {
-                                if let MessageType::VerificationRequest(_c) = &o.content.msgtype {
-                                    // in‑room flow_id is the event_id
-                                    let flow_id   = o.event_id.to_string();
-                                    let from_user = o.sender.to_string();
+                maybe = ir_sub.next() => {
+                    info!("verification_inbox: in-room next = {:?}", maybe.as_ref().map(|(ev, _)| ev.event_id()));
+                    if let Some((ev, _room)) = maybe {
+                        if let SyncRoomMessageEvent::Original(o) = ev {
+                            if let MessageType::VerificationRequest(_c) = &o.content.msgtype {
+                                let flow_id   = o.event_id.to_string();
+                                let from_user = o.sender.to_string();
 
-                                    // We only need the user later; device can be a placeholder
-                                    inbox.lock().unwrap().insert(
-                                        flow_id.clone(),
-                                        (o.sender.clone(), owned_device_id!("inroom")),
-                                    );
+                                inbox.lock().unwrap().insert(
+                                    flow_id.clone(),
+                                    (o.sender.clone(), owned_device_id!("inroom")),
+                                );
 
-                                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                                        obs.on_request(flow_id, from_user, String::new());
-                                    }));
-                                }
+                                info!("verification_inbox: got in-room request flow_id={} from {}",
+                                      flow_id, from_user);
+
+                                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                    obs.on_request(flow_id, from_user, String::new());
+                                }));
                             }
-                        } else { break; }
+                        }
+                    } else {
+                        info!("verification_inbox: in-room stream ended");
+                        break;
                     }
                 }
             }
-        });
+        }
+    });
 
         self.inbox_subs.lock().unwrap().insert(id, h);
         id
@@ -1858,11 +1888,22 @@ impl Client {
     ) -> String {
         let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
+            info!("start_self_sas: device_id={}", device_id);
+
             let Some(me) = self.inner.user_id() else {
+                warn!("start_self_sas: no user");
                 obs.on_error("".into(), "No user".into());
                 return "".into();
             };
+
+            // Ensure crypto is fully initialised
+            self.inner
+                .encryption()
+                .wait_for_e2ee_initialization_tasks()
+                .await;
+
             let Ok(devices) = self.inner.encryption().get_user_devices(me).await else {
+                warn!("start_self_sas: Devices unavailable");
                 obs.on_error("".into(), "Devices unavailable".into());
                 return "".into();
             };
@@ -1875,6 +1916,7 @@ impl Client {
                 }
             }
             let Some(dev) = target else {
+                warn!("start_self_sas: device not found");
                 obs.on_error("".into(), "Device not found".into());
                 return "".into();
             };
@@ -1882,10 +1924,15 @@ impl Client {
             match dev.request_verification().await {
                 Ok(req) => {
                     let flow_id = req.flow_id().to_string();
+                    info!(
+                        "start_self_sas: got VerificationRequest flow_id={}",
+                        flow_id
+                    );
                     self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
                     flow_id
                 }
                 Err(e) => {
+                    error!("start_self_sas: request_verification failed: {e}");
                     obs.on_error("".into(), e.to_string());
                     "".into()
                 }
@@ -1900,28 +1947,43 @@ impl Client {
     ) -> String {
         let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
+            info!("start_user_sas: user_id={}", user_id);
+
             let Ok(uid) = user_id.parse::<OwnedUserId>() else {
+                warn!("start_user_sas: bad user id");
                 obs.on_error("".into(), "Bad user id".into());
                 return "".into();
             };
 
-            match self.inner.encryption().get_user_identity(&uid).await {
+            self.inner
+                .encryption()
+                .wait_for_e2ee_initialization_tasks()
+                .await;
+
+            match self.inner.encryption().request_user_identity(&uid).await {
                 Ok(Some(identity)) => match identity.request_verification().await {
                     Ok(req) => {
                         let flow_id = req.flow_id().to_string();
+                        info!(
+                            "start_user_sas: got VerificationRequest flow_id={}",
+                            flow_id
+                        );
                         self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
                         flow_id
                     }
                     Err(e) => {
+                        error!("start_user_sas: request_verification failed: {e}");
                         obs.on_error("".into(), e.to_string());
                         "".into()
                     }
                 },
                 Ok(None) => {
+                    warn!("start_user_sas: user has no cross-signing identity");
                     obs.on_error("".into(), "User has no cross‑signing identity".into());
                     "".into()
                 }
                 Err(e) => {
+                    error!("start_user_sas: Identity fetch failed: {e}");
                     obs.on_error("".into(), format!("Identity fetch failed: {e}"));
                     "".into()
                 }
@@ -1937,7 +1999,11 @@ impl Client {
     ) -> bool {
         let obs: Arc<dyn VerificationObserver> = Arc::from(observer);
         RT.block_on(async {
-            // Prefer explicit other user; else look up from inbox
+            info!(
+                "accept_verification: flow_id={:?}, other_user_id={:?}",
+                flow_id, other_user_id
+            );
+
             let user_opt = if let Some(uid) = other_user_id {
                 uid.parse::<OwnedUserId>().ok()
             } else {
@@ -1948,50 +2014,63 @@ impl Client {
                     .map(|p| p.0.clone())
             };
             let Some(user) = user_opt else {
+                warn!(
+                    "accept_verification: could not resolve user for flow_id={}",
+                    flow_id
+                );
                 return false;
             };
+            info!("accept_verification: resolved user={}", user);
 
-            // Already-running SAS?
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
+                info!("accept_verification: found existing SAS in verifs, calling accept()");
                 return f.sas.accept().await.is_ok();
             }
 
-            // Pending request?
             if let Some(req) = self
                 .inner
                 .encryption()
                 .get_verification_request(&user, &flow_id)
                 .await
             {
+                info!("accept_verification: found VerificationRequest, accepting and starting sas");
                 if req.accept().await.is_err() {
+                    warn!("accept_verification: req.accept() failed");
                     return false;
                 }
                 self.wait_and_start_sas(flow_id.clone(), req, obs.clone());
                 return true;
             }
 
-            // A verification may already exist; sas() can appear a moment later after START
             if let Some(verification) = self
                 .inner
                 .encryption()
                 .get_verification(&user, &flow_id)
                 .await
             {
+                info!("accept_verification: found Verification, trying sas().accept()");
                 if let Some(sas) = verification.clone().sas() {
                     return sas.accept().await.is_ok();
                 }
-                // Short retry for sas() to materialize
                 for _ in 0..5 {
                     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                     if let Some(sas) = verification.clone().sas() {
+                        info!("accept_verification: sas became available, accepting");
                         return sas.accept().await.is_ok();
                     }
                 }
+                warn!("accept_verification: sas() never became available");
+            } else {
+                warn!(
+                    "accept_verification: no Verification found for user={} flow_id={}",
+                    user, flow_id
+                );
             }
 
             false
         })
     }
+
     pub fn confirm_verification(&self, flow_id: String) -> bool {
         RT.block_on(async {
             if let Some(f) = self.verifs.lock().unwrap().get(&flow_id) {
@@ -2451,7 +2530,8 @@ impl Client {
         })
     }
 
-    /// One-shot sync used when a push arrives; small timeout and no backoff
+    /// Deprecated, remove after fixing push notifs for android (causes older parts to be used (legacy sync, which causes errors on the current synapse server))
+    #[warn(deprecated)]
     pub fn wake_sync_once(&self, timeout_ms: u32) -> bool {
         RT.block_on(async {
             let settings =
@@ -3062,8 +3142,6 @@ impl Client {
                 )
                 .await?;
             }
-
-            let _ = self.inner.sync_once(SyncSettings::default()).await;
 
             Ok(())
         })
@@ -3874,6 +3952,8 @@ async fn attach_sas_stream(
     sas: SasVerification,
     obs: Arc<dyn VerificationObserver>,
 ) {
+    info!("attach_sas_stream: flow_id={}", flow_id);
+
     let other_user = sas.other_user_id().to_owned();
     let other_device = sas.other_device().device_id().to_owned();
 
@@ -3881,14 +3961,20 @@ async fn attach_sas_stream(
         flow_id.clone(),
         VerifFlow {
             sas: sas.clone(),
-            other_user,
-            other_device,
+            other_user: other_user.clone(),
+            other_device: other_device.clone(),
         },
+    );
+    info!(
+        "attach_sas_stream: stored VerifFlow for flow_id={}, other_user={}, other_device={}",
+        flow_id, other_user, other_device
     );
 
     let mut stream = sas.changes();
 
     while let Some(state) = stream.next().await {
+        info!("attach_sas_stream: flow_id={} state={:?}", flow_id, state);
+
         match state {
             SdkSasState::KeysExchanged { emojis, .. } => {
                 if let Some(emojis) = emojis {
@@ -3908,12 +3994,18 @@ async fn attach_sas_stream(
             SdkSasState::Done { .. } => {
                 obs.on_phase(flow_id.clone(), SasPhase::Done);
                 verifs.lock().unwrap().remove(&flow_id);
+                info!("attach_sas_stream: DONE, removed flow_id={}", flow_id);
                 break;
             }
-            SdkSasState::Cancelled(info) => {
+            SdkSasState::Cancelled(info_c) => {
                 obs.on_phase(flow_id.clone(), SasPhase::Cancelled);
-                obs.on_error(flow_id.clone(), info.reason().to_owned());
+                obs.on_error(flow_id.clone(), info_c.reason().to_owned());
                 verifs.lock().unwrap().remove(&flow_id);
+                warn!(
+                    "attach_sas_stream: CANCELLED for flow_id={} reason={}",
+                    flow_id,
+                    info_c.reason()
+                );
                 break;
             }
             SdkSasState::Created { .. }
