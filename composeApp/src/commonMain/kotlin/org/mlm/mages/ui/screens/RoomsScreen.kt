@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -19,6 +20,8 @@ import org.mlm.mages.ui.components.common.RoomListItem
 import org.mlm.mages.ui.components.core.EmptyState
 import org.mlm.mages.ui.components.core.ShimmerList
 import org.mlm.mages.ui.theme.Spacing
+
+enum class RoomSection { Favourites, Normal, LowPriority }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,8 +40,8 @@ fun RoomsScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    // Matrix rooms are already sorted via sdk in reversed order (by recency from bottom)
-    val filtered = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread) {
+    // Group rooms by section, Matrix rooms are already sorted via sdk in reversed order (by recency from bottom)
+    val groupedRooms = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread, state.favourites, state.lowPriority) {
         var list = state.rooms
 
         val q = state.roomSearchQuery.trim()
@@ -52,22 +55,34 @@ fun RoomsScreen(
             list = list.filter { (state.unread[it.id] ?: 0) > 0 }
         }
 
-        list
+        val favourites = list.filter { state.favourites.contains(it.id) }
+        val lowPriority = list.filter { state.lowPriority.contains(it.id) }
+        val normal = list.filter { !state.favourites.contains(it.id) && !state.lowPriority.contains(it.id) }
+
+        mapOf(
+            RoomSection.Favourites to favourites,
+            RoomSection.Normal to normal,
+            RoomSection.LowPriority to lowPriority
+        )
     }
 
+    val hasAnyRooms = groupedRooms.values.any { it.isNotEmpty() }
+
     // Scroll to top when first room changes (new unread activity)
-    val firstRoomId = filtered.firstOrNull()?.id
-    LaunchedEffect(firstRoomId) {
-        if (firstRoomId != null && listState.firstVisibleItemIndex > 0) {
+    val firstFavouriteId = groupedRooms[RoomSection.Favourites]?.firstOrNull()?.id
+    val firstNormalId = groupedRooms[RoomSection.Normal]?.firstOrNull()?.id
+    LaunchedEffect(firstFavouriteId, firstNormalId) {
+        if ((firstFavouriteId != null || firstNormalId != null) && listState.firstVisibleItemIndex > 0) {
             listState.animateScrollToItem(0)
         }
     }
 
     // Show FAB when not at top and there's unread activity
-    val showScrollToTopFab by remember(listState, filtered, state.unread) {
+    val showScrollToTopFab by remember(listState, groupedRooms, state.unread) {
         derivedStateOf {
             listState.firstVisibleItemIndex > 2 &&
-                    filtered.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true
+                    (groupedRooms[RoomSection.Favourites]?.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true ||
+                            groupedRooms[RoomSection.Normal]?.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true)
         }
     }
 
@@ -177,7 +192,7 @@ fun RoomsScreen(
             state.isLoading && state.rooms.isEmpty() -> {
                 ShimmerList(modifier = Modifier.fillMaxSize().padding(innerPadding))
             }
-            filtered.isEmpty() -> {
+            !hasAnyRooms -> {
                 EmptyState(
                     icon = Icons.Default.MeetingRoom,
                     title = "No rooms found",
@@ -194,15 +209,100 @@ fun RoomsScreen(
                     modifier = Modifier.fillMaxSize().padding(innerPadding),
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
-                    items(filtered, key = { it.id }) { room ->
-                        RoomListItem(
-                            room = room,
-                            unreadCount = state.unread[room.id] ?: 0,
-                            onClick = { onOpen(room) }
-                        )
+                    // Favourites section
+                    val favourites = groupedRooms[RoomSection.Favourites] ?: emptyList()
+                    if (favourites.isNotEmpty()) {
+                        item(key = "header_favourites") {
+                            SectionHeader(
+                                icon = Icons.Default.Star,
+                                title = "Favourites",
+                                count = favourites.size
+                            )
+                        }
+                        items(favourites, key = { "fav_${it.id}" }) { room ->
+                            RoomListItem(
+                                room = room,
+                                unreadCount = state.unread[room.id] ?: 0,
+                                onClick = { onOpen(room) },
+                                showFavouriteIcon = true
+                            )
+                        }
+                    }
+
+                    // Normal rooms section
+                    val normal = groupedRooms[RoomSection.Normal] ?: emptyList()
+                    if (normal.isNotEmpty()) {
+                        if (favourites.isNotEmpty()) {
+                            item(key = "header_rooms") {
+                                SectionHeader(
+                                    icon = Icons.Default.ChatBubble,
+                                    title = "Rooms",
+                                    count = normal.size
+                                )
+                            }
+                        }
+                        items(normal, key = { "room_${it.id}" }) { room ->
+                            RoomListItem(
+                                room = room,
+                                unreadCount = state.unread[room.id] ?: 0,
+                                onClick = { onOpen(room) }
+                            )
+                        }
+                    }
+
+                    // Low priority section
+                    val lowPriority = groupedRooms[RoomSection.LowPriority] ?: emptyList()
+                    if (lowPriority.isNotEmpty()) {
+                        item(key = "header_low_priority") {
+                            SectionHeader(
+                                icon = Icons.Default.ArrowDownward,
+                                title = "Low Priority",
+                                count = lowPriority.size
+                            )
+                        }
+                        items(lowPriority, key = { "low_${it.id}" }) { room ->
+                            RoomListItem(
+                                room = room,
+                                unreadCount = state.unread[room.id] ?: 0,
+                                onClick = { onOpen(room) },
+                                modifier = Modifier.alpha(0.6F)
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SectionHeader(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    count: Int
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "($count)",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

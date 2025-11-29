@@ -26,7 +26,10 @@ data class RoomsUiState(
     val unreadOnly: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null,
+    val favourites: Set<String> = emptySet(),
+    val lowPriority: Set<String> = emptySet(),
 )
+
 data class RoomUiState(
     val roomId: String,
     val roomName: String,

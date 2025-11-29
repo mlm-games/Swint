@@ -1,6 +1,8 @@
 package org.mlm.mages.ui.components.common
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -20,8 +22,9 @@ fun RoomListItem(
     room: RoomSummary,
     unreadCount: Int,
     modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    showFavouriteIcon: Boolean = false,
     subtitle: String? = room.id,
-    onClick: () -> Unit
 ) {
     Card(
         onClick = onClick,
@@ -52,6 +55,15 @@ fun RoomListItem(
                     fontWeight = if (unreadCount > 0) FontWeight.Bold else FontWeight.Medium,
                     maxLines = 1
                 )
+                if (showFavouriteIcon) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Default.Star,
+                        contentDescription = "Favourite",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.tertiary
+                    )
+                }
                 if (subtitle != null) {
                     Text(
                         subtitle,

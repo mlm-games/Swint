@@ -33,7 +33,6 @@ fun SecurityScreen(
     state: SecurityUiState,
     onBack: () -> Unit,
     onRefreshDevices: () -> Unit,
-    onToggleTrust: (deviceId: String, verified: Boolean) -> Unit,
     onStartSelfVerify: (deviceId: String) -> Unit,
     onStartUserVerify: (userId: String) -> Unit,
     onAcceptSas: () -> Unit,
@@ -75,7 +74,7 @@ fun SecurityScreen(
                 label = "sec-tabs"
             ) { tab ->
                 when (tab) {
-                    0 -> DevicesTab(isLoading = state.isLoadingDevices, devices = state.devices, onToggleTrust = onToggleTrust, onVerify = onStartSelfVerify)
+                    0 -> DevicesTab(isLoading = state.isLoadingDevices, devices = state.devices, onVerify = onStartSelfVerify)
                     1 -> RecoveryTab(onOpenRecovery = onOpenRecovery, onLogout = onLogout)
                     else -> PrivacyTab()
                 }
@@ -107,7 +106,7 @@ fun SecurityScreen(
 }
 
 @Composable
-private fun DevicesTab(isLoading: Boolean, devices: List<DeviceSummary>, onToggleTrust: (String, Boolean) -> Unit, onVerify: (String) -> Unit) {
+private fun DevicesTab(isLoading: Boolean, devices: List<DeviceSummary>, onVerify: (String) -> Unit) {
     var searchQuery by remember { mutableStateOf("") }
     val filtered = remember(devices, searchQuery) {
         if (searchQuery.isBlank()) devices else devices.filter { it.deviceId.contains(searchQuery, true) || it.displayName.contains(searchQuery, true) }
@@ -131,7 +130,7 @@ private fun DevicesTab(isLoading: Boolean, devices: List<DeviceSummary>, onToggl
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 items(filtered.filter { !it.isOwn }) { dev ->
-                    DeviceCard(device = dev, onToggleTrust = { v -> onToggleTrust(dev.deviceId, v) }, onVerify = { onVerify(dev.deviceId) })
+                    DeviceCard(device = dev, onVerify = { onVerify(dev.deviceId) })
                 }
             }
         }
@@ -139,29 +138,35 @@ private fun DevicesTab(isLoading: Boolean, devices: List<DeviceSummary>, onToggl
 }
 
 @Composable
-private fun DeviceCard(device: DeviceSummary, onToggleTrust: (Boolean) -> Unit, onVerify: () -> Unit) {
+private fun DeviceCard(device: DeviceSummary, onVerify: () -> Unit) {
+    val isVerified = device.verified
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = if (device.locallyTrusted) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface)
+        colors = CardDefaults.cardColors(containerColor = if (isVerified) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface)
     ) {
         Column(Modifier.fillMaxWidth().padding(Spacing.lg)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                 Surface(
-                    color = if (device.locallyTrusted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant,
+                    color = if (isVerified) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant,
                     shape = CircleShape,
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Computer, null, tint = if (device.locallyTrusted) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(
+                            if (isVerified) Icons.Default.Lock else Icons.Default.LockOpen,
+                            contentDescription = if (isVerified) "Verified" else "Unverified",
+                            tint = if (isVerified) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 Spacer(Modifier.width(Spacing.md))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(device.displayName.ifBlank { device.deviceId }, style = MaterialTheme.typography.titleSmall)
-                        if (device.locallyTrusted) {
+                        if (isVerified) {
                             Spacer(Modifier.width(Spacing.sm))
-                            Icon(Icons.Default.Verified, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Verified, "Verified", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                         }
                     }
                     Spacer(Modifier.height(4.dp))
@@ -171,20 +176,13 @@ private fun DeviceCard(device: DeviceSummary, onToggleTrust: (Boolean) -> Unit, 
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(top = Spacing.md), horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                OutlinedButton(onClick = onVerify, modifier = Modifier.weight(1f)) {
+
+            if (!isVerified) {
+                Spacer(Modifier.height(Spacing.md))
+                OutlinedButton(onClick = onVerify, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.VerifiedUser, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Verify")
-                }
-                FilledTonalButton(
-                    onClick = { onToggleTrust(!device.locallyTrusted) },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = if (device.locallyTrusted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer)
-                ) {
-                    Icon(if (device.locallyTrusted) Icons.Default.RemoveModerator else Icons.Default.Shield, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (device.locallyTrusted) "Untrust" else "Trust")
                 }
             }
         }

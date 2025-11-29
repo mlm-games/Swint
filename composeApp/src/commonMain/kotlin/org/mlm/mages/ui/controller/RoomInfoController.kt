@@ -15,7 +15,9 @@ data class RoomInfoUiState(
     val error: String? = null,
     val editedName: String = "",
     val editedTopic: String = "",
-    val isSaving: Boolean = false
+    val isSaving: Boolean = false,
+    val isFavourite: Boolean = false,
+    val isLowPriority: Boolean = false
 )
 
 class RoomInfoController(
@@ -36,6 +38,8 @@ class RoomInfoController(
 
             val profile = service.port.roomProfile(roomId)
             val members = service.port.listMembers(roomId)
+            val tags = service.port.roomTags(roomId)
+
             val sorted = members.sortedWith(
                 compareByDescending<MemberSummary> { it.isMe }
                     .thenBy { it.displayName ?: it.userId }
@@ -46,6 +50,8 @@ class RoomInfoController(
                 editedName = profile?.name ?: "",
                 editedTopic = profile?.topic ?: "",
                 isLoading = false,
+                isFavourite = tags?.first ?: false,
+                isLowPriority = tags?.second ?: false,
                 error = if (profile == null) "Failed to load room info" else null
             )
         }
@@ -79,6 +85,40 @@ class RoomInfoController(
         _state.value = _state.value.copy(isSaving = false)
 
         if (success) refresh()
+        return success
+    }
+
+    suspend fun toggleFavourite(): Boolean {
+        val current = _state.value.isFavourite
+        _state.value = _state.value.copy(isSaving = true)
+        val success = service.port.setRoomFavourite(roomId, !current)
+        _state.value = _state.value.copy(isSaving = false)
+
+        if (success) {
+            _state.value = _state.value.copy(isFavourite = !current)
+            // If marking as favourite, remove low priority
+            if (!current && _state.value.isLowPriority) {
+                service.port.setRoomLowPriority(roomId, false)
+                _state.value = _state.value.copy(isLowPriority = false)
+            }
+        }
+        return success
+    }
+
+    suspend fun toggleLowPriority(): Boolean {
+        val current = _state.value.isLowPriority
+        _state.value = _state.value.copy(isSaving = true)
+        val success = service.port.setRoomLowPriority(roomId, !current)
+        _state.value = _state.value.copy(isSaving = false)
+
+        if (success) {
+            _state.value = _state.value.copy(isLowPriority = !current)
+            // If marking as low priority, remove favourite
+            if (!current && _state.value.isFavourite) {
+                service.port.setRoomFavourite(roomId, false)
+                _state.value = _state.value.copy(isFavourite = false)
+            }
+        }
         return success
     }
 

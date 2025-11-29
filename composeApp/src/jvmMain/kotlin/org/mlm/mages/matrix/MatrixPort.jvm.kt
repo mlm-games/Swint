@@ -7,6 +7,7 @@ import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
+import mages.FfiRoomNotificationMode
 import org.mlm.mages.AttachmentInfo
 import org.mlm.mages.AttachmentKind
 import org.mlm.mages.EncFile
@@ -262,12 +263,9 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 displayName = it.displayName,
                 ed25519 = it.ed25519,
                 isOwn = it.isOwn,
-                locallyTrusted = it.locallyTrusted
+                verified = it.verified
             )
         }
-
-    override suspend fun setLocalTrust(deviceId: String, verified: Boolean): Boolean =
-        client.setLocalTrust(deviceId, verified)
 
     private fun mages.SasPhase.toCommon(): SasPhase = when (this) {
         mages.SasPhase.REQUESTED -> SasPhase.Requested
@@ -485,6 +483,12 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.observeOwnReceipt(roomId, cb) // mapped in Rust to receipt stream
     }
 
+    override suspend fun roomNotificationMode(roomId: String): RoomNotificationMode? =
+        client.roomNotificationMode(roomId)?.toKotlin()
+
+    override suspend fun setRoomNotificationMode(roomId: String, mode: RoomNotificationMode): Boolean =
+        runCatching { client.setRoomNotificationMode(roomId, mode.toFfi()) }.isSuccess
+
     override suspend fun markFullyReadAt(
         roomId: String,
         eventId: String,
@@ -499,8 +503,11 @@ class RustMatrixPort(hs: String) : MatrixPort {
                     MatrixPort.RoomListEntry(
                         roomId = it.roomId,
                         name = it.name,
-                        unread = it.unread.toLong(),
-                        lastTs = it.lastTs.toLong()
+                        lastTs = it.lastTs,
+                        notifications = it.notifications,
+                        messages = it.messages,
+                        mentions = it.mentions,
+                        markedUnread = it.markedUnread,
                     )
                 }
                 observer.onReset(mapped)
@@ -511,8 +518,11 @@ class RustMatrixPort(hs: String) : MatrixPort {
                     MatrixPort.RoomListEntry(
                         roomId = item.roomId,
                         name = item.name,
-                        unread = item.unread.toLong(),
-                        lastTs = item.lastTs.toLong()
+                        lastTs = item.lastTs,
+                        notifications = item.notifications,
+                        messages = item.messages,
+                        mentions = item.mentions,
+                        markedUnread = item.markedUnread,
                     )
                 )
             }
@@ -778,6 +788,20 @@ class RustMatrixPort(hs: String) : MatrixPort {
             false
         }
     }
+
+    override suspend fun roomTags(roomId: String): Pair<Boolean, Boolean>? = withContext(Dispatchers.IO) {
+        runCatching { client.roomTags(roomId) }.getOrNull()?.let {
+            it.isFavourite to it.isLowPriority
+        }
+    }
+
+    override suspend fun setRoomFavourite(roomId: String, favourite: Boolean): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.setRoomFavourite(roomId, favourite) }.getOrDefault(false)
+    }
+
+    override suspend fun setRoomLowPriority(roomId: String, lowPriority: Boolean): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.setRoomLowPriority(roomId, lowPriority) }.getOrDefault(false)
+    }
 }
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
@@ -827,6 +851,12 @@ private fun mages.AttachmentInfo.toModel() = AttachmentInfo(
 
 private fun EncFile.toFfi() = mages.EncFile(url = url, json = json)
 
+private fun FfiRoomNotificationMode.toKotlin(): RoomNotificationMode = when (this) {
+    FfiRoomNotificationMode.ALL_MESSAGES -> RoomNotificationMode.AllMessages
+    FfiRoomNotificationMode.MENTIONS_AND_KEYWORDS_ONLY -> RoomNotificationMode.MentionsAndKeywordsOnly
+    FfiRoomNotificationMode.MUTE -> RoomNotificationMode.Mute
+}
+
 private fun AttachmentInfo.toFfi() = mages.AttachmentInfo(
     kind = when (kind) {
         AttachmentKind.Image -> mages.AttachmentKind.IMAGE
@@ -843,5 +873,11 @@ private fun AttachmentInfo.toFfi() = mages.AttachmentInfo(
     encrypted = encrypted?.toFfi(),
     thumbnailEncrypted = thumbnailEncrypted?.toFfi(),
 )
+
+private fun RoomNotificationMode.toFfi(): FfiRoomNotificationMode = when (this) {
+    RoomNotificationMode.AllMessages -> FfiRoomNotificationMode.ALL_MESSAGES
+    RoomNotificationMode.MentionsAndKeywordsOnly -> FfiRoomNotificationMode.MENTIONS_AND_KEYWORDS_ONLY
+    RoomNotificationMode.Mute -> FfiRoomNotificationMode.MUTE
+}
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)

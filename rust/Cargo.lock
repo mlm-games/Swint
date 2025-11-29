@@ -1816,6 +1816,7 @@ dependencies = [
  "futures-util",
  "matrix-sdk",
  "matrix-sdk-base",
+ "matrix-sdk-crypto",
  "matrix-sdk-ui",
  "mime",
  "once_cell",

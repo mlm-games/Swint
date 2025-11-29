@@ -41,16 +41,6 @@ class SecurityController(
         }
     }
 
-    fun toggleTrust(deviceId: String, verified: Boolean) {
-        scope.launch {
-            val ok = service.setLocalTrust(deviceId, verified)
-            if (!ok) {
-                _state.update { it.copy(error = "Failed to update trust") }
-            }
-            refreshDevices()
-        }
-    }
-
     private fun startVerificationInbox() {
         inboxToken?.let { service.stopVerificationInbox(it) }
         inboxToken = service.startVerificationInbox(object : MatrixPort.VerificationInboxObserver {
@@ -63,7 +53,6 @@ class SecurityController(
                     )
                     st.copy(
                         pendingVerifications = pending,
-                        // auto-focus on first req if none active
                         sasFlowId = st.sasFlowId ?: flowId,
                         sasPhase = st.sasPhase ?: SasPhase.Requested,
                         sasOtherUser = st.sasOtherUser ?: fromUser,
@@ -83,7 +72,6 @@ class SecurityController(
         override fun onPhase(flowId: String, phase: SasPhase) {
             _state.update { it.copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
             if (phase == SasPhase.Done || phase == SasPhase.Cancelled) {
-                // remove this flow and move next
                 _state.update { st ->
                     val remaining = st.pendingVerifications.filterNot { it.flowId == flowId }
                     st.copy(
@@ -126,7 +114,6 @@ class SecurityController(
             if (flowId.isBlank()) _state.update { it.copy(sasError = "Failed to start verification") }
         }
     }
-
 
     fun acceptSas() {
         val flowId = _state.value.sasFlowId ?: return

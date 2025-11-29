@@ -27,6 +27,8 @@ fun RoomInfoScreen(
     onTopicChange: (String) -> Unit,
     onSaveName: suspend () -> Boolean,
     onSaveTopic: suspend () -> Boolean,
+    onToggleFavourite: suspend () -> Boolean,
+    onToggleLowPriority: suspend () -> Boolean,
     onLeave: suspend () -> Boolean,
     onLeaveSuccess: () -> Unit
 ) {
@@ -68,6 +70,67 @@ fun RoomInfoScreen(
                 // Room header
                 item {
                     RoomHeader(state)
+                }
+
+                item {
+                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                "Room Priority",
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = state.isFavourite,
+                                    onClick = {
+                                        scope.launch {
+                                            val success = onToggleFavourite()
+                                            if (!success) {
+                                                snackbarHostState.showSnackbar("Failed to update favourite")
+                                            }
+                                        }
+                                    },
+                                    label = { Text("Favourite") },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (state.isFavourite) Icons.Default.Star else Icons.Default.StarBorder,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    enabled = !state.isSaving,
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                FilterChip(
+                                    selected = state.isLowPriority,
+                                    onClick = {
+                                        scope.launch {
+                                            val success = onToggleLowPriority()
+                                            if (!success) {
+                                                snackbarHostState.showSnackbar("Failed to update priority")
+                                            }
+                                        }
+                                    },
+                                    label = { Text("Low Priority") },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (state.isLowPriority) Icons.Default.ArrowDownward else Icons.Default.Remove,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    enabled = !state.isSaving,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Edit name
@@ -189,8 +252,8 @@ fun RoomInfoScreen(
 private fun RoomHeader(state: RoomInfoUiState) {
     val profile = state.profile ?: return
 
-    Card(
-        modifier = Modifier.fillMaxWidth()
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
@@ -231,6 +294,14 @@ private fun RoomHeader(state: RoomInfoUiState) {
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
+                    if (state.isFavourite) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Favourite",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
                 }
 
                 Text(
@@ -265,7 +336,7 @@ private fun EditableField(
         Button(
             onClick = onSave,
             enabled = !isSaving,
-            modifier = Modifier.align(Alignment.End)
+            modifier = Modifier.align(Alignment.CenterHorizontally)
         ) {
             if (isSaving) {
                 CircularProgressIndicator(

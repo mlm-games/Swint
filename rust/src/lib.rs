@@ -1,4 +1,6 @@
 #![allow(unused_imports)]
+use matrix_sdk::notification_settings::NotificationSettings;
+use matrix_sdk_base::notification_settings::RoomNotificationMode as RsMode;
 use matrix_sdk_ui::{
     eyeball_im::Vector,
     timeline::{AttachmentConfig, AttachmentSource},
@@ -175,7 +177,7 @@ pub struct DeviceSummary {
     pub display_name: String,
     pub ed25519: String,
     pub is_own: bool,
-    pub locally_trusted: bool,
+    pub verified: bool,
 }
 
 #[derive(Clone, Enum)]
@@ -272,6 +274,12 @@ enum RoomListCmd {
     SetUnreadOnly(bool),
 }
 
+#[derive(uniffi::Record)]
+pub struct RoomTags {
+    pub is_favourite: bool,
+    pub is_low_priority: bool,
+}
+
 #[derive(Clone, Record)]
 pub struct ThreadPage {
     pub root_event_id: String,
@@ -331,8 +339,20 @@ pub trait VerificationInboxObserver: Send + Sync {
 pub struct RoomListEntry {
     pub room_id: String,
     pub name: String,
-    pub unread: u64,
+
     pub last_ts: u64,
+
+    pub notifications: u64,
+    pub messages: u64,
+    pub mentions: u64,
+    pub marked_unread: bool,
+}
+
+#[derive(Clone, Enum)]
+pub enum FfiRoomNotificationMode {
+    AllMessages,
+    MentionsAndKeywordsOnly,
+    Mute,
 }
 
 #[derive(Clone, Record)]
@@ -466,26 +486,6 @@ struct SessionInfo {
 
 fn session_file(dir: &PathBuf) -> PathBuf {
     dir.join("session.json")
-}
-
-fn trust_file(dir: &PathBuf) -> PathBuf {
-    dir.join("trusted_devices.json")
-}
-
-fn read_trusted(dir: &PathBuf) -> Vec<String> {
-    let path = trust_file(dir);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|txt| serde_json::from_str::<Vec<String>>(&txt).ok())
-        .unwrap_or_default()
-}
-
-fn write_trusted(dir: &PathBuf, ids: &[String]) -> bool {
-    let path = trust_file(dir);
-    if let Ok(txt) = serde_json::to_string(ids) {
-        return std::fs::write(path, txt).is_ok();
-    }
-    false
 }
 
 #[derive(Debug, Error, uniffi::Error)]
@@ -1822,8 +1822,7 @@ impl Client {
             let Some(me) = self.inner.user_id() else {
                 return vec![];
             };
-            let trusted = read_trusted(&self.store_dir);
-            let trusted_set: std::collections::HashSet<_> = trusted.iter().cloned().collect();
+
             let Ok(user_devs) = self.inner.encryption().get_user_devices(me).await else {
                 return vec![];
             };
@@ -1831,34 +1830,25 @@ impl Client {
             user_devs
                 .devices()
                 .map(|dev| {
+                    use matrix_sdk_crypto::LocalTrust;
+
                     let ed25519 = dev.ed25519_key().map(|k| k.to_base64()).unwrap_or_default();
                     let is_own = self
                         .inner
                         .device_id()
                         .map(|my| my == dev.device_id())
                         .unwrap_or(false);
+
                     DeviceSummary {
                         device_id: dev.device_id().to_string(),
                         display_name: dev.display_name().unwrap_or_default().to_string(),
                         ed25519,
                         is_own,
-                        locally_trusted: trusted_set.contains(&dev.device_id().to_string()),
+                        verified: dev.is_verified(),
                     }
                 })
                 .collect()
         })
-    }
-
-    pub fn set_local_trust(&self, device_id: String, verified: bool) -> bool {
-        let mut trusted = read_trusted(&self.store_dir);
-        if verified {
-            if !trusted.contains(&device_id) {
-                trusted.push(device_id);
-            }
-        } else {
-            trusted.retain(|d| d != &device_id);
-        }
-        write_trusted(&self.store_dir, &trusted)
     }
 
     pub fn start_self_sas(
@@ -1915,7 +1905,7 @@ impl Client {
                 return "".into();
             };
 
-            match self.inner.encryption().request_user_identity(&uid).await {
+            match self.inner.encryption().get_user_identity(&uid).await {
                 Ok(Some(identity)) => match identity.request_verification().await {
                     Ok(req) => {
                         let flow_id = req.flow_id().to_string();
@@ -2353,6 +2343,50 @@ impl Client {
         })
     }
 
+    pub fn room_notification_mode(&self, room_id: String) -> Option<FfiRoomNotificationMode> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+
+            let mode = room.notification_mode().await?;
+
+            Some(match mode {
+                RsMode::AllMessages => FfiRoomNotificationMode::AllMessages,
+                RsMode::MentionsAndKeywordsOnly => FfiRoomNotificationMode::MentionsAndKeywordsOnly,
+                RsMode::Mute => FfiRoomNotificationMode::Mute,
+            })
+        })
+    }
+
+    pub fn set_room_notification_mode(
+        &self,
+        room_id: String,
+        mode: FfiRoomNotificationMode,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+
+            let sdk_mode = match mode {
+                FfiRoomNotificationMode::AllMessages => RsMode::AllMessages,
+                FfiRoomNotificationMode::MentionsAndKeywordsOnly => RsMode::MentionsAndKeywordsOnly,
+                FfiRoomNotificationMode::Mute => RsMode::Mute,
+            };
+
+            self.inner
+                .notification_settings()
+                .await
+                .set_room_notification_mode(rid.as_ref(), sdk_mode)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
     pub fn list_members(&self, room_id: String) -> Result<Vec<MemberSummary>, FfiError> {
         RT.block_on(async {
             use matrix_sdk_base::RoomMemberships;
@@ -2656,18 +2690,27 @@ impl Client {
 
                         if changed {
                             let snapshot: Vec<RoomListEntry> = rooms
-                                .iter()
-                                .map(|room| RoomListEntry {
+                            .iter()
+                            .map(|room| {
+                                let notifications = room.num_unread_notifications();
+                                let messages = room.num_unread_messages();
+                                let mentions = room.num_unread_mentions();
+                                let marked_unread = room.is_marked_unread();
+
+                                RoomListEntry {
                                     room_id: room.room_id().to_string(),
                                     name: room
                                         .cached_display_name()
                                         .map(|n| n.to_string())
                                         .unwrap_or_else(|| room.room_id().to_string()),
-                                    unread: room.num_unread_notifications(),
-                                    last_ts: 0, // Not needed - order is correct from SDK
-                                })
-                                .collect();
-
+                                    last_ts: 0,                   // TODO: use recency_stamp
+                                    notifications,
+                                    messages,
+                                    mentions,
+                                    marked_unread,
+                                }
+                            })
+                            .collect();
                             let obs_clone = obs.clone();
                             let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
                                 obs_clone.on_reset(snapshot);
@@ -3061,6 +3104,33 @@ impl Client {
             }
 
             out
+        })
+    }
+
+    pub fn room_tags(&self, room_id: String) -> Option<RoomTags> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+            Some(RoomTags {
+                is_favourite: room.is_favourite(),
+                is_low_priority: room.is_low_priority(),
+            })
+        })
+    }
+
+    pub fn set_room_favourite(&self, room_id: String, fav: bool) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            room.set_is_favourite(fav, None).await.is_ok()
+        })
+    }
+
+    pub fn set_room_low_priority(&self, room_id: String, low: bool) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            room.set_is_low_priority(low, None).await.is_ok()
         })
     }
 
@@ -3811,43 +3881,46 @@ async fn attach_sas_stream(
         flow_id.clone(),
         VerifFlow {
             sas: sas.clone(),
-            other_user: other_user.clone(),
-            other_device: other_device.clone(),
+            other_user,
+            other_device,
         },
     );
 
     let mut stream = sas.changes();
+
     while let Some(state) = stream.next().await {
         match state {
             SdkSasState::KeysExchanged { emojis, .. } => {
-                if let Some(short) = emojis {
-                    let list: Vec<String> =
-                        short.emojis.iter().map(|e| e.symbol.to_string()).collect();
-                    obs.on_phase(flow_id.clone(), SasPhase::Emojis);
-                    obs.on_emojis(SasEmojis {
+                if let Some(emojis) = emojis {
+                    let payload = SasEmojis {
                         flow_id: flow_id.clone(),
-                        other_user: other_user.to_string(),
-                        other_device: other_device.to_string(),
-                        emojis: list,
-                    });
+                        other_user: sas.other_user_id().to_string(),
+                        other_device: sas.other_device().device_id().to_string(),
+                        emojis: emojis.emojis.iter().map(|e| e.symbol.to_string()).collect(),
+                    };
+                    obs.on_phase(flow_id.clone(), SasPhase::Emojis);
+                    obs.on_emojis(payload);
                 }
             }
-            SdkSasState::Confirmed => obs.on_phase(flow_id.clone(), SasPhase::Confirmed),
-            SdkSasState::Cancelled(_) => {
-                obs.on_phase(flow_id.clone(), SasPhase::Cancelled);
-                // Clean up after cancellation
-                verifs.lock().unwrap().remove(&flow_id);
-
-                break;
+            SdkSasState::Confirmed => {
+                obs.on_phase(flow_id.clone(), SasPhase::Confirmed);
             }
             SdkSasState::Done { .. } => {
                 obs.on_phase(flow_id.clone(), SasPhase::Done);
-                // Clean up after completion
                 verifs.lock().unwrap().remove(&flow_id);
-
                 break;
             }
-            _ => {}
+            SdkSasState::Cancelled(info) => {
+                obs.on_phase(flow_id.clone(), SasPhase::Cancelled);
+                obs.on_error(flow_id.clone(), info.reason().to_owned());
+                verifs.lock().unwrap().remove(&flow_id);
+                break;
+            }
+            SdkSasState::Created { .. }
+            | SdkSasState::Started { .. }
+            | SdkSasState::Accepted { .. } => {
+                // maybe map to Requested/Ready?
+            }
         }
     }
 }

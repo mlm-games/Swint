@@ -10,7 +10,7 @@ data class DeviceSummary(
     val displayName: String,
     val ed25519: String,
     val isOwn: Boolean,
-    val locallyTrusted: Boolean
+    var verified: Boolean
 )
 
 sealed class TimelineDiff<out T> {
@@ -33,6 +33,13 @@ data class SendUpdate(
     val eventId: String?,
     val error: String?
 )
+
+enum class RoomNotificationMode {
+    AllMessages,
+    MentionsAndKeywordsOnly,
+    Mute
+}
+
 
 interface VerificationObserver {
     fun onPhase(flowId: String, phase: SasPhase)
@@ -138,13 +145,9 @@ interface MatrixPort {
     suspend fun enqueueText(roomId: String, body: String, txnId: String? = null): String
     fun observeSends(): Flow<SendUpdate>
 
-//    suspend fun setMediaRetentionPolicy(
-//        maxCacheSizeBytes: Long? = null,
-//        maxFileSizeBytes: Long? = null,
-//        lastAccessExpirySecs: Long? = null,
-//        cleanupFrequencySecs: Long? = null,
-//    ): Boolean
-//    suspend fun mediaCacheClean(): Boolean
+    suspend fun roomTags(roomId: String): Pair<Boolean, Boolean>?
+    suspend fun setRoomFavourite(roomId: String, favourite: Boolean): Boolean
+    suspend fun setRoomLowPriority(roomId: String, lowPriority: Boolean): Boolean
 
     suspend fun thumbnailToCache(info: AttachmentInfo, width: Int, height: Int, crop: Boolean): Result<String>
 
@@ -180,7 +183,6 @@ interface MatrixPort {
     fun startSupervisedSync(observer: SyncObserver)
 
     suspend fun listMyDevices(): List<DeviceSummary>
-    suspend fun setLocalTrust(deviceId: String, verified: Boolean): Boolean
 
     suspend fun startSelfSas(targetDeviceId: String, observer: VerificationObserver): String
     suspend fun startUserSas(userId: String, observer: VerificationObserver): String
@@ -243,7 +245,17 @@ interface MatrixPort {
     suspend fun encryptionCatchupOnce(): Boolean
 
     interface RoomListObserver { fun onReset(items: List<RoomListEntry>); fun onUpdate(item: RoomListEntry) }
-    data class RoomListEntry(val roomId: String, val name: String, val unread: Long, val lastTs: Long)
+    data class RoomListEntry(
+        val roomId: String,
+        val name: String,
+        val lastTs: ULong,
+        val notifications: ULong,
+        val messages: ULong,
+        val mentions: ULong,
+        val markedUnread: Boolean,
+        val isFavourite: Boolean = false,
+        val isLowPriority: Boolean = false,
+    )
     fun observeRoomList(observer: RoomListObserver): ULong
     fun unobserveRoomList(token: ULong)
 
@@ -268,6 +280,10 @@ interface MatrixPort {
     suspend fun setRoomTopic(roomId: String, topic: String): Boolean
 
     suspend fun roomProfile(roomId: String): RoomProfile?
+
+    suspend fun roomNotificationMode(roomId: String): RoomNotificationMode?
+    suspend fun setRoomNotificationMode(roomId: String, mode: RoomNotificationMode): Boolean
+
     suspend fun listMembers(roomId: String): List<MemberSummary>
 
     suspend fun reactions(roomId: String, eventId: String): List<ReactionChip>

@@ -52,7 +52,9 @@ class RoomsController(
                 _state.update {
                     it.copy(
                         rooms = items.map { e -> RoomSummary(e.roomId, e.name) },
-                        unread = items.associate { e -> e.roomId to e.unread.toInt() },
+                        unread = items.associate { e -> e.roomId to e.notifications.toInt() },
+                        favourites = items.filter { e -> e.isFavourite }.map { e -> e.roomId }.toSet(),
+                        lowPriority = items.filter { e -> e.isLowPriority }.map { e -> e.roomId }.toSet(),
                         isLoading = false
                     )
                 }
