@@ -1814,6 +1814,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "futures-util",
+ "js_int",
  "matrix-sdk",
  "matrix-sdk-base",
  "matrix-sdk-crypto",

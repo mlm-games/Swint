@@ -1,5 +1,9 @@
 #![allow(unused_imports)]
-use matrix_sdk::notification_settings::NotificationSettings;
+use js_int::UInt;
+use matrix_sdk::{
+    PredecessorRoom, SuccessorRoom, notification_settings::NotificationSettings,
+    ruma::room::Restricted,
+};
 use matrix_sdk_base::notification_settings::RoomNotificationMode as RsMode;
 use matrix_sdk_ui::{
     eyeball_im::Vector,
@@ -98,6 +102,28 @@ use ruma::{
     },
 };
 
+use matrix_sdk::live_location_share::ObservableLiveLocation;
+use matrix_sdk::ruma::{
+    RoomVersionId,
+    api::client::presence::{
+        get_presence::v3 as get_presence_v3, set_presence::v3 as set_presence_v3,
+    },
+    api::client::room::upgrade_room::v3 as upgrade_room_v3,
+    events::poll::{
+        start::PollKind as RumaPollKind,
+        unstable_end::UnstablePollEndEventContent,
+        unstable_response::UnstablePollResponseEventContent,
+        unstable_start::{
+            NewUnstablePollStartEventContent, UnstablePollAnswer, UnstablePollAnswers,
+            UnstablePollStartContentBlock,
+        },
+    },
+    events::room::{
+        history_visibility::HistoryVisibility, join_rules::JoinRule,
+        tombstone::RoomTombstoneEventContent,
+    },
+    presence::PresenceState,
+};
 use std::panic::AssertUnwindSafe;
 
 // UniFFI macro-first setup
@@ -453,6 +479,102 @@ pub trait TimelineObserver: Send + Sync {
     fn on_error(&self, message: String);
 }
 
+#[derive(Clone, Enum)]
+pub enum PollKind {
+    Disclosed,
+    Undisclosed,
+}
+
+#[derive(Clone, Record)]
+pub struct PollDefinition {
+    /// Question text
+    pub question: String,
+    /// Answer labels – IDs will be generated as "a", "b", "c", ...
+    pub answers: Vec<String>,
+    /// Poll kind: disclosed vs. undisclosed
+    pub kind: PollKind,
+    /// Max selections per user (1 = single choice)
+    pub max_selections: u32,
+}
+
+#[derive(Clone, Record)]
+pub struct LiveLocationShareInfo {
+    pub user_id: String,
+    pub geo_uri: String,
+    pub ts_ms: u64,
+    pub is_live: bool,
+}
+
+#[export(callback_interface)]
+pub trait LiveLocationObserver: Send + Sync {
+    fn on_update(&self, shares: Vec<LiveLocationShareInfo>);
+}
+
+#[derive(Clone, Enum)]
+pub enum Presence {
+    Online,
+    Offline,
+    Unavailable,
+}
+
+#[derive(Clone, Enum)]
+pub enum RoomDirectoryVisibility {
+    Public,
+    Private,
+}
+
+#[derive(Clone, Enum)]
+pub enum RoomJoinRule {
+    Public,
+    Invite,
+    Knock,
+    Restricted,
+    KnockRestricted,
+}
+
+#[derive(Clone, Enum)]
+pub enum RoomHistoryVisibility {
+    Invited,
+    Joined,
+    Shared,
+    WorldReadable,
+}
+
+#[derive(Clone, Record)]
+pub struct SuccessorRoomInfo {
+    pub room_id: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Record)]
+pub struct PredecessorRoomInfo {
+    pub room_id: String,
+}
+
+#[derive(Clone, Record)]
+pub struct RoomUpgradeLinks {
+    pub is_tombstoned: bool,
+    pub successor: Option<SuccessorRoomInfo>,
+    pub predecessor: Option<PredecessorRoomInfo>,
+}
+
+impl From<SuccessorRoom> for SuccessorRoomInfo {
+    fn from(v: SuccessorRoom) -> Self {
+        SuccessorRoomInfo {
+            room_id: v.room_id.to_string(),
+            reason: v.reason,
+        }
+    }
+}
+
+impl From<PredecessorRoom> for PredecessorRoomInfo {
+    fn from(v: PredecessorRoom) -> Self {
+        PredecessorRoomInfo {
+            room_id: v.room_id.to_string(),
+        }
+    }
+}
+
 fn cache_dir(dir: &PathBuf) -> PathBuf {
     dir.join("media_cache")
 }
@@ -510,8 +632,8 @@ impl From<std::io::Error> for FfiError {
 
 struct VerifFlow {
     sas: SasVerification,
-    other_user: OwnedUserId,
-    other_device: OwnedDeviceId,
+    _other_user: OwnedUserId,
+    _other_device: OwnedDeviceId,
 }
 
 type VerifMap = Arc<Mutex<HashMap<String, VerifFlow>>>;
@@ -537,6 +659,7 @@ pub struct Client {
     room_list_cmds: Mutex<HashMap<u64, tokio::sync::mpsc::UnboundedSender<RoomListCmd>>>,
     send_handles_by_txn: Mutex<HashMap<String, matrix_sdk::send_queue::SendHandle>>,
     call_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    live_location_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone, Enum)]
@@ -677,6 +800,7 @@ impl Client {
             room_list_cmds: Mutex::new(HashMap::new()),
             send_handles_by_txn: Mutex::new(HashMap::new()),
             call_subs: Mutex::new(HashMap::new()),
+            live_location_subs: Mutex::new(HashMap::new()),
         };
 
         {
@@ -1202,6 +1326,9 @@ impl Client {
             h.abort();
         }
         for (_, h) in self.call_subs.lock().unwrap().drain() {
+            h.abort();
+        }
+        for (_, h) in self.live_location_subs.lock().unwrap().drain() {
             h.abort();
         }
     }
@@ -3638,6 +3765,474 @@ impl Client {
             room.invite_user_by_id(&uid).await.is_ok()
         })
     }
+
+    /// Send a new poll (MSC3381, unstable `m.poll.start`).
+    /// Returns the event ID if sending succeeds.
+    pub fn send_poll_start(
+        &self,
+        room_id: String,
+        def: PollDefinition,
+    ) -> Result<String, FfiError> {
+        use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let content = build_unstable_poll_content(&def)?;
+            let any = AnyMessageLikeEventContent::UnstablePollStart(content.into());
+
+            let send_res = room
+                .send(any)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            Ok(send_res.event_id.to_string())
+        })
+    }
+
+    /// Send a poll response for a given poll event.
+    /// `answers` are the answer IDs ("a", "b", "c"...), not the labels.
+    pub fn send_poll_response(
+        &self,
+        room_id: String,
+        poll_event_id: String,
+        answers: Vec<String>,
+    ) -> Result<(), FfiError> {
+        use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Ok(eid) = EventId::parse(&poll_event_id) else {
+                return Err(FfiError::Msg("bad poll event id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let content = UnstablePollResponseEventContent::new(answers, eid.to_owned());
+            let any = AnyMessageLikeEventContent::UnstablePollResponse(content);
+
+            room.send(any)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// End a poll (MSC3381, unstable `org.matrix.msc3381.poll.end`).
+    ///
+    /// This just sends an `m.poll.end` (unstable) event linked to the given poll
+    /// start event. It does *not* compute or embed per‑option results.
+    pub fn send_poll_end(&self, room_id: String, poll_event_id: String) -> Result<(), FfiError> {
+        use matrix_sdk::ruma::{EventId, events::AnyMessageLikeEventContent};
+
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Ok(poll_eid) = EventId::parse(&poll_event_id) else {
+                return Err(FfiError::Msg("bad poll event id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            // Minimal end, only fallback string.
+            let end_content = UnstablePollEndEventContent::new("Poll ended", poll_eid);
+
+            let any = AnyMessageLikeEventContent::UnstablePollEnd(end_content);
+
+            room.send(any)
+                .await
+                .map(|_| ())
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    /// Start sharing live location in a room for `duration_ms` milliseconds.
+    pub fn start_live_location(
+        &self,
+        room_id: String,
+        duration_ms: u64,
+        description: Option<String>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            room.start_live_location_share(duration_ms, description)
+                .await
+                .map(|_| ())
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    /// Stop our live location share (if any) in the room.
+    pub fn stop_live_location(&self, room_id: String) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            room.stop_live_location_share()
+                .await
+                .map(|_| ())
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    /// Send a single live location beacon update (geo:`geo:` URI) in the room.
+    pub fn send_live_location(&self, room_id: String, geo_uri: String) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            room.send_location_beacon(geo_uri)
+                .await
+                .map(|_| ())
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    /// Subscribe to other users' live location shares in a room.
+    pub fn observe_live_location(
+        &self,
+        room_id: String,
+        observer: Box<dyn LiveLocationObserver>,
+    ) -> u64 {
+        let client = self.inner.clone();
+        let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+            return 0;
+        };
+        let obs: Arc<dyn LiveLocationObserver> = Arc::from(observer);
+
+        sub_manager!(self, live_location_subs, async move {
+            let Some(room) = client.get_room(&rid) else {
+                return;
+            };
+            let observable = room.observe_live_location_shares();
+            let mut stream = observable.subscribe();
+
+            use futures_util::{StreamExt, pin_mut};
+
+            pin_mut!(stream);
+
+            while let Some(event) = stream.next().await {
+                let Some(beacon_info) = event.beacon_info else {
+                    continue;
+                };
+                let info = LiveLocationShareInfo {
+                    user_id: event.user_id.to_string(),
+                    geo_uri: event.last_location.location.uri.to_string(),
+                    ts_ms: event.last_location.ts.0.into(),
+                    is_live: beacon_info.is_live(),
+                };
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    obs.on_update(vec![info.clone()])
+                }));
+            }
+        })
+    }
+
+    pub fn unobserve_live_location(&self, sub_id: u64) -> bool {
+        unsub!(self, live_location_subs, sub_id)
+    }
+
+    pub fn publish_room_alias(&self, room_id: String, alias: String) -> Result<bool, FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id.as_str()) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let alias_id =
+                OwnedRoomAliasId::try_from(alias).map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            room.privacy_settings()
+                .publish_room_alias_in_room_directory(alias_id.as_ref())
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    pub fn unpublish_room_alias(&self, room_id: String, alias: String) -> Result<bool, FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id.as_str()) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let alias_id =
+                OwnedRoomAliasId::try_from(alias).map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            room.privacy_settings()
+                .remove_room_alias_from_room_directory(alias_id.as_ref())
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    pub fn set_room_canonical_alias(
+        &self,
+        room_id: String,
+        alias: Option<String>,
+        alt_aliases: Vec<String>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id.as_str()) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let alias_opt = if let Some(a) = alias {
+                Some(OwnedRoomAliasId::try_from(a).map_err(|e| FfiError::Msg(e.to_string()))?)
+            } else {
+                None
+            };
+
+            let mut alts = Vec::new();
+            for s in alt_aliases {
+                alts.push(OwnedRoomAliasId::try_from(s).map_err(|e| FfiError::Msg(e.to_string()))?);
+            }
+
+            room.privacy_settings()
+                .update_canonical_alias(alias_opt, alts)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    pub fn set_room_directory_visibility(
+        &self,
+        room_id: String,
+        visibility: RoomDirectoryVisibility,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let vs = match visibility {
+                RoomDirectoryVisibility::Public => Visibility::Public,
+                RoomDirectoryVisibility::Private => Visibility::Private,
+            };
+
+            room.privacy_settings()
+                .update_room_visibility(vs)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    pub fn room_directory_visibility(
+        &self,
+        room_id: String,
+    ) -> Result<RoomDirectoryVisibility, FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let vis = room
+                .privacy_settings()
+                .get_room_visibility()
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            Ok(match vis {
+                Visibility::Public => RoomDirectoryVisibility::Public,
+                Visibility::Private => RoomDirectoryVisibility::Private,
+                _ => RoomDirectoryVisibility::Private,
+            })
+        })
+    }
+
+    /// Add a user to the ignore list (muting them across all rooms).
+    pub fn ignore_user(&self, user_id: String) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let uid = user_id
+                .parse::<OwnedUserId>()
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            self.inner
+                .account()
+                .ignore_user(uid.as_ref())
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    /// Remove a user from the ignore list.
+    pub fn unignore_user(&self, user_id: String) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let uid = user_id
+                .parse::<OwnedUserId>()
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            self.inner
+                .account()
+                .unignore_user(uid.as_ref())
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    /// Check whether a user is currently ignored.
+    pub fn is_user_ignored(&self, user_id: String) -> bool {
+        RT.block_on(async {
+            match user_id.parse::<OwnedUserId>() {
+                Ok(uid) => self.inner.is_user_ignored(uid.as_ref()).await,
+                Err(_) => false,
+            }
+        })
+    }
+
+    /// Set this account's presence and optional status message.
+    pub fn set_presence(
+        &self,
+        state: Presence,
+        status_msg: Option<String>,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Some(me) = self.inner.user_id() else {
+                return Err(FfiError::Msg("No logged-in user".into()));
+            };
+
+            let presence = match state {
+                Presence::Online => PresenceState::Online,
+                Presence::Offline => PresenceState::Offline,
+                Presence::Unavailable => PresenceState::Unavailable,
+            };
+
+            let mut req = set_presence_v3::Request::new(me.to_owned(), presence);
+            req.status_msg = status_msg;
+
+            self.inner
+                .send(req)
+                .await
+                .map(|_: set_presence_v3::Response| ())
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    pub fn set_room_join_rule(&self, room_id: String, rule: RoomJoinRule) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let join = match rule {
+                RoomJoinRule::Public => JoinRule::Public,
+                RoomJoinRule::Invite => JoinRule::Invite,
+                RoomJoinRule::Knock => JoinRule::Knock,
+                RoomJoinRule::Restricted => JoinRule::Restricted(Restricted::default()),
+                RoomJoinRule::KnockRestricted => JoinRule::KnockRestricted(Restricted::default()),
+            };
+
+            room.privacy_settings()
+                .update_join_rule(join)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    pub fn set_room_history_visibility(
+        &self,
+        room_id: String,
+        vis: RoomHistoryVisibility,
+    ) -> Result<(), FfiError> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return Err(FfiError::Msg("bad room id".into()));
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let hv = match vis {
+                RoomHistoryVisibility::Invited => HistoryVisibility::Invited,
+                RoomHistoryVisibility::Joined => HistoryVisibility::Joined,
+                RoomHistoryVisibility::Shared => HistoryVisibility::Shared,
+                RoomHistoryVisibility::WorldReadable => HistoryVisibility::WorldReadable,
+            };
+
+            room.privacy_settings()
+                .update_room_history_visibility(hv)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    /// Upgrade a room to a new room version.
+    /// `new_version` is e.g. "9", "10", "11".
+    /// Returns the new room ID on success.
+    pub fn upgrade_room(&self, room_id: String, new_version: String) -> Result<String, FfiError> {
+        RT.block_on(async {
+            let rid = OwnedRoomId::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+            let version = RoomVersionId::try_from(new_version.as_str())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let req = upgrade_room_v3::Request::new(rid.clone(), version);
+            let resp = self
+                .inner
+                .send(req)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            Ok(resp.replacement_room.to_string())
+        })
+    }
+
+    /// Get tombstone / predecessor / successor info for a room, if available.
+    pub fn room_upgrade_links(&self, room_id: String) -> Option<RoomUpgradeLinks> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+
+            let is_tombstoned = room.is_tombstoned();
+            let successor = room.successor_room().map(Into::into);
+            let predecessor = room.predecessor_room().map(Into::into);
+
+            Some(RoomUpgradeLinks {
+                is_tombstoned,
+                successor,
+                predecessor,
+            })
+        })
+    }
 }
 
 impl Client {
@@ -3681,6 +4276,34 @@ impl Client {
 }
 
 // ---------- Helpers ----------
+
+fn build_unstable_poll_content(
+    def: &PollDefinition,
+) -> Result<NewUnstablePollStartEventContent, FfiError> {
+    // Build answers with simple stable IDs: "a", "b", "c", ...
+    let mut answers = Vec::with_capacity(def.answers.len());
+    for (idx, text) in def.answers.iter().enumerate() {
+        let id = ((b'a' + (idx as u8)) as char).to_string();
+        answers.push(UnstablePollAnswer::new(id, text.clone()));
+    }
+
+    let unstable_answers =
+        UnstablePollAnswers::try_from(answers).map_err(|e| FfiError::Msg(e.to_string()))?;
+
+    let mut block = UnstablePollStartContentBlock::new(def.question.clone(), unstable_answers);
+
+    // Map kind + max_selections
+    block.kind = match def.kind {
+        PollKind::Disclosed => RumaPollKind::Disclosed,
+        PollKind::Undisclosed => RumaPollKind::Undisclosed,
+    };
+    block.max_selections = js_int::UInt::from(def.max_selections.max(1));
+
+    Ok(NewUnstablePollStartEventContent::plain_text(
+        def.question.clone(),
+        block,
+    ))
+}
 
 async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
     let room = client.get_room(room_id)?;
@@ -3961,8 +4584,8 @@ async fn attach_sas_stream(
         flow_id.clone(),
         VerifFlow {
             sas: sas.clone(),
-            other_user: other_user.clone(),
-            other_device: other_device.clone(),
+            _other_user: other_user.clone(),
+            _other_device: other_device.clone(),
         },
     );
     info!(
