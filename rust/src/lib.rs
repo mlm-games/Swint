@@ -1914,7 +1914,8 @@ impl Client {
                 obs.on_error("".into(), "Bad user id".into());
                 return "".into();
             };
-            match self.inner.encryption().get_user_identity(&uid).await {
+
+            match self.inner.encryption().request_user_identity(&uid).await {
                 Ok(Some(identity)) => match identity.request_verification().await {
                     Ok(req) => {
                         let flow_id = req.flow_id().to_string();
@@ -1926,8 +1927,12 @@ impl Client {
                         "".into()
                     }
                 },
-                _ => {
-                    obs.on_error("".into(), "User identity unavailable".into());
+                Ok(None) => {
+                    obs.on_error("".into(), "User has no cross‑signing identity".into());
+                    "".into()
+                }
+                Err(e) => {
+                    obs.on_error("".into(), format!("Identity fetch failed: {e}"));
                     "".into()
                 }
             }

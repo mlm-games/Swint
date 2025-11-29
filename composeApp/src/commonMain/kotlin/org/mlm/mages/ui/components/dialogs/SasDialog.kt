@@ -61,7 +61,7 @@ fun SasDialog(
                 }
 
                 Spacer(Modifier.height(Spacing.xl))
-                SasActions(phase, onAccept, onConfirm, onCancel)
+                SasActions(phase, showAccept, onAccept, onConfirm, onCancel)
             }
         }
     }
@@ -114,12 +114,24 @@ private fun EmojiGrid(emojis: List<String>) {
 }
 
 @Composable
-private fun SasActions(phase: SasPhase?, onAccept: () -> Unit, onConfirm: () -> Unit, onCancel: () -> Unit) {
+private fun SasActions(
+    phase: SasPhase?,
+    showAccept: Boolean,
+    onAccept: () -> Unit,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         when (phase) {
             SasPhase.Requested -> {
-                OutlinedButton(onClick = onCancel, Modifier.weight(1f)) { Text("Reject") }
-                Button(onClick = onAccept, Modifier.weight(1f)) { Text("Accept") }
+                if (showAccept) {
+                    OutlinedButton(onClick = onCancel, Modifier.weight(1f)) { Text("Reject") }
+                    Button(onClick = onAccept, Modifier.weight(1f)) { Text("Accept") }
+                } else {
+                    OutlinedButton(onClick = onCancel, Modifier.fillMaxWidth()) {
+                        Text("Cancel request")
+                    }
+                }
             }
             SasPhase.Emojis -> {
                 OutlinedButton(onClick = onCancel, Modifier.weight(1f)) { Text("They don't match") }

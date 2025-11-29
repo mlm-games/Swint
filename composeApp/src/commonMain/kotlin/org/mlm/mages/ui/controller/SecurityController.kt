@@ -68,7 +68,8 @@ class SecurityController(
                         sasPhase = st.sasPhase ?: SasPhase.Requested,
                         sasOtherUser = st.sasOtherUser ?: fromUser,
                         sasOtherDevice = st.sasOtherDevice ?: fromDevice,
-                        sasError = null
+                        sasError = null,
+                        sasIncoming = true
                     )
                 }
             }
@@ -92,7 +93,7 @@ class SecurityController(
                         sasOtherUser = remaining.firstOrNull()?.fromUser,
                         sasOtherDevice = remaining.firstOrNull()?.fromDevice,
                         sasEmojis = if (remaining.isNotEmpty()) st.sasEmojis else emptyList(),
-                        sasError = null
+                        sasError = null,
                     )
                 }
                 refreshDevices()
@@ -113,6 +114,8 @@ class SecurityController(
             val flowId = service.startSelfSas(deviceId, commonObserver())
             if (flowId.isBlank()) {
                 _state.update { it.copy(sasError = "Failed to start verification") }
+            } else {
+                _state.update { it.copy(sasFlowId = flowId, sasIncoming = false) }
             }
         }
     }

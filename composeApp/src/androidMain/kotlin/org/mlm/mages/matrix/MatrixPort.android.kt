@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import org.mlm.mages.AttachmentInfo
 import org.mlm.mages.AttachmentKind
+import org.mlm.mages.EncFile
 import mages.Client as FfiClient
 import mages.RoomSummary as FfiRoom
 import org.mlm.mages.MessageEvent
@@ -151,13 +152,12 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override suspend fun thumbnailToCache(
-        mxcUri: String,
+        info: AttachmentInfo,
         width: Int,
         height: Int,
         crop: Boolean
     ): Result<String> =
-        runCatching { client.thumbnailToCache(mxcUri, width.toUInt(), height.toUInt(), crop) }
-
+        runCatching { client.thumbnailToCache(info.toFfi(), width.toUInt(), height.toUInt(), crop) }
 
     override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
         return client.setTyping(roomId, typing)
@@ -806,6 +806,8 @@ private fun mages.SendState.toKotlin(): SendState = when (this) {
     mages.SendState.RETRYING -> SendState.Retrying
 }
 
+private fun mages.EncFile.toModel() = EncFile(url = url, json = json)
+
 private fun mages.AttachmentInfo.toModel() = AttachmentInfo(
     kind = when (kind) {
         mages.AttachmentKind.IMAGE -> AttachmentKind.Image
@@ -818,7 +820,28 @@ private fun mages.AttachmentInfo.toModel() = AttachmentInfo(
     width = width?.toInt(),
     height = height?.toInt(),
     durationMs = durationMs?.toLong(),
-    thumbnailMxcUri = thumbnailMxcUri
+    thumbnailMxcUri = thumbnailMxcUri,
+    encrypted = encrypted?.toModel(),
+    thumbnailEncrypted = thumbnailEncrypted?.toModel(),
+)
+
+private fun EncFile.toFfi() = mages.EncFile(url = url, json = json)
+
+private fun AttachmentInfo.toFfi() = mages.AttachmentInfo(
+    kind = when (kind) {
+        AttachmentKind.Image -> mages.AttachmentKind.IMAGE
+        AttachmentKind.Video -> mages.AttachmentKind.VIDEO
+        AttachmentKind.File  -> mages.AttachmentKind.FILE
+    },
+    mxcUri = mxcUri,
+    mime = mime,
+    sizeBytes = sizeBytes?.toULong(),
+    width = width?.toUInt(),
+    height = height?.toUInt(),
+    durationMs = durationMs?.toULong(),
+    thumbnailMxcUri = thumbnailMxcUri,
+    encrypted = encrypted?.toFfi(),
+    thumbnailEncrypted = thumbnailEncrypted?.toFfi(),
 )
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)
