@@ -454,9 +454,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         pushKey: String,
     ): Boolean = client.unregisterUnifiedpush(appId, pushKey)
 
-    override suspend fun wakeSyncOnce(timeoutMs: Int): Boolean =
-        client.wakeSyncOnce(timeoutMs.toUInt())
-
     // Unread parity
     override suspend fun roomUnreadStats(roomId: String): UnreadStats? =
         client.roomUnreadStats(roomId)?.let {

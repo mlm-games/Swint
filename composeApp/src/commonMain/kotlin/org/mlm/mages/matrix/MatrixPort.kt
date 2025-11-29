@@ -234,7 +234,6 @@ interface MatrixPort {
     fun stopCallInbox(token: ULong)
     suspend fun registerUnifiedPush(appId: String, pushKey: String, gatewayUrl: String, deviceName: String, lang: String, profileTag: String? = null): Boolean
     suspend fun unregisterUnifiedPush(appId: String, pushKey: String): Boolean
-    suspend fun wakeSyncOnce(timeoutMs: Int = 2500): Boolean
 
     suspend fun roomUnreadStats(roomId: String): UnreadStats?
     suspend fun ownLastRead(roomId: String): Pair<String?, Long?>

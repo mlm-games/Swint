@@ -17,7 +17,6 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         val service = MatrixProvider.get(applicationContext)
         if (!service.isLoggedIn()) return@withContext Result.success()
 
-        runCatching { service.port.wakeSyncOnce(6000) }
         runCatching { service.port.encryptionCatchupOnce() }
         runCatching { Notifier.showNewEventNotifications(applicationContext, service) }
 

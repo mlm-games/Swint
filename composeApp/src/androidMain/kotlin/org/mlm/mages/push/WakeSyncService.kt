@@ -3,6 +3,7 @@ package org.mlm.mages.push
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
@@ -33,8 +34,6 @@ class WakeSyncService : Service() {
         scope.launch {
             try {
                 val service = MatrixProvider.get(this@WakeSyncService)
-                // Short wake sync (2.5s)
-                service.port.wakeSyncOnce(2500)
                 service.port.encryptionCatchupOnce()
                 // Build notifications from latest unseen events
                 Notifier.showNewEventNotifications(this@WakeSyncService, service)
@@ -54,18 +53,26 @@ class WakeSyncService : Service() {
 
     private fun createChannel() {
         val mgr = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        if (mgr.getNotificationChannel("sync") == null) {
-            mgr.createNotificationChannel(NotificationChannel("sync","Background sync",
-                NotificationManager.IMPORTANCE_MIN))
-        }
-        if (mgr.getNotificationChannel("messages") == null) {
-            val ch = NotificationChannel("messages","Messages", NotificationManager.IMPORTANCE_HIGH)
-            ch.setShowBadge(true)
-            mgr.createNotificationChannel(ch)
-        }
-        if (mgr.getNotificationChannel("calls") == null) {
-            val ch = NotificationChannel("calls","Calls", NotificationManager.IMPORTANCE_HIGH)
-            mgr.createNotificationChannel(ch)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (mgr.getNotificationChannel("sync") == null) {
+                mgr.createNotificationChannel(
+                    NotificationChannel(
+                        "sync", "Background sync",
+                        NotificationManager.IMPORTANCE_MIN
+                    )
+                )
+            }
+
+            if (mgr.getNotificationChannel("messages") == null) {
+                val ch =
+                    NotificationChannel("messages", "Messages", NotificationManager.IMPORTANCE_HIGH)
+                ch.setShowBadge(true)
+                mgr.createNotificationChannel(ch)
+            }
+            if (mgr.getNotificationChannel("calls") == null) {
+                val ch = NotificationChannel("calls", "Calls", NotificationManager.IMPORTANCE_HIGH)
+                mgr.createNotificationChannel(ch)
+            }
         }
     }
 

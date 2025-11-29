@@ -454,9 +454,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         pushKey: String,
     ): Boolean = client.unregisterUnifiedpush(appId, pushKey)
 
-    override suspend fun wakeSyncOnce(timeoutMs: Int): Boolean =
-        client.wakeSyncOnce(timeoutMs.toUInt())
-
     // Unread parity
     override suspend fun roomUnreadStats(roomId: String): UnreadStats? =
         client.roomUnreadStats(roomId)?.let {
@@ -787,6 +784,20 @@ class RustMatrixPort(hs: String) : MatrixPort {
         } catch (_: Exception) {
             false
         }
+    }
+
+    override suspend fun roomTags(roomId: String): Pair<Boolean, Boolean>? = withContext(Dispatchers.IO) {
+        runCatching { client.roomTags(roomId) }.getOrNull()?.let {
+            it.isFavourite to it.isLowPriority
+        }
+    }
+
+    override suspend fun setRoomFavourite(roomId: String, favourite: Boolean): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.setRoomFavourite(roomId, favourite) }.getOrDefault(false)
+    }
+
+    override suspend fun setRoomLowPriority(roomId: String, lowPriority: Boolean): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.setRoomLowPriority(roomId, lowPriority) }.getOrDefault(false)
     }
 }
 
