@@ -1,6 +1,7 @@
 package org.mlm.mages.matrix
 
 import kotlinx.coroutines.flow.Flow
+import org.mlm.mages.AttachmentInfo
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.RoomSummary
 
@@ -145,7 +146,7 @@ interface MatrixPort {
 //    ): Boolean
 //    suspend fun mediaCacheClean(): Boolean
 
-    suspend fun thumbnailToCache(mxcUri: String, width: Int, height: Int, crop: Boolean): Result<String>
+    suspend fun thumbnailToCache(info: AttachmentInfo, width: Int, height: Int, crop: Boolean): Result<String>
 
     interface VerificationInboxObserver {
         fun onRequest(flowId: String, fromUser: String, fromDevice: String)

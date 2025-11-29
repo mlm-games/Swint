@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 use matrix_sdk_ui::{
     eyeball_im::Vector,
     timeline::{AttachmentConfig, AttachmentSource},
@@ -14,7 +15,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
-use uniffi::{Enum, Object, Record, export, setup_scaffolding};
+use uniffi::{Enum, HandleAlloc, Object, Record, export, setup_scaffolding};
 
 use futures_util::StreamExt;
 use matrix_sdk::{
@@ -30,7 +31,9 @@ use matrix_sdk::{
             room::{Visibility, create_room::v3::RoomPreset},
         },
         directory::Filter,
-        events::room::{MediaSource, name::RoomNameEventContent, topic::RoomTopicEventContent},
+        events::room::{
+            EncryptedFile, MediaSource, name::RoomNameEventContent, topic::RoomTopicEventContent,
+        },
         push::HttpPusherData,
         room::RoomType,
     },
@@ -142,6 +145,14 @@ pub enum AttachmentKind {
 }
 
 #[derive(Clone, Record)]
+pub struct EncFile {
+    /// mxc://… of the encrypted media
+    pub url: String,
+    /// Full JSON of ruma::events::room::message::EncryptedFile (v2)
+    pub json: String,
+}
+
+#[derive(Clone, Record)]
 pub struct AttachmentInfo {
     pub kind: AttachmentKind,
     pub mxc_uri: String,
@@ -152,6 +163,10 @@ pub struct AttachmentInfo {
     pub duration_ms: Option<u64>,
     /// Provided when available, else UI uses `mxc_uri` to request a thumbnail.
     pub thumbnail_mxc_uri: Option<String>,
+    /// encrypted "file" (main content)
+    pub encrypted: Option<EncFile>,
+    /// encrypted "thumbnail_file"
+    pub thumbnail_encrypted: Option<EncFile>,
 }
 
 #[derive(Clone, Record)]
@@ -1269,53 +1284,111 @@ impl Client {
 
     pub fn thumbnail_to_cache(
         &self,
-        mxc_uri: String,
+        att: AttachmentInfo,
         width: u32,
         height: u32,
         use_crop: bool,
     ) -> Result<String, FfiError> {
+        use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
+        use ruma::events::room::MediaSource;
+
+        let (source, format, name_key) = if let Some(enc) = att.thumbnail_encrypted.as_ref() {
+            let ef: EncryptedFile = serde_json::from_str(&enc.json)
+                .map_err(|e| FfiError::Msg(format!("thumb enc parse: {e}")))?;
+            (
+                MediaSource::Encrypted(Box::new(ef)),
+                MediaFormat::File,
+                enc.url.clone(),
+            )
+        } else if let Some(mxc) = att.thumbnail_mxc_uri.as_ref() {
+            (
+                MediaSource::Plain(mxc.clone().into()),
+                MediaFormat::File,
+                mxc.clone(),
+            )
+        } else if let Some(enc) = att.encrypted.as_ref() {
+            // fetch full encrypted file as fallback
+            let ef: EncryptedFile = serde_json::from_str(&enc.json)
+                .map_err(|e| FfiError::Msg(format!("file enc parse: {e}")))?;
+            (
+                MediaSource::Encrypted(Box::new(ef)),
+                MediaFormat::File,
+                enc.url.clone(),
+            )
+        } else {
+            // Plain primary mxc
+            let settings = if use_crop {
+                MediaThumbnailSettings::with_method(
+                    matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method::Crop,
+                    width.into(),
+                    height.into(),
+                )
+            } else {
+                MediaThumbnailSettings::new(width.into(), height.into())
+            };
+            let mxc = att.mxc_uri.clone();
+            (
+                MediaSource::Plain(mxc.clone().into()),
+                MediaFormat::Thumbnail(settings),
+                mxc,
+            )
+        };
+
+        let req = MediaRequestParameters { source, format };
+
         let dir = cache_dir(&self.store_dir);
         ensure_dir(&dir);
-
-        let mxc: OwnedMxcUri = mxc_uri.into();
-
-        let settings = if use_crop {
-            MediaThumbnailSettings::with_method(ThumbnailMethod::Crop, width.into(), height.into())
-        } else {
-            MediaThumbnailSettings::new(width.into(), height.into())
-        };
-
-        let req = MediaRequestParameters {
-            source: MediaSource::Plain(mxc.clone()),
-            format: MediaFormat::Thumbnail(settings),
-        };
-
-        let safe_name = format!(
-            "thumb_{}_{}x{}{}.bin",
-            mxc,
+        fn sanitize(name: &str) -> String {
+            let mut s = String::with_capacity(name.len());
+            for ch in name.chars() {
+                if ch.is_ascii_alphanumeric() || "-_.".contains(ch) {
+                    s.push(ch);
+                } else {
+                    s.push('_');
+                }
+            }
+            s.trim_matches('_').to_string()
+        }
+        let key =
+            blake3::hash(format!("{}-{}x{}-{}", name_key, width, height, use_crop).as_bytes())
+                .to_hex();
+        let ext = att
+            .mime
+            .as_deref()
+            .and_then(|m| m.split('/').nth(1))
+            .filter(|e| !e.is_empty())
+            .unwrap_or("jpg");
+        let fname = format!(
+            "thumb_{}_{}x{}{}.{ext}",
+            &key[..16],
             width,
             height,
             if use_crop { "_crop" } else { "_scale" }
         );
-        let out = dir.join(safe_name);
+        let out = dir.join(sanitize(&fname));
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
 
-        RT.block_on(async {
-            use mime::IMAGE_JPEG;
+        let bytes = RT
+            .block_on(async { self.inner.media().get_media_content(&req, true).await })
+            .or_else(|_e| {
+                // Fallback only when we asked for a server-side thumb of a plain mxc
+                if matches!(req.format, MediaFormat::Thumbnail(_)) {
+                    let req_full = MediaRequestParameters {
+                        source: req.source.clone(),
+                        format: MediaFormat::File,
+                    };
+                    RT.block_on(async {
+                        self.inner.media().get_media_content(&req_full, true).await
+                    })
+                } else {
+                    Err(_e)
+                }
+            })
+            .map_err(|e| FfiError::Msg(format!("thumbnail fetch: {e}")))?;
 
-            let handle = self
-                .inner
-                .media()
-                .get_media_file(&req, None, &IMAGE_JPEG, true, None)
-                .await
-                .map_err(|e| FfiError::Msg(e.to_string()))?;
-
-            handle
-                .persist(&out)
-                .map_err(|e| FfiError::Msg(format!("persist: {e}")))?;
-
-            Ok::<_, FfiError>(())
-        })?;
-
+        std::fs::write(&out, &bytes)?;
         Ok(out.to_string_lossy().to_string())
     }
 
@@ -1594,7 +1667,7 @@ impl Client {
         room_id: String,
         path: String,
         mime: String,
-        filename: Option<String>,
+        _filename: Option<String>,
         progress: Option<Box<dyn ProgressObserver>>,
     ) -> bool {
         RT.block_on(async {
@@ -3534,92 +3607,143 @@ fn map_timeline_event(
 }
 
 fn extract_attachment(msg: &matrix_sdk_ui::timeline::Message) -> Option<AttachmentInfo> {
-    use matrix_sdk::ruma::events::room::message::MessageType as MT;
+    use matrix_sdk::ruma::events::room::{MediaSource, message::MessageType as MT};
+
+    // Helper: split a MediaSource into MXC URI and optional EncFile
+    fn split_source(source: &MediaSource) -> (String, Option<EncFile>) {
+        match source {
+            MediaSource::Plain(url) => (url.to_string(), None),
+            MediaSource::Encrypted(file) => {
+                let url = file.url.to_string();
+                let enc = enc_to_record(file.as_ref());
+                (url, Some(enc))
+            }
+        }
+    }
+
+    // Helper: same, but for Option<&MediaSource> (used for thumbnails)
+    fn split_opt_source(source: Option<&MediaSource>) -> (Option<String>, Option<EncFile>) {
+        match source {
+            Some(MediaSource::Plain(url)) => (Some(url.to_string()), None),
+            Some(MediaSource::Encrypted(file)) => {
+                let url = file.url.to_string();
+                let enc = enc_to_record(file.as_ref());
+                (Some(url), Some(enc))
+            }
+            None => (None, None),
+        }
+    }
+
     match msg.msgtype() {
         MT::Image(c) => {
-            let mxc = mxc_from_media_source(&c.source)?;
-            let (w, h, size, mime, thumb) = c
+            // main image source
+            let (mxc_uri, encrypted) = split_source(&c.source);
+
+            // metadata + thumbnail
+            let (w, h, size, mime, thumb_mxc, thumb_enc) = c
                 .info
                 .as_ref()
                 .map(|info| {
+                    let (thumb_mxc, thumb_enc) = split_opt_source(info.thumbnail_source.as_ref());
                     (
                         info.width.map(|v| u32::try_from(v).unwrap_or(0)),
                         info.height.map(|v| u32::try_from(v).unwrap_or(0)),
                         info.size.map(u64::from),
                         info.mimetype.clone(),
-                        info.thumbnail_source
-                            .as_ref()
-                            .and_then(mxc_from_media_source),
+                        thumb_mxc,
+                        thumb_enc,
                     )
                 })
-                .unwrap_or_default();
+                .unwrap_or((None, None, None, None, None, None));
+
             Some(AttachmentInfo {
                 kind: AttachmentKind::Image,
-                mxc_uri: mxc,
+                mxc_uri,
                 mime,
                 size_bytes: size,
                 width: w,
                 height: h,
                 duration_ms: None,
-                thumbnail_mxc_uri: thumb,
+                thumbnail_mxc_uri: thumb_mxc,
+                encrypted,
+                thumbnail_encrypted: thumb_enc,
             })
         }
+
         MT::Video(c) => {
-            let mxc = mxc_from_media_source(&c.source)?;
-            let (w, h, size, mime, dur, thumb) = c
+            let (mxc_uri, encrypted) = split_source(&c.source);
+
+            let (w, h, size, mime, dur, thumb_mxc, thumb_enc) = c
                 .info
                 .as_ref()
                 .map(|info| {
+                    let (thumb_mxc, thumb_enc) = split_opt_source(info.thumbnail_source.as_ref());
                     (
                         info.width.map(|v| u32::try_from(v).unwrap_or(0)),
                         info.height.map(|v| u32::try_from(v).unwrap_or(0)),
                         info.size.map(u64::from),
                         info.mimetype.clone(),
                         info.duration.map(|d| d.as_millis() as u64),
-                        info.thumbnail_source
-                            .as_ref()
-                            .and_then(mxc_from_media_source),
+                        thumb_mxc,
+                        thumb_enc,
                     )
                 })
-                .unwrap_or_default();
+                .unwrap_or((None, None, None, None, None, None, None));
+
             Some(AttachmentInfo {
                 kind: AttachmentKind::Video,
-                mxc_uri: mxc.clone(),
+                mxc_uri: mxc_uri.clone(),
                 mime,
                 size_bytes: size,
                 width: w,
                 height: h,
                 duration_ms: dur,
-                thumbnail_mxc_uri: thumb.or_else(|| Some(mxc)),
+                // Fallback to full video if no explicit thumbnail
+                thumbnail_mxc_uri: thumb_mxc.or_else(|| Some(mxc_uri.clone())),
+                encrypted,
+                thumbnail_encrypted: thumb_enc,
             })
         }
+
         MT::File(c) => {
-            let mxc = mxc_from_media_source(&c.source)?;
-            let (size, mime, thumb) = c
+            let (mxc_uri, encrypted) = split_source(&c.source);
+
+            let (size, mime, thumb_mxc, thumb_enc) = c
                 .info
                 .as_ref()
                 .map(|info| {
+                    let (thumb_mxc, thumb_enc) = split_opt_source(info.thumbnail_source.as_ref());
                     (
                         info.size.map(u64::from),
                         info.mimetype.clone(),
-                        info.thumbnail_source
-                            .as_ref()
-                            .and_then(mxc_from_media_source),
+                        thumb_mxc,
+                        thumb_enc,
                     )
                 })
-                .unwrap_or_default();
+                .unwrap_or((None, None, None, None));
+
             Some(AttachmentInfo {
                 kind: AttachmentKind::File,
-                mxc_uri: mxc,
+                mxc_uri,
                 mime,
                 size_bytes: size,
                 width: None,
                 height: None,
                 duration_ms: None,
-                thumbnail_mxc_uri: thumb,
+                thumbnail_mxc_uri: thumb_mxc,
+                encrypted,
+                thumbnail_encrypted: thumb_enc,
             })
         }
+
         _ => None,
+    }
+}
+
+fn enc_to_record(ef: &EncryptedFile) -> EncFile {
+    EncFile {
+        url: ef.url.to_string(),
+        json: serde_json::to_string(ef).unwrap_or_default(),
     }
 }
 
@@ -3736,7 +3860,7 @@ fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
 }
 
 fn strip_reply_fallback(body: &str) -> String {
-    let lines = body.lines();
+    let _lines = body.lines();
     let mut consumed = 0usize;
     // Consume leading quoted lines (starting with '>')
     for l in body.lines() {
@@ -3849,7 +3973,7 @@ fn render_other_state(ev: &EventTimelineItem, s: &matrix_sdk_ui::timeline::Other
     }
 }
 
-fn mxc_from_media_source(src: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {
+fn _mxc_from_media_source(src: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {
     use matrix_sdk::ruma::events::room::MediaSource as MS;
     match src {
         MS::Plain(mxc) => Some(mxc.to_string()),

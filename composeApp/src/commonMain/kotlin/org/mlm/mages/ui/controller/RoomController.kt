@@ -453,9 +453,8 @@ class RoomController(
             if (_state.value.thumbByEvent.containsKey(ev.eventId)) return@forEach
             if (ev.eventId.isBlank()) return@forEach
 
-            val mxc = a.thumbnailMxcUri ?: a.mxcUri
             scope.launch {
-                val res = service.thumbnailToCache(mxc, 320, 320, true)
+                val res = service.thumbnailToCache(a, 320, 320, true)
                 res.onSuccess { path ->
                     _state.update { st ->
                         st.copy(thumbByEvent = st.thumbByEvent + (ev.eventId to path))

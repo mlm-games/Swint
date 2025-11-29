@@ -1812,6 +1812,7 @@ dependencies = [
 name = "mages_ffi"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "futures-util",
  "matrix-sdk",
  "matrix-sdk-base",

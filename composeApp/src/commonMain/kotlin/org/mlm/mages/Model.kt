@@ -29,6 +29,12 @@ data class MessageEvent(
 enum class AttachmentKind { Image, Video, File }
 
 @Serializable
+data class EncFile(
+    val url: String,
+    val json: String
+)
+
+@Serializable
 data class AttachmentInfo(
     val kind: AttachmentKind,
     val mxcUri: String,
@@ -37,5 +43,7 @@ data class AttachmentInfo(
     val width: Int? = null,
     val height: Int? = null,
     val durationMs: Long? = null,
-    val thumbnailMxcUri: String? = null
+    val thumbnailMxcUri: String? = null,
+    val encrypted: EncFile? = null,
+    val thumbnailEncrypted: EncFile? = null,
 )
