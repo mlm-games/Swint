@@ -40,7 +40,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         synchronized(clientLock) {
             client.let { c ->
                 runCatching { c.shutdown() }
-                runCatching { c.close() }              // key: avoid Cleaner path
             }
         }
     }

@@ -3,6 +3,7 @@ package org.mlm.mages.platform
 import androidx.compose.runtime.Composable
 import org.mlm.mages.MatrixService
 import org.mlm.mages.NotifierImpl
+import kotlin.system.exitProcess
 
 actual object Notifier {
     private var currentRoomId: String? = null
@@ -29,4 +30,9 @@ actual object Notifier {
 
 @Composable
 actual fun BindLifecycle(service: MatrixService) {
+}
+
+@Composable
+actual fun rememberQuitApp(): () -> Unit = {
+    exitProcess(0)
 }

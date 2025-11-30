@@ -20,6 +20,7 @@ import org.mlm.mages.nav.*
 import org.mlm.mages.platform.BindLifecycle
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberOpenBrowser
+import org.mlm.mages.platform.rememberQuitApp
 import org.mlm.mages.ui.animation.forwardTransition
 import org.mlm.mages.ui.animation.popTransition
 import org.mlm.mages.ui.base.rememberSnackbarController
@@ -37,8 +38,12 @@ fun App(
 ) {
     MainTheme {
 
+        val initialRoute = remember {
+            if (service.isLoggedIn()) Route.Rooms else Route.Login
+        }
 
-        val backStack: NavBackStack<NavKey> = rememberNavBackStack(navSavedStateConfiguration, Route.Login)
+        val backStack: NavBackStack<NavKey> =
+            rememberNavBackStack(navSavedStateConfiguration, initialRoute)
 
         val snackbar = rememberSnackbarController()
         val scope = rememberCoroutineScope()
@@ -194,6 +199,7 @@ fun App(
 
 
                     entry<Route.Security> {
+                        val quitApp = rememberQuitApp()
                         var selectedTab by remember { mutableIntStateOf(0) }
                         val controller = remember { SecurityController(service) }
                         val ui by controller.state.collectAsState()
@@ -218,6 +224,7 @@ fun App(
                                     if (ok) {
                                         sessionEpoch++
                                         backStack.replaceTop(Route.Login)
+                                        quitApp()
                                     }
                                 }
                             }

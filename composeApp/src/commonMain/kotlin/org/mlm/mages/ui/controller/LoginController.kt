@@ -28,9 +28,9 @@ class LoginController(
     init {
         scope.launch {
             runCatching { service.init(_state.value.homeserver) }
-            if (service.isLoggedIn()) {
-                withContext(Dispatchers.Main) { onLoggedIn() }
-            }
+                .onFailure { t ->
+                    _state.update { it.copy(error = t.message ?: "Init failed") }
+                }
         }
     }
 

@@ -2282,7 +2282,7 @@ impl Client {
     }
 
     pub fn is_logged_in(&self) -> bool {
-        self.inner.user_id().is_some()
+        self.inner.session_meta().is_some()
     }
 
     pub fn enqueue_text(&self, room_id: String, body: String, txn_id: Option<String>) -> String {

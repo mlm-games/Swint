@@ -2,7 +2,6 @@ package org.mlm.mages.matrix
 
 import android.content.Context
 import kotlinx.coroutines.runBlocking
-import mages.SyncStatus
 import org.mlm.mages.MatrixService
 import org.mlm.mages.platform.MagesPaths
 import org.mlm.mages.storage.loadString
@@ -21,16 +20,6 @@ object MatrixProvider {
             val ds = provideAppDataStore(context)
             val hs = runBlocking { loadString(ds, "homeserver") } ?: "https://matrix.org"
             val s = MatrixService(createMatrixPort(hs))
-            service = s
-            return s
-        }
-    }
-
-    fun reinit(context: Context, homeserver: String): MatrixService {
-        synchronized(this) {
-            service?.port?.close()
-            MagesPaths.init(context)
-            val s = MatrixService(createMatrixPort(homeserver))
             service = s
             return s
         }

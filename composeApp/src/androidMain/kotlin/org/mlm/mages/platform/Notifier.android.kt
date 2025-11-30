@@ -1,9 +1,11 @@
 package org.mlm.mages.platform
 
+import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.NotificationCompat
 import androidx.core.content.getSystemService
 import org.mlm.mages.MatrixService
@@ -60,5 +62,13 @@ actual fun BindLifecycle(service: MatrixService)  {
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+}
+
+@Composable
+actual fun rememberQuitApp(): () -> Unit {
+    val context = LocalContext.current
+    return {
+        (context as? Activity)?.finishAffinity()
     }
 }

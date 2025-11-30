@@ -12,3 +12,6 @@ expect object Notifier {
 
 @Composable
 expect fun BindLifecycle(service: MatrixService)
+
+@Composable
+expect fun rememberQuitApp(): () -> Unit
