@@ -150,6 +150,15 @@ class RoomsController(
                         val myId = service.port.whoami()
                         val senderIsMe = event.sender == myId
 
+                        if (!senderIsMe) {
+                            _state.update { st ->
+                                val current = st.unread[roomId] ?: 0
+                                st.copy(unread = st.unread.toMutableMap().apply {
+                                    put(roomId, current + 1)
+                                })
+                            }
+                        }
+
                         if (Notifier.shouldNotify(roomId, senderIsMe)) {
                             val senderName = event.sender
                                 .removePrefix("@")
@@ -160,8 +169,6 @@ class RoomsController(
                                 body = event.body.take(100)
                             )
                         }
-
-                        refreshUnreadCounts()
                     }
                 }
             } catch (e: Exception) {
@@ -170,5 +177,34 @@ class RoomsController(
             }
         }
         notificationJobs[roomId] = job
+    }
+
+    fun clear() {
+        roomListToken?.let {
+            service.port.unobserveRoomList(it)
+        }
+        roomListToken = null
+
+        connToken?.let {
+            service.stopConnectionObserver(it)
+        }
+        connToken = null
+
+        notificationJobs.values.forEach { it.cancel() }
+        notificationJobs.clear()
+
+        initialized = false
+
+        _state.value = RoomsUiState(
+            isLoading = false,
+            rooms = emptyList(),
+            unread = emptyMap(),
+            favourites = emptySet(),
+            lowPriority = emptySet(),
+            roomSearchQuery = "",
+            unreadOnly = false,
+            offlineBanner = null,
+            syncBanner = null
+        )
     }
 }

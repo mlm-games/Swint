@@ -44,6 +44,7 @@ fun App(
         val scope = rememberCoroutineScope()
 
         var showCreateRoom by remember { mutableStateOf(false) }
+        var sessionEpoch by remember { mutableIntStateOf(0) }
 
         BindDeepLinks(backStack, deepLinks)
         BindLifecycle(service)
@@ -54,7 +55,7 @@ fun App(
             })
         }
 
-        val roomsController = remember(service, dataStore) {
+        val roomsController = remember(service, dataStore, sessionEpoch) {
             RoomsController(
                 service = service,
                 dataStore = dataStore,
@@ -96,7 +97,10 @@ fun App(
                             LoginController(
                                 service = service,
                                 dataStore = dataStore,
-                                onLoggedIn = { backStack.replaceTop(Route.Rooms) }
+                                onLoggedIn = {
+                                    sessionEpoch++
+                                    backStack.replaceTop(Route.Rooms)
+                                }
                             )
                         }
                         val ui by controller.state.collectAsState()
@@ -113,6 +117,9 @@ fun App(
 
                     entry<Route.Rooms> {
                         val ui by roomsController.state.collectAsState()
+                        DisposableEffect(roomsController) {
+                            onDispose { roomsController.clear() }
+                        }
                         RoomsScreen(
                             state = ui,
                             onRefresh = roomsController::refreshUnreadCounts,
@@ -208,8 +215,10 @@ fun App(
                             onLogout = {
                                 scope.launch {
                                     val ok = service.logout()
-                                    service.port.close()
-                                    if (ok) { backStack.replaceTop(Route.Login) }
+                                    if (ok) {
+                                        sessionEpoch++
+                                        backStack.replaceTop(Route.Login)
+                                    }
                                 }
                             }
                         )
