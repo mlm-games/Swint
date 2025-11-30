@@ -1,6 +1,8 @@
 package org.mlm.mages.platform
 
 import androidx.compose.runtime.Composable
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import org.mlm.mages.MatrixService
 
 expect object Notifier {
@@ -12,6 +14,9 @@ expect object Notifier {
 
 @Composable
 expect fun BindLifecycle(service: MatrixService)
+
+@Composable
+expect fun BindNotifications(service: MatrixService, dataStore: DataStore<Preferences>)
 
 @Composable
 expect fun rememberQuitApp(): () -> Unit

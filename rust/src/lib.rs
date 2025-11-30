@@ -267,10 +267,12 @@ pub struct RenderedNotification {
     pub room_id: String,
     pub event_id: String,
     pub room_name: String,
-    pub sender: String,
+    pub sender: String,         // display name
+    pub sender_user_id: String, // full MXID
     pub body: String,
     pub is_noisy: bool,
     pub has_mention: bool,
+    pub ts_ms: u64,
 }
 
 #[derive(Clone, Record)]
@@ -596,6 +598,13 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+
+fn notification_event_ts_ms(ev: &NotificationEvent) -> u64 {
+    match ev {
+        NotificationEvent::Timeline(timeline_ev) => timeline_ev.origin_server_ts().get().into(),
+        NotificationEvent::Invite(_) => now_ms(),
+    }
 }
 
 // Session persistence
@@ -3206,6 +3215,8 @@ impl Client {
         match status {
             NotificationStatus::Event(item) => {
                 let room_name = item.room_computed_display_name.clone();
+                let sender_user_id = item.event.sender().to_string();
+                let ts_ms: u64 = notification_event_ts_ms(&item.event);
 
                 let mut sender = item
                     .sender_display_name
@@ -3233,14 +3244,120 @@ impl Client {
                     event_id: eid.to_string(),
                     room_name,
                     sender,
+                    sender_user_id,
                     body,
                     is_noisy: item.is_noisy.unwrap_or(false),
                     has_mention: item.has_mention.unwrap_or(false),
+                    ts_ms,
                 }))
             }
-            NotificationStatus::EventFilteredOut => Ok(None),
-            NotificationStatus::EventNotFound => Ok(None),
+            NotificationStatus::EventFilteredOut | NotificationStatus::EventNotFound => Ok(None),
         }
+    }
+
+    pub fn fetch_notifications_since(
+        &self,
+        since_ts_ms: u64,
+        max_rooms: u32,
+        max_events: u32,
+    ) -> Result<Vec<RenderedNotification>, FfiError> {
+        RT.block_on(async {
+            let sync = {
+                let g = self.sync_service.lock().unwrap();
+                g.as_ref()
+                    .cloned()
+                    .ok_or_else(|| FfiError::Msg("SyncService not ready".into()))?
+            };
+
+            let nc = NotificationClient::new(
+                self.inner.clone(),
+                NotificationProcessSetup::SingleProcess { sync_service: sync },
+            )
+            .await
+            .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let mut out = Vec::new();
+
+            // Limit how much we scan to keep it cheap
+            for room in self
+                .inner
+                .joined_rooms()
+                .into_iter()
+                .take(max_rooms as usize)
+            {
+                let rid = room.room_id().to_owned();
+
+                let Ok(tl) = room.timeline().await else {
+                    continue;
+                };
+                let (items, _stream) = tl.subscribe().await;
+
+                // newest first
+                for it in items.iter().rev() {
+                    let Some(ev) = it.as_event() else { continue };
+                    let ts: u64 = ev.timestamp().0.into();
+
+                    if ts <= since_ts_ms {
+                        break; // nothing newer in this room
+                    }
+
+                    let Some(eid) = ev.event_id() else { continue };
+
+                    // Ask NotificationClient if this event should surface
+                    let status = nc.get_notification(&rid, eid).await;
+
+                    let NotificationStatus::Event(item) = (match status {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    }) else {
+                        continue;
+                    };
+
+                    let room_name = item.room_computed_display_name.clone();
+                    let sender_user_id = item.event.sender().to_string();
+                    let ts_ms: u64 = notification_event_ts_ms(&item.event);
+
+                    let mut sender = item
+                        .sender_display_name
+                        .clone()
+                        .unwrap_or_else(|| item.event.sender().localpart().to_string());
+
+                    let mut body = String::from("New event");
+                    if let NotificationEvent::Timeline(tev) = &item.event {
+                        if let ruma::events::AnySyncTimelineEvent::MessageLike(
+                            ruma::events::AnySyncMessageLikeEvent::RoomMessage(m),
+                        ) = tev.as_ref()
+                        {
+                            if let Some(orig) = m.as_original() {
+                                sender = item
+                                    .sender_display_name
+                                    .clone()
+                                    .unwrap_or_else(|| orig.sender.localpart().to_string());
+                                body = orig.content.body().to_string();
+                            }
+                        }
+                    }
+
+                    out.push(RenderedNotification {
+                        room_id: rid.to_string(),
+                        event_id: eid.to_string(),
+                        room_name,
+                        sender,
+                        sender_user_id,
+                        body,
+                        is_noisy: item.is_noisy.unwrap_or(false),
+                        has_mention: item.has_mention.unwrap_or(false),
+                        ts_ms,
+                    });
+
+                    if out.len() as u32 >= max_events {
+                        return Ok(out);
+                    }
+                }
+            }
+
+            Ok(out)
+        })
     }
 
     /// SSO with built-in loopback server. Opens a browser and completes login.

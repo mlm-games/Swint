@@ -8,6 +8,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.NotificationCompat
 import androidx.core.content.getSystemService
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import org.mlm.mages.MatrixService
 import org.mlm.mages.R
 
@@ -71,4 +73,11 @@ actual fun rememberQuitApp(): () -> Unit {
     return {
         (context as? Activity)?.finishAffinity()
     }
+}
+
+@Composable
+actual fun BindNotifications(
+    service: MatrixService,
+    dataStore: DataStore<Preferences>
+) { // Only for jvm, android uses push
 }

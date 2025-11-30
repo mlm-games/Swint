@@ -57,7 +57,17 @@ data class CallInvite(
     val tsMs: Long
 )
 
-data class RenderedNotification( val roomId: String, val eventId: String, val roomName: String, val sender: String, val body: String, val isNoisy: Boolean, val hasMention: Boolean )
+data class RenderedNotification(
+    val roomId: String,
+    val eventId: String,
+    val roomName: String,
+    val sender: String,
+    val body: String,
+    val isNoisy: Boolean,
+    val hasMention: Boolean,
+    val senderUserId: String,
+    val tsMs: Long,
+)
 
 data class UnreadStats(val messages: Long, val notifications: Long, val mentions: Long)
 data class DirectoryUser(val userId: String, val displayName: String?, val avatarUrl: String?)
@@ -259,6 +269,12 @@ interface MatrixPort {
     fun unobserveRoomList(token: ULong)
 
     suspend fun fetchNotification(roomId: String, eventId: String): RenderedNotification?
+
+    suspend fun fetchNotificationsSince(
+        sinceMs: Long,
+        maxRooms: Int = 50,
+        maxEvents: Int = 20
+    ): List<RenderedNotification>
 
     fun roomListSetUnreadOnly(token: ULong, unreadOnly: Boolean): Boolean
 

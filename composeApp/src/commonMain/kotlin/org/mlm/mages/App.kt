@@ -18,6 +18,7 @@ import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.nav.*
 import org.mlm.mages.platform.BindLifecycle
+import org.mlm.mages.platform.BindNotifications
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberOpenBrowser
 import org.mlm.mages.platform.rememberQuitApp
@@ -53,6 +54,7 @@ fun App(
 
         BindDeepLinks(backStack, deepLinks)
         BindLifecycle(service)
+        BindNotifications(service, dataStore)
 
         LaunchedEffect(service) {
             service.startSupervisedSync(object : MatrixPort.SyncObserver {

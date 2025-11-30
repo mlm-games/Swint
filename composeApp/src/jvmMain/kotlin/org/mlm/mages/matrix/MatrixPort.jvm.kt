@@ -544,9 +544,37 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 body = it.body,
                 isNoisy = it.isNoisy,
                 hasMention = it.hasMention,
+                senderUserId = it.senderUserId,
+                tsMs = it.tsMs.toLong(),
             )
         }
     }
+
+    override suspend fun fetchNotificationsSince(
+        sinceMs: Long,
+        maxRooms: Int,
+        maxEvents: Int
+    ): List<RenderedNotification> =
+        runCatching {
+            client.fetchNotificationsSince(
+                sinceMs.toULong(),
+                maxRooms.toUInt(),
+                maxEvents.toUInt()
+            )
+        }.getOrElse { emptyList() }
+            .map {
+                RenderedNotification(
+                    roomId = it.roomId,
+                    eventId = it.eventId,
+                    roomName = it.roomName,
+                    sender = it.sender,
+                    body = it.body,
+                    isNoisy = it.isNoisy,
+                    hasMention = it.hasMention,
+                    senderUserId = it.senderUserId,
+                    tsMs = it.tsMs.toLong()
+                )
+            }
 
 
     override fun roomListSetUnreadOnly(
