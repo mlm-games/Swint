@@ -122,9 +122,6 @@ fun App(
 
                     entry<Route.Rooms> {
                         val ui by roomsController.state.collectAsState()
-                        DisposableEffect(roomsController) {
-                            onDispose { roomsController.clear() }
-                        }
                         RoomsScreen(
                             state = ui,
                             onRefresh = roomsController::refreshUnreadCounts,
