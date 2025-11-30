@@ -124,7 +124,7 @@ fun App(
                         val ui by roomsController.state.collectAsState()
                         RoomsScreen(
                             state = ui,
-                            onRefresh = roomsController::refreshUnreadCounts,
+                            onRefresh = { /* Remove later */ },
                             onSearch = roomsController::setSearchQuery,
                             onOpen = { roomsController.open(it)},
                             onOpenSecurity = { backStack.add(Route.Security) },
@@ -160,7 +160,6 @@ fun App(
                         DisposableEffect(key.roomId) {
                             onDispose {
                                 controller.onCleared()
-                                roomsController.refreshUnreadCounts() // Hack, check rust side?
                             }
                         }
                         val ui by controller.state.collectAsState()

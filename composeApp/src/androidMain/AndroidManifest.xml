@@ -57,10 +57,6 @@
                 <action android:name="org.unifiedpush.android.distributor.UNREGISTER"/>
             </intent-filter>
         </receiver>
-        <service
-            android:name=".push.WakeSyncService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
         <receiver
             android:name=".push.ReRegisterReceiver"
             android:enabled="true"

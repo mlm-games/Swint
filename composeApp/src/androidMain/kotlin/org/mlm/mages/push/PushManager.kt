@@ -5,6 +5,7 @@ import org.unifiedpush.android.connector.UnifiedPush
 import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.ui.SelectDistributorDialogsBuilder
 import org.unifiedpush.android.connector.ui.UnifiedPushFunctions
+import androidx.core.content.edit
 
 object PushManager {
     private const val PREFS_NAME = "unifiedpush_prefs"
@@ -56,7 +57,7 @@ object PushManager {
     // Methods for storing/retrieving endpoint info remain useful for debugging or re-registration.
     fun saveEndpoint(context: Context, endpoint: PushEndpoint, instance: String) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString("endpoint_$instance", endpoint.url).apply()
+        prefs.edit { putString("endpoint_$instance", endpoint.url) }
     }
 
     fun getEndpoint(context: Context, instance: String): String? {
@@ -66,6 +67,6 @@ object PushManager {
 
     fun removeEndpoint(context: Context, instance: String) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().remove("endpoint_$instance").apply()
+        prefs.edit { remove("endpoint_$instance") }
     }
 }

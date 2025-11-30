@@ -504,6 +504,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
                         messages = it.messages,
                         mentions = it.mentions,
                         markedUnread = it.markedUnread,
+                        isFavourite = it.isFavourite,
+                        isLowPriority = it.isLowPriority
                     )
                 }
                 observer.onReset(mapped)
@@ -519,6 +521,8 @@ class RustMatrixPort(hs: String) : MatrixPort {
                         messages = item.messages,
                         mentions = item.mentions,
                         markedUnread = item.markedUnread,
+                        isFavourite = item.isFavourite,
+                        isLowPriority = item.isLowPriority
                     )
                 )
             }

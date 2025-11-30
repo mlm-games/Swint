@@ -367,13 +367,13 @@ pub trait VerificationInboxObserver: Send + Sync {
 pub struct RoomListEntry {
     pub room_id: String,
     pub name: String,
-
     pub last_ts: u64,
-
     pub notifications: u64,
     pub messages: u64,
     pub mentions: u64,
     pub marked_unread: bool,
+    pub is_favourite: bool,
+    pub is_low_priority: bool,
 }
 
 #[derive(Clone, Enum)]
@@ -2904,20 +2904,27 @@ impl Client {
                                 let mentions = room.num_unread_mentions();
                                 let marked_unread = room.is_marked_unread();
 
+                                let is_favourite = room.is_favourite();
+                                let is_low_priority = room.is_low_priority();
+                                let last_ts = room.recency_stamp().map_or(0, |s| s);
+
                                 RoomListEntry {
                                     room_id: room.room_id().to_string(),
                                     name: room
                                         .cached_display_name()
                                         .map(|n| n.to_string())
                                         .unwrap_or_else(|| room.room_id().to_string()),
-                                    last_ts: 0,                   // TODO: use recency_stamp
+                                    last_ts,
                                     notifications,
                                     messages,
                                     mentions,
                                     marked_unread,
+                                    is_favourite,
+                                    is_low_priority,
                                 }
                             })
                             .collect();
+
                             let obs_clone = obs.clone();
                             let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
                                 obs_clone.on_reset(snapshot);

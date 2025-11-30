@@ -7,21 +7,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.mlm.mages.MatrixService
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.MatrixPort
-import org.mlm.mages.matrix.TimelineDiff
-import org.mlm.mages.platform.Notifier
-import org.mlm.mages.storage.loadLong
-import org.mlm.mages.storage.saveLong
 import org.mlm.mages.ui.RoomsUiState
 
 class RoomsController(
@@ -38,7 +32,6 @@ class RoomsController(
     private var roomListToken: ULong? = null
     private var initialized = false
 
-    private val notificationJobs = mutableMapOf<String, Job>()
 
     init {
         observeConnection()
@@ -59,10 +52,6 @@ class RoomsController(
                     )
                 }
                 initialized = true
-
-                items.forEach { entry ->
-                    startNotificationObserver(entry.roomId, entry.name)
-                }
             }
 
             override fun onUpdate(item: MatrixPort.RoomListEntry) {
@@ -101,83 +90,11 @@ class RoomsController(
         })
     }
 
-    fun refreshUnreadCounts() {
-        scope.launch {
-            _state.update { it.copy(isLoading = true) }
-
-            val currentRooms = _state.value.rooms
-            if (currentRooms.isEmpty()) {
-                _state.update { it.copy(isLoading = false) }
-                return@launch
-            }
-
-            val unreadMap = coroutineScope {
-                currentRooms.map { room ->
-                    async {
-                        val cnt = runCatching {
-                            service.port.roomUnreadStats(room.id)?.messages?.toInt() ?: 0
-                        }.getOrDefault(0)
-                        room.id to cnt
-                    }
-                }.associate { it.await() }
-            }
-
-            _state.update { st ->
-                st.copy(unread = unreadMap, isLoading = false)
-            }
-        }
-    }
-
     fun setSearchQuery(q: String) {
         _state.update { it.copy(roomSearchQuery = q) }
     }
 
-    fun setUnreadOnly(unreadOnly: Boolean) {
-        val tok = roomListToken ?: return
-        service.port.roomListSetUnreadOnly(tok, unreadOnly)
-    }
-
     fun open(room: RoomSummary) = onOpenRoom(room)
-
-    private fun startNotificationObserver(roomId: String, roomName: String) {
-        if (notificationJobs.containsKey(roomId)) return
-
-        val job = scope.launch {
-            try {
-                service.timelineDiffs(roomId).collect { diff ->
-                    if (diff is TimelineDiff.Insert) {
-                        val event = diff.item
-                        val myId = service.port.whoami()
-                        val senderIsMe = event.sender == myId
-
-                        if (!senderIsMe) {
-                            _state.update { st ->
-                                val current = st.unread[roomId] ?: 0
-                                st.copy(unread = st.unread.toMutableMap().apply {
-                                    put(roomId, current + 1)
-                                })
-                            }
-                        }
-
-                        if (Notifier.shouldNotify(roomId, senderIsMe)) {
-                            val senderName = event.sender
-                                .removePrefix("@")
-                                .substringBefore(":")
-
-                            Notifier.notifyRoom(
-                                title = "$senderName in $roomName",
-                                body = event.body.take(100)
-                            )
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                notificationJobs.remove(roomId)
-            }
-        }
-        notificationJobs[roomId] = job
-    }
 
     fun clear() {
         roomListToken?.let {
@@ -189,9 +106,6 @@ class RoomsController(
             service.stopConnectionObserver(it)
         }
         connToken = null
-
-        notificationJobs.values.forEach { it.cancel() }
-        notificationJobs.clear()
 
         initialized = false
 

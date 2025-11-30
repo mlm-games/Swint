@@ -82,11 +82,9 @@ class AppPushService : PushService() {
                     if (shown >= 3) break
                 }
                 if (shown == 0) {
-                    WakeSyncService.start(this@AppPushService)
                 }
             }
         } else {
-            WakeSyncService.start(this)
         }
     }
 
