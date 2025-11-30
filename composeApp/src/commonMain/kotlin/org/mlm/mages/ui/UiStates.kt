@@ -3,7 +3,13 @@ package org.mlm.mages.ui
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.DeviceSummary
+import org.mlm.mages.matrix.LiveLocationShare
+import org.mlm.mages.matrix.MemberSummary
+import org.mlm.mages.matrix.Presence
 import org.mlm.mages.matrix.ReactionChip
+import org.mlm.mages.matrix.RoomNotificationMode
+import org.mlm.mages.matrix.RoomPredecessorInfo
+import org.mlm.mages.matrix.RoomUpgradeInfo
 import org.mlm.mages.matrix.SasPhase
 import org.mlm.mages.matrix.SpaceChildInfo
 import org.mlm.mages.matrix.SpaceInfo
@@ -28,6 +34,10 @@ data class RoomsUiState(
     val error: String? = null,
     val favourites: Set<String> = emptySet(),
     val lowPriority: Set<String> = emptySet(),
+
+    val favouriteRooms: List<RoomSummary> = emptyList(),
+    val normalRooms: List<RoomSummary> = emptyList(),
+    val lowPriorityRooms: List<RoomSummary> = emptyList(),
 )
 
 data class RoomUiState(
@@ -51,15 +61,43 @@ data class RoomUiState(
     val isDm: Boolean = false,
     val lastIncomingFromOthersTs: Long? = null,
     val lastOutgoingRead: Boolean = false,
+
     val thumbByEvent: Map<String, String> = emptyMap(),
     val reactionChips: Map<String, List<ReactionChip>> = emptyMap(),
     val threadCount: Map<String, Int> = emptyMap(),
+
+    val liveLocationShares: Map<String, LiveLocationShare> = emptyMap(),
+    val liveLocationSubToken: ULong? = null,
+
+    val notificationMode: RoomNotificationMode = RoomNotificationMode.AllMessages,
+    val isLoadingNotificationMode: Boolean = false,
+
+    val successor: RoomUpgradeInfo? = null,
+    val predecessor: RoomPredecessorInfo? = null,
+
+    val members: List<MemberSummary> = emptyList(),
+    val isLoadingMembers: Boolean = false,
+
+    val showAttachmentPicker: Boolean = false,
+    val showPollCreator: Boolean = false,
+    val showLiveLocation: Boolean = false,
+    val showNotificationSettings: Boolean = false,
+    val showMembers: Boolean = false,
+    val selectedMemberForAction: MemberSummary? = null,
+    val showInviteDialog: Boolean = false,
 )
+
+data class PresenceUiState(
+    val currentPresence: Presence = Presence.Online,
+    val statusMessage: String = "",
+    val isSaving: Boolean = false,
+)
+
 data class VerificationRequestUi(
     val flowId: String,
     val fromUser: String,
     val fromDevice: String,
-    val timestamp: Long = kotlin.time.TimeSource.Monotonic.markNow().elapsedNow().inWholeMilliseconds
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 data class SecurityUiState(
@@ -74,7 +112,7 @@ data class SecurityUiState(
     val showRecoveryDialog: Boolean = false,
     val recoveryKeyInput: String = "",
 
-    // Verification inbox and current SAS
+    // Verification
     val pendingVerifications: List<VerificationRequestUi> = emptyList(),
     val sasFlowId: String? = null,
     val sasPhase: SasPhase? = null,
@@ -83,33 +121,67 @@ data class SecurityUiState(
     val sasOtherDevice: String? = null,
     val sasError: String? = null,
     val sasIncoming: Boolean = false,
+
+    // Privacy
+    val ignoredUsers: List<String> = emptyList(),
+
+    // Presence
+    val presence: PresenceUiState = PresenceUiState(),
 )
 
 data class SpacesUiState(
     val spaces: List<SpaceInfo> = emptyList(),
-    val selectedSpace: SpaceInfo? = null,
-    val hierarchy: List<SpaceChildInfo> = emptyList(),
-    val hierarchyNextBatch: String? = null,
+    val filteredSpaces: List<SpaceInfo> = emptyList(),
+    val searchQuery: String = "",
     val isLoading: Boolean = false,
-    val isLoadingHierarchy: Boolean = false,
     val error: String? = null,
-    val searchQuery: String = ""
+
+    // Create space
+    val showCreateSpace: Boolean = false,
+    val createName: String = "",
+    val createTopic: String = "",
+    val createIsPublic: Boolean = false,
+    val createInvitees: List<String> = emptyList(),
+    val isCreating: Boolean = false,
 )
 
-data class CreateSpaceUiState(
-    val name: String = "",
-    val topic: String = "",
-    val isPublic: Boolean = false,
-    val invitees: List<String> = emptyList(),
-    val isCreating: Boolean = false,
-    val error: String? = null
+data class SpaceDetailUiState(
+    val spaceId: String,
+    val spaceName: String,
+    val space: SpaceInfo? = null,
+    val hierarchy: List<SpaceChildInfo> = emptyList(),
+    val subspaces: List<SpaceChildInfo> = emptyList(),
+    val rooms: List<SpaceChildInfo> = emptyList(),
+    val nextBatch: String? = null,
+    val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val error: String? = null,
 )
 
 data class SpaceSettingsUiState(
+    val spaceId: String,
     val space: SpaceInfo? = null,
     val children: List<SpaceChildInfo> = emptyList(),
     val availableRooms: List<RoomSummary> = emptyList(),
     val isLoading: Boolean = false,
     val isSaving: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+
+    // Dialogs
+    val showAddRoom: Boolean = false,
+    val showInviteUser: Boolean = false,
+    val inviteUserId: String = "",
+)
+
+data class ThreadUi(
+    val roomId: String,
+    val rootEventId: String,
+    val messages: List<MessageEvent> = emptyList(),
+    val nextBatch: String? = null,
+    val isLoading: Boolean = false,
+    val error: String? = null,
+    val reactionChips: Map<String, List<ReactionChip>> = emptyMap(),
+
+    val editingEvent: MessageEvent? = null,
+    val editInput: String = ""
 )

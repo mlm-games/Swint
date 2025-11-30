@@ -40,6 +40,37 @@ enum class RoomNotificationMode {
     Mute
 }
 
+enum class Presence {
+    Online,
+    Offline,
+    Unavailable
+}
+
+data class PresenceInfo(
+    val presence: Presence,
+    val statusMsg: String?
+)
+
+enum class RoomDirectoryVisibility {
+    Public,
+    Private
+}
+
+data class RoomUpgradeInfo(
+    val roomId: String,
+    val reason: String?
+)
+
+data class RoomPredecessorInfo(
+    val roomId: String,
+)
+
+data class LiveLocationShare(
+    val userId: String,
+    val geoUri: String,
+    val tsMs: Long,
+    val isLive: Boolean
+)
 
 interface VerificationObserver {
     fun onPhase(flowId: String, phase: SasPhase)
@@ -150,7 +181,7 @@ interface MatrixPort {
     fun close()
 
     suspend fun setTyping(roomId: String, typing: Boolean): Boolean
-    fun whoami(): String?  // "@user:server" or null if not logged in
+    fun whoami(): String?
 
     suspend fun enqueueText(roomId: String, body: String, txnId: String? = null): String
     fun observeSends(): Flow<SendUpdate>
@@ -197,7 +228,6 @@ interface MatrixPort {
     suspend fun startSelfSas(targetDeviceId: String, observer: VerificationObserver): String
     suspend fun startUserSas(userId: String, observer: VerificationObserver): String
 
-//    suspend fun startVerification(targetUser: String, targetDevice: String, observer: VerificationObserver): Boolean
     suspend fun acceptVerification(flowId: String, otherUserId: String?, observer: VerificationObserver): Boolean
     suspend fun confirmVerification(flowId: String): Boolean
     suspend fun cancelVerification(flowId: String): Boolean
@@ -249,7 +279,6 @@ interface MatrixPort {
     suspend fun ownLastRead(roomId: String): Pair<String?, Long?>
     fun observeOwnReceipt(roomId: String, observer: ReceiptsObserver): ULong
     suspend fun markFullyReadAt(roomId: String, eventId: String): Boolean
-
 
     suspend fun encryptionCatchupOnce(): Boolean
 
@@ -338,6 +367,31 @@ interface MatrixPort {
     ): SpaceHierarchyPage?
     suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean
 
+    suspend fun setPresence(presence: Presence, status: String?): Boolean
+    suspend fun getPresence(userId: String): Pair<Presence, String?>?
+
+    suspend fun ignoreUser(userId: String): Boolean
+    suspend fun unignoreUser(userId: String): Boolean
+    suspend fun ignoredUsers(): List<String>
+
+    suspend fun roomDirectoryVisibility(roomId: String): RoomDirectoryVisibility?
+    suspend fun setRoomDirectoryVisibility(roomId: String, visibility: RoomDirectoryVisibility): Boolean
+    suspend fun banUser(roomId: String, userId: String, reason: String? = null): Boolean
+    suspend fun unbanUser(roomId: String, userId: String, reason: String? = null): Boolean
+    suspend fun kickUser(roomId: String, userId: String, reason: String? = null): Boolean
+    suspend fun inviteUser(roomId: String, userId: String): Boolean
+    suspend fun enableRoomEncryption(roomId: String): Boolean
+
+    suspend fun roomSuccessor(roomId: String): RoomUpgradeInfo?
+    suspend fun roomPredecessor(roomId: String): RoomPredecessorInfo?
+
+    suspend fun startLiveLocationShare(roomId: String, durationMs: Long): Boolean
+    suspend fun stopLiveLocationShare(roomId: String): Boolean
+    suspend fun sendLiveLocation(roomId: String, geoUri: String): Boolean
+    fun observeLiveLocation(roomId: String, onShares: (List<LiveLocationShare>) -> Unit): ULong
+    fun stopObserveLiveLocation(token: ULong)
+
+    suspend fun sendPoll(roomId: String, question: String, answers: List<String>): Boolean
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

@@ -1,44 +1,50 @@
 package org.mlm.mages
 
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
+import androidx.compose.animation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
-import androidx.navigation3.runtime.NavBackStack
-import androidx.navigation3.runtime.NavKey
-import androidx.navigation3.runtime.entryProvider
-import androidx.navigation3.runtime.rememberNavBackStack
-import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
+import androidx.navigation3.runtime.*
 import androidx.navigation3.ui.NavDisplay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
+import org.koin.compose.viewmodel.koinViewModel
+import org.koin.core.parameter.parametersOf
+import org.mlm.mages.di.KoinApp
 import org.mlm.mages.matrix.MatrixPort
-import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.nav.*
-import org.mlm.mages.platform.BindLifecycle
-import org.mlm.mages.platform.BindNotifications
-import org.mlm.mages.platform.rememberFileOpener
-import org.mlm.mages.platform.rememberOpenBrowser
-import org.mlm.mages.platform.rememberQuitApp
-import org.mlm.mages.ui.animation.forwardTransition
-import org.mlm.mages.ui.animation.popTransition
-import org.mlm.mages.ui.base.rememberSnackbarController
+import org.mlm.mages.platform.*
+import org.mlm.mages.ui.animation.*
+import org.mlm.mages.ui.base.*
 import org.mlm.mages.ui.components.sheets.CreateRoomSheet
-import org.mlm.mages.ui.controller.*
 import org.mlm.mages.ui.screens.*
 import org.mlm.mages.ui.theme.MainTheme
+import org.mlm.mages.ui.viewmodel.*
 
-@Suppress("UnusedMaterial3ScaffoldPaddingParameter")
 @Composable
 fun App(
     dataStore: DataStore<Preferences>,
     service: MatrixService,
     deepLinks: Flow<String>? = null
 ) {
-    MainTheme {
+    KoinApp(service = service, dataStore = dataStore) {
+        AppContent(deepLinks = deepLinks)
+    }
+}
 
+@Suppress("UnusedMaterial3ScaffoldPaddingParameter")
+@Composable
+private fun AppContent(
+    deepLinks: Flow<String>?
+) {
+    val service: MatrixService = koinInject()
+    val dataStore: DataStore<Preferences> = koinInject()
+
+    MainTheme {
         val initialRoute = remember {
             if (service.isLoggedIn()) Route.Rooms else Route.Login
         }
@@ -62,33 +68,20 @@ fun App(
             })
         }
 
-        val roomsController = remember(service, dataStore, sessionEpoch) {
-            RoomsController(
-                service = service,
-                dataStore = dataStore,
-                onOpenRoom = { room -> backStack.add(Route.Room(room.id, room.name)) }
-            )
-        }
-
         val openUrl = rememberOpenBrowser()
 
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar.hostState) }
         ) { _ ->
-
-
             NavDisplay(
                 backStack = backStack,
-
                 entryDecorators = listOf(
                     rememberSaveableStateHolderNavEntryDecorator(),
                     rememberViewModelStoreNavEntryDecorator()
                 ),
-
                 transitionSpec = forwardTransition,
                 popTransitionSpec = popTransition,
                 predictivePopTransitionSpec = { _ -> popTransition.invoke(this) },
-
                 onBack = {
                     val top = backStack.lastOrNull()
                     val blockBack = top == Route.Login || top == Route.Rooms
@@ -96,46 +89,53 @@ fun App(
                         backStack.removeAt(backStack.lastIndex)
                     }
                 },
-
                 entryProvider = entryProvider {
 
                     entry<Route.Login>(metadata = loginEntryFadeMetadata()) {
-                        val controller = remember {
-                            LoginController(
-                                service = service,
-                                dataStore = dataStore,
-                                onLoggedIn = {
-                                    sessionEpoch++
-                                    backStack.replaceTop(Route.Rooms)
+                        val viewModel: LoginViewModel = koinViewModel()
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    LoginViewModel.Event.LoginSuccess -> {
+                                        sessionEpoch++
+                                        backStack.replaceTop(Route.Rooms)
+                                    }
                                 }
-                            )
+                            }
                         }
-                        val ui by controller.state.collectAsState()
+
                         LoginScreen(
-                            state = ui,
-                            onChangeHomeserver = controller::setHomeserver,
-                            onChangeUser = controller::setUser,
-                            onChangePass = controller::setPass,
-                            onSubmit = controller::submit,
-                            onSso = { controller.startSso(openUrl) }
+                            viewModel = viewModel,
+                            onSso = { viewModel.startSso(openUrl) }
                         )
                     }
 
-
                     entry<Route.Rooms> {
-                        val ui by roomsController.state.collectAsState()
+                        val viewModel: RoomsViewModel = koinViewModel()
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is RoomsViewModel.Event.OpenRoom -> {
+                                        backStack.add(Route.Room(event.roomId, event.name))
+                                    }
+                                    is RoomsViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                }
+                            }
+                        }
+
                         RoomsScreen(
-                            state = ui,
-                            onRefresh = { /* Remove later */ },
-                            onSearch = roomsController::setSearchQuery,
-                            onOpen = { roomsController.open(it)},
+                            viewModel = viewModel,
                             onOpenSecurity = { backStack.add(Route.Security) },
-                            onToggleUnreadOnly = { roomsController.toggleUnreadOnly() },
                             onOpenDiscover = { backStack.add(Route.Discover) },
                             onOpenInvites = { backStack.add(Route.Invites) },
                             onOpenCreateRoom = { showCreateRoom = true },
-                            onOpenSpaces = { backStack.add(Route.Spaces) },
+                            onOpenSpaces = { backStack.add(Route.Spaces) }
                         )
+
                         if (showCreateRoom) {
                             CreateRoomSheet(
                                 onCreate = { name, topic, invitees ->
@@ -154,265 +154,235 @@ fun App(
                         }
                     }
 
-
                     entry<Route.Room> { key ->
-                        val controller = remember(key.roomId) {
-                            RoomController(service, dataStore, key.roomId, key.name)
-                        }
-                        DisposableEffect(key.roomId) {
-                            onDispose {
-                                controller.onCleared()
+                        val viewModel: RoomViewModel = koinViewModel(
+                            parameters = { parametersOf(key.roomId, key.name) }
+                        )
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is RoomViewModel.Event.NavigateToThread -> {
+                                        backStack.add(Route.Thread(event.roomId, event.eventId, event.roomName))
+                                    }
+                                    is RoomViewModel.Event.NavigateToRoom -> {
+                                        backStack.add(Route.Room(event.roomId, event.name))
+                                    }
+                                    is RoomViewModel.Event.NavigateBack -> {
+                                        if (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
+                                    }
+                                    is RoomViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                    is RoomViewModel.Event.ShowSuccess -> {
+                                        snackbar.show(event.message)
+                                    }
+                                }
                             }
                         }
-                        val ui by controller.state.collectAsState()
-                        val openExternal = rememberFileOpener()
+
                         RoomScreen(
-                            state = ui,
+                            viewModel = viewModel,
                             onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onSetInput = controller::setInput,
-                            onSend = controller::send,
-                            onReply = controller::startReply,
-                            onCancelReply = controller::cancelReply,
-                            onEdit = controller::startEdit,
-                            onCancelEdit = controller::cancelEdit,
-                            onConfirmEdit = controller::confirmEdit,
-                            onReact = controller::react,
-                            onPaginateBack = controller::paginateBack,
-                            onMarkReadHere = controller::markReadHere,
-                            onSendAttachment = controller::sendAttachment,
-                            onCancelUpload = controller::cancelAttachmentUpload,
-                            onDelete = controller::delete,
-                            onRetry = controller::retry,
-                            onOpenAttachment = { event ->
-                                controller.openAttachment(event) { path, mime ->
-                                    openExternal(path, mime)
-                                }
-                            },
                             onOpenInfo = { backStack.add(Route.RoomInfo(key.roomId)) },
-                            onOpenThread = { ev ->
-                                backStack.add(Route.Thread(key.roomId, ev.eventId, ui.roomName))
+                            onNavigateToRoom = { roomId, name -> backStack.add(Route.Room(roomId, name)) },
+                            onNavigateToThread = { roomId, eventId, roomName ->
+                                backStack.add(Route.Thread(roomId, eventId, roomName))
                             }
                         )
                     }
 
-
                     entry<Route.Security> {
                         val quitApp = rememberQuitApp()
-                        var selectedTab by remember { mutableIntStateOf(0) }
-                        val controller = remember { SecurityController(service) }
-                        val ui by controller.state.collectAsState()
-                        SecurityScreen(
-                            state = ui,
-                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onRefreshDevices = controller::refreshDevices,
-                            onStartSelfVerify = controller::startSelfVerify,
-                            onStartUserVerify = controller::startUserVerify,
-                            onAcceptSas = controller::acceptSas,
-                            onConfirmSas = controller::confirmSas,
-                            onCancelSas = controller::cancelSas,
-                            onOpenRecovery = controller::openRecoveryDialog,
-                            onCloseRecovery = controller::closeRecoveryDialog,
-                            onChangeRecoveryKey = controller::setRecoveryKey,
-                            onSubmitRecoveryKey = controller::submitRecoveryKey,
-                            selectedTab = selectedTab,
-                            onSelectTab = { selectedTab = it },
-                            onLogout = {
-                                scope.launch {
-                                    val ok = service.logout()
-                                    if (ok) {
+                        val viewModel: SecurityViewModel = koinViewModel()
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is SecurityViewModel.Event.LogoutSuccess -> {
                                         sessionEpoch++
                                         backStack.replaceTop(Route.Login)
                                         quitApp()
                                     }
+                                    is SecurityViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                    is SecurityViewModel.Event.ShowSuccess -> {
+                                        snackbar.show(event.message)
+                                    }
                                 }
                             }
+                        }
+
+                        SecurityScreen(
+                            viewModel = viewModel,
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
                         )
                     }
-
 
                     entry<Route.Discover> {
-                        val controller = remember { DiscoverController(service) }
-                        val ui by controller.state.collectAsState()
-                        DiscoverScreen(
-                            state = ui,
-                            onQuery = controller::setQuery,
-                            onClose = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onOpenUser = { u ->
-                                val rid = controller.ensureDm(u.userId)
-                                if (rid != null) backStack.add(Route.Room(rid, u.displayName ?: u.userId))
-                            },
-                            onOpenRoom = { room ->
-                                val rid = controller.joinOrOpen(room.alias ?: room.roomId)
-                                if (rid != null) backStack.add(
-                                    Route.Room(rid, room.name ?: room.alias ?: room.roomId)
-                                )
+                        val viewModel: DiscoverViewModel = koinViewModel()
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is DiscoverViewModel.Event.OpenRoom -> {
+                                        backStack.add(Route.Room(event.roomId, event.name))
+                                    }
+                                    is DiscoverViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                }
                             }
+                        }
+
+                        DiscoverRoute(
+                            viewModel = viewModel,
+                            onClose = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
                         )
                     }
-
 
                     entry<Route.Invites> {
-                        val controller = remember { InvitesController(service.port) }
-                        val ui by controller.state.collectAsState()
-                        InvitesScreen(
-                            invites = ui.invites,
-                            busy = ui.busy,
-                            error = ui.error,
-                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onRefresh = controller::refresh,
-                            onAccept = { controller.accept(it) },
-                            onDecline = { controller.decline(it) },
-                            onOpenRoom = { roomId, title -> backStack.add(Route.Room(roomId, title)) }
+                        val viewModel: InvitesViewModel = koinViewModel()
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is InvitesViewModel.Event.OpenRoom -> {
+                                        backStack.add(Route.Room(event.roomId, event.name))
+                                    }
+                                    is InvitesViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                }
+                            }
+                        }
+
+                        InvitesRoute(
+                            viewModel = viewModel,
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
                         )
                     }
-
 
                     entry<Route.RoomInfo> { key ->
-                        val controller = remember(key.roomId) { RoomInfoController(service, key.roomId) }
-                        val state by controller.state.collectAsState()
-                        RoomInfoScreen(
-                            state = state,
-                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onRefresh = controller::refresh,
-                            onNameChange = controller::updateName,
-                            onTopicChange = controller::updateTopic,
-                            onToggleFavourite = controller::toggleFavourite,
-                            onToggleLowPriority = controller::toggleLowPriority,
-                            onSaveName = { controller.saveName() },
-                            onSaveTopic = { controller.saveTopic() },
-                            onLeave = { controller.leave() },
-                            onLeaveSuccess = {
-                                backStack.popUntil { it is Route.Rooms }
+                        val viewModel: RoomInfoViewModel = koinViewModel(
+                            parameters = { parametersOf(key.roomId) }
+                        )
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is RoomInfoViewModel.Event.LeaveSuccess -> {
+                                        backStack.popUntil { it is Route.Rooms }
+                                    }
+                                    is RoomInfoViewModel.Event.OpenRoom -> {
+                                        backStack.add(Route.Room(event.roomId, event.name))
+                                    }
+                                    is RoomInfoViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                    is RoomInfoViewModel.Event.ShowSuccess -> {
+                                        snackbar.show(event.message)
+                                    }
+                                }
                             }
+                        }
+
+                        RoomInfoRoute(
+                            viewModel = viewModel,
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
+                            onLeaveSuccess = { backStack.popUntil { it is Route.Rooms } }
                         )
                     }
 
-
                     entry<Route.Thread> { key ->
-                        val controller = remember(key.roomId, key.rootEventId) {
-                            ThreadController(service, key.roomId, key.rootEventId)
-                        }
-                        val ui by controller.state.collectAsState()
-                        ThreadScreen(
-                            state = ui,
-                            myUserId = service.port.whoami(),
-                            onReact = controller::react,
+                        val viewModel: ThreadViewModel = koinViewModel(
+                            parameters = { parametersOf(key.roomId, key.rootEventId) }
+                        )
+
+                        ThreadRoute(
+                            viewModel = viewModel,
                             onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onLoadMore = controller::loadMore,
-                            onSendThread = { text, replyToId ->
-                                val ok = service.port.sendThreadText(
-                                    key.roomId,
-                                    key.rootEventId,
-                                    text,
-                                    replyToId
-                                )
-                                if (ok) controller.refresh()
-                                ok
-                            },
-                            onEdit = controller::startEdit,
-                            onDelete = controller::delete,
-                            onRetry = controller::retry,
                             snackbarController = snackbar
                         )
                     }
 
-
                     entry<Route.Spaces> {
-                        val controller = remember {
-                            SpacesController(
-                                service = service,
-                                onOpenRoom = { roomId, name -> backStack.add(Route.Room(roomId, name)) },
-                                onOpenSpace = { space -> backStack.add(Route.SpaceDetail(space.roomId, space.name)) }
-                            )
-                        }
-                        val ui by controller.state.collectAsState()
-                        var showCreateSpace by remember { mutableStateOf(false) }
+                        val viewModel: SpacesViewModel = koinViewModel()
 
-                        if (showCreateSpace) {
-                            val createController = remember {
-                                CreateSpaceController(
-                                    service = service,
-                                    onCreated = {
-                                        showCreateSpace = false
-                                        controller.refresh()
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is SpacesViewModel.Event.OpenSpace -> {
+                                        backStack.add(Route.SpaceDetail(event.spaceId, event.name))
                                     }
-                                )
-                            }
-                            val createState by createController.state.collectAsState()
+                                    is SpacesViewModel.Event.OpenRoom -> {
+                                        backStack.add(Route.Room(event.roomId, event.name))
+                                    }
+                                    is SpacesViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
 
-                            CreateSpaceScreen(
-                                state = createState,
-                                onBack = { showCreateSpace = false },
-                                onNameChange = createController::setName,
-                                onTopicChange = createController::setTopic,
-                                onPublicChange = createController::setPublic,
-                                onAddInvitee = createController::addInvitee,
-                                onRemoveInvitee = createController::removeInvitee,
-                                onCreate = createController::create
-                            )
-                        } else {
-                            SpacesScreen(
-                                state = ui,
-                                onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                                onRefresh = controller::refresh,
-                                onSearch = controller::setSearchQuery,
-                                onSelectSpace = { space -> controller.openSpace(space) },
-                                onCreateSpace = { showCreateSpace = true }
-                            )
+                                    else -> {}
+                                }
+                            }
                         }
+
+                        SpacesScreen(
+                            viewModel = viewModel,
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
+                        )
                     }
 
-
                     entry<Route.SpaceDetail> { key ->
-                        val controller = remember(key.spaceId) {
-                            SpacesController(
-                                service = service,
-                                onOpenRoom = { roomId, name -> backStack.add(Route.Room(roomId, name)) },
-                                onOpenSpace = { space -> backStack.add(Route.SpaceDetail(space.roomId, space.name)) }
-                            )
-                        }
-                        val ui by controller.state.collectAsState()
-
-                        LaunchedEffect(key.spaceId) {
-                            controller.loadHierarchy(key.spaceId)
-                        }
-
-                        val displaySpace = ui.selectedSpace ?: SpaceInfo(
-                            roomId = key.spaceId,
-                            name = key.spaceName,
-                            topic = null,
-                            memberCount = 0,
-                            isEncrypted = false,
-                            isPublic = false
+                        val viewModel: SpaceDetailViewModel = koinViewModel(
+                            parameters = { parametersOf(key.spaceId, key.spaceName) }
                         )
 
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is SpaceDetailViewModel.Event.OpenSpace -> {
+                                        backStack.add(Route.SpaceDetail(event.spaceId, event.name))
+                                    }
+                                    is SpaceDetailViewModel.Event.OpenRoom -> {
+                                        backStack.add(Route.Room(event.roomId, event.name))
+                                    }
+                                    is SpaceDetailViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                }
+                            }
+                        }
+
                         SpaceDetailScreen(
-                            space = displaySpace,
-                            hierarchy = ui.hierarchy,
-                            isLoading = ui.isLoadingHierarchy,
-                            hasMore = ui.hierarchyNextBatch != null,
-                            error = ui.error,
+                            viewModel = viewModel,
                             onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onRefresh = { controller.loadHierarchy(key.spaceId) },
-                            onLoadMore = controller::loadMoreHierarchy,
-                            onOpenChild = controller::openChild,
                             onOpenSettings = { backStack.add(Route.SpaceSettings(key.spaceId)) }
                         )
                     }
 
-
                     entry<Route.SpaceSettings> { key ->
-                        val controller = remember(key.spaceId) {
-                            SpaceSettingsController(service, key.spaceId)
+                        val viewModel: SpaceSettingsViewModel = koinViewModel(
+                            parameters = { parametersOf(key.spaceId) }
+                        )
+
+                        LaunchedEffect(Unit) {
+                            viewModel.events.collect { event ->
+                                when (event) {
+                                    is SpaceSettingsViewModel.Event.ShowError -> {
+                                        snackbar.showError(event.message)
+                                    }
+                                    is SpaceSettingsViewModel.Event.ShowSuccess -> {
+                                        snackbar.show(event.message)
+                                    }
+                                }
+                            }
                         }
-                        val ui by controller.state.collectAsState()
+
                         SpaceSettingsScreen(
-                            state = ui,
-                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
-                            onRefresh = controller::refresh,
-                            onAddChild = controller::addChild,
-                            onRemoveChild = controller::removeChild,
-                            onInviteUser = controller::inviteUser
+                            viewModel = viewModel,
+                            onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
                         )
                     }
                 }

@@ -1,6 +1,6 @@
 package org.mlm.mages.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.*
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,26 +18,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.mlm.mages.RoomSummary
 import org.mlm.mages.matrix.SpaceChildInfo
-import org.mlm.mages.ui.SpaceSettingsUiState
+import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.ui.theme.Spacing
+import org.mlm.mages.ui.viewmodel.SpaceSettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SpaceSettingsScreen(
-    state: SpaceSettingsUiState,
-    onBack: () -> Unit,
-    onRefresh: () -> Unit,
-    onAddChild: (roomId: String, suggested: Boolean) -> Unit,
-    onRemoveChild: (childRoomId: String) -> Unit,
-    onInviteUser: (userId: String) -> Unit
+    viewModel: SpaceSettingsViewModel,
+    onBack: () -> Unit
 ) {
-    var showAddRoomSheet by remember { mutableStateOf(false) }
-    var showInviteSheet by remember { mutableStateOf(false) }
+    val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(state.error) {
         state.error?.let {
             snackbarHostState.showSnackbar(it)
+            viewModel.clearError()
         }
     }
 
@@ -51,7 +48,7 @@ fun SpaceSettingsScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onRefresh, enabled = !state.isLoading) {
+                    IconButton(onClick = viewModel::refresh, enabled = !state.isLoading) {
                         Icon(Icons.Default.Refresh, "Refresh")
                     }
                 }
@@ -73,46 +70,55 @@ fun SpaceSettingsScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = Spacing.md)
             ) {
+                // Space info header
                 state.space?.let { space ->
-                    item {
-                        SpaceInfoHeader(space)
+                    item(key = "header") {
+                        SpaceInfoHeader(space = space)
                     }
                 }
 
-                item {
+                // Actions
+                item(key = "actions_title") {
                     SectionTitle("Actions")
                 }
 
-                item {
+                item(key = "action_add_room") {
                     ListItem(
                         headlineContent = { Text("Add rooms") },
                         supportingContent = { Text("Add existing rooms to this space") },
                         leadingContent = {
                             Icon(Icons.Default.Add, null, tint = MaterialTheme.colorScheme.primary)
                         },
-                        modifier = Modifier.clickable { showAddRoomSheet = true }
+                        modifier = Modifier.clickable(enabled = !state.isSaving) {
+                            viewModel.showAddRoomDialog()
+                        }
                     )
                 }
 
-                item {
+                item(key = "action_invite") {
                     ListItem(
                         headlineContent = { Text("Invite users") },
                         supportingContent = { Text("Invite users to this space") },
                         leadingContent = {
                             Icon(Icons.Default.PersonAdd, null, tint = MaterialTheme.colorScheme.primary)
                         },
-                        modifier = Modifier.clickable { showInviteSheet = true }
+                        modifier = Modifier.clickable(enabled = !state.isSaving) {
+                            viewModel.showInviteDialog()
+                        }
                     )
                 }
 
-                item { HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.md)) }
+                item(key = "divider") {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.md))
+                }
 
-                item {
+                // Children
+                item(key = "children_title") {
                     SectionTitle("Rooms in this space (${state.children.size})")
                 }
 
-                if (state.children.isEmpty()) {
-                    item {
+                if (state.children.isEmpty() && !state.isLoading) {
+                    item(key = "empty") {
                         Text(
                             "No rooms in this space yet",
                             style = MaterialTheme.typography.bodyMedium,
@@ -120,43 +126,42 @@ fun SpaceSettingsScreen(
                             modifier = Modifier.padding(Spacing.lg)
                         )
                     }
-                } else {
-                    items(state.children, key = { it.roomId }) { child ->
-                        ChildRoomItem(
-                            child = child,
-                            onRemove = { onRemoveChild(child.roomId) },
-                            isRemoving = state.isSaving
-                        )
-                    }
+                }
+
+                items(state.children, key = { it.roomId }) { child ->
+                    ChildRoomItem(
+                        child = child,
+                        onRemove = { viewModel.removeChild(child.roomId) },
+                        isRemoving = state.isSaving
+                    )
                 }
             }
         }
     }
 
-    if (showAddRoomSheet) {
-        AddRoomSheet(
+    // Add room dialog
+    if (state.showAddRoom) {
+        AddRoomDialog(
             availableRooms = state.availableRooms,
-            onAdd = { roomId, suggested ->
-                onAddChild(roomId, suggested)
-                showAddRoomSheet = false
-            },
-            onDismiss = { showAddRoomSheet = false }
+            onAdd = { roomId, suggested -> viewModel.addChild(roomId, suggested) },
+            onDismiss = viewModel::hideAddRoomDialog
         )
     }
 
-    if (showInviteSheet) {
-        InviteUserSheet(
-            onInvite = { userId ->
-                onInviteUser(userId)
-                showInviteSheet = false
-            },
-            onDismiss = { showInviteSheet = false }
+    // Invite user dialog
+    if (state.showInviteUser) {
+        InviteUserToSpaceDialog(
+            userId = state.inviteUserId,
+            onUserIdChange = viewModel::setInviteUserId,
+            onInvite = viewModel::inviteUser,
+            onDismiss = viewModel::hideInviteDialog,
+            isSaving = state.isSaving
         )
     }
 }
 
 @Composable
-private fun SpaceInfoHeader(space: org.mlm.mages.matrix.SpaceInfo) {
+private fun SpaceInfoHeader(space: SpaceInfo) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -258,9 +263,8 @@ private fun ChildRoomItem(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AddRoomSheet(
+private fun AddRoomDialog(
     availableRooms: List<RoomSummary>,
     onAdd: (roomId: String, suggested: Boolean) -> Unit,
     onDismiss: () -> Unit
@@ -268,116 +272,117 @@ private fun AddRoomSheet(
     var selectedRoom by remember { mutableStateOf<RoomSummary?>(null) }
     var suggested by remember { mutableStateOf(false) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(Spacing.lg),
-            verticalArrangement = Arrangement.spacedBy(Spacing.md)
-        ) {
-            Text("Add room to space", style = MaterialTheme.typography.titleMedium)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add room to space") },
+        text = {
+            Column {
+                if (availableRooms.isEmpty()) {
+                    Text(
+                        "All your rooms are already in this space",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 300.dp),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+                    ) {
+                        items(availableRooms, key = { it.id }) { room ->
+                            ListItem(
+                                headlineContent = { Text(room.name) },
+                                supportingContent = {
+                                    Text(room.id, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
+                                leadingContent = {
+                                    RadioButton(
+                                        selected = selectedRoom?.id == room.id,
+                                        onClick = { selectedRoom = room }
+                                    )
+                                },
+                                modifier = Modifier.clickable { selectedRoom = room }
+                            )
+                        }
+                    }
 
-            if (availableRooms.isEmpty()) {
-                Text(
-                    "All your rooms are already in this space",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = Spacing.lg)
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 300.dp)
-                ) {
-                    items(availableRooms, key = { it.id }) { room ->
-                        ListItem(
-                            headlineContent = { Text(room.name) },
-                            supportingContent = { Text(room.id, maxLines = 1) },
-                            leadingContent = {
-                                RadioButton(
-                                    selected = selectedRoom?.id == room.id,
-                                    onClick = { selectedRoom = room }
-                                )
-                            },
-                            modifier = Modifier.clickable { selectedRoom = room }
+                    Spacer(Modifier.height(Spacing.md))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = suggested,
+                            onCheckedChange = { suggested = it }
                         )
+                        Spacer(Modifier.width(Spacing.sm))
+                        Text("Mark as suggested")
                     }
                 }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(
-                        checked = suggested,
-                        onCheckedChange = { suggested = it }
-                    )
-                    Spacer(Modifier.width(Spacing.sm))
-                    Text("Mark as suggested")
-                }
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+        },
+        confirmButton = {
+            Button(
+                onClick = { selectedRoom?.let { onAdd(it.id, suggested) } },
+                enabled = selectedRoom != null
             ) {
-                TextButton(onClick = onDismiss) { Text("Cancel") }
-                Spacer(Modifier.width(Spacing.sm))
-                Button(
-                    onClick = { selectedRoom?.let { onAdd(it.id, suggested) } },
-                    enabled = selectedRoom != null
-                ) {
-                    Text("Add")
-                }
+                Text("Add")
             }
-
-            Spacer(Modifier.height(Spacing.lg))
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
         }
-    }
+    )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun InviteUserSheet(
-    onInvite: (userId: String) -> Unit,
-    onDismiss: () -> Unit
+private fun InviteUserToSpaceDialog(
+    userId: String,
+    onUserIdChange: (String) -> Unit,
+    onInvite: () -> Unit,
+    onDismiss: () -> Unit,
+    isSaving: Boolean
 ) {
-    var userId by remember { mutableStateOf("") }
     val isValid = userId.startsWith("@") && ":" in userId && userId.length > 3
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(Spacing.lg),
-            verticalArrangement = Arrangement.spacedBy(Spacing.md)
-        ) {
-            Text("Invite user to space", style = MaterialTheme.typography.titleMedium)
-
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.PersonAdd, null) },
+        title = { Text("Invite user to space") },
+        text = {
             OutlinedTextField(
                 value = userId,
-                onValueChange = { userId = it },
+                onValueChange = onUserIdChange,
                 label = { Text("User ID") },
                 placeholder = { Text("@user:server.com") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                enabled = !isSaving,
                 isError = userId.isNotBlank() && !isValid
             )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+        },
+        confirmButton = {
+            Button(
+                onClick = onInvite,
+                enabled = isValid && !isSaving
             ) {
-                TextButton(onClick = onDismiss) { Text("Cancel") }
-                Spacer(Modifier.width(Spacing.sm))
-                Button(
-                    onClick = { onInvite(userId.trim()) },
-                    enabled = isValid
-                ) {
-                    Text("Invite")
+                if (isSaving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(Spacing.sm))
                 }
+                Text("Invite")
             }
-
-            Spacer(Modifier.height(Spacing.lg))
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
         }
-    }
+    )
 }
+

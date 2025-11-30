@@ -15,7 +15,53 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.MemberSummary
-import org.mlm.mages.ui.controller.RoomInfoUiState
+import org.mlm.mages.matrix.RoomDirectoryVisibility
+import org.mlm.mages.matrix.RoomProfile
+import org.mlm.mages.ui.viewmodel.RoomInfoUiState
+import org.mlm.mages.ui.theme.Spacing
+import org.mlm.mages.ui.viewmodel.RoomInfoViewModel
+
+@Composable
+fun RoomInfoRoute(
+    viewModel: RoomInfoViewModel,
+    onBack: () -> Unit,
+    onLeaveSuccess: () -> Unit
+) {
+    val state by viewModel.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                RoomInfoViewModel.Event.LeaveSuccess -> onLeaveSuccess()
+                is RoomInfoViewModel.Event.OpenRoom -> {
+                    // Navigation handled in App.kt via events (see below) or here if you pass a lambda
+                }
+                is RoomInfoViewModel.Event.ShowError -> snackbarHostState.showSnackbar(event.message)
+                is RoomInfoViewModel.Event.ShowSuccess -> snackbarHostState.showSnackbar(event.message)
+            }
+        }
+    }
+
+    // Use your existing RoomInfoScreen composable
+    RoomInfoScreen(
+        state = state,
+        onBack = onBack,
+        onRefresh = viewModel::refresh,
+        onNameChange = viewModel::updateName,
+        onTopicChange = viewModel::updateTopic,
+        onSaveName = { viewModel.saveName() },
+        onSaveTopic = { viewModel.saveTopic() },
+        onToggleFavourite = { viewModel.toggleFavourite() },
+        onToggleLowPriority = { viewModel.toggleLowPriority() },
+        onLeave = { viewModel.leave() },
+        onLeaveSuccess = onLeaveSuccess,
+        onSetVisibility = { v -> viewModel.setDirectoryVisibility(v) },
+        onEnableEncryption = { viewModel.enableEncryption() },
+        onOpenRoom = { roomId -> viewModel.openRoom(roomId) }
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,7 +76,10 @@ fun RoomInfoScreen(
     onToggleFavourite: suspend () -> Boolean,
     onToggleLowPriority: suspend () -> Boolean,
     onLeave: suspend () -> Boolean,
-    onLeaveSuccess: () -> Unit
+    onLeaveSuccess: () -> Unit,
+    onSetVisibility: suspend (RoomDirectoryVisibility) -> Boolean,
+    onEnableEncryption: suspend () -> Boolean,
+    onOpenRoom: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -69,7 +118,7 @@ fun RoomInfoScreen(
             ) {
                 // Room header
                 item {
-                    RoomHeader(state)
+                    RoomHeader(state, onOpenRoom)
                 }
 
                 item {
@@ -185,6 +234,30 @@ fun RoomInfoScreen(
                     MemberRow(member)
                 }
 
+                item {
+                    state.profile?.let { profile ->
+                        PrivacySection(
+                            profile = profile,
+                            visibility = state.directoryVisibility,
+                            isAdminBusy = state.isAdminBusy,
+                            onSetVisibility = {
+                                scope.launch {
+                                    val target = if (state.directoryVisibility == RoomDirectoryVisibility.Public)
+                                        RoomDirectoryVisibility.Private else RoomDirectoryVisibility.Public
+                                    val ok = onSetVisibility(target)
+                                    if (!ok) snackbarHostState.showSnackbar("Failed to update visibility")
+                                }
+                            },
+                            onEnableEncryption = {
+                                scope.launch {
+                                    val ok = onEnableEncryption()
+                                    if (!ok) snackbarHostState.showSnackbar("Failed to enable encryption")
+                                }
+                            }
+                        )
+                    }
+                }
+
                 item { HorizontalDivider() }
 
                 // Leave room button
@@ -249,10 +322,9 @@ fun RoomInfoScreen(
 }
 
 @Composable
-private fun RoomHeader(state: RoomInfoUiState) {
+private fun RoomHeader(state: RoomInfoUiState, onOpenRoom: (String) -> Unit) {
     val profile = state.profile ?: return
-
-    ElevatedCard(
+        ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -310,6 +382,48 @@ private fun RoomHeader(state: RoomInfoUiState) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+    }
+
+
+    Column(Modifier.fillMaxWidth()) {
+        if (state.successor != null) {
+            ElevatedCard(
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("This room has been upgraded", style = MaterialTheme.typography.titleSmall)
+                    state.successor.reason?.let {
+                        Spacer(Modifier.height(4.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = { onOpenRoom(state.successor.roomId) }) {
+                        Text("Go to new room")
+                    }
+                }
+            }
+            Spacer(Modifier.height(Spacing.md))
+        }
+
+        if (state.predecessor != null) {
+            ElevatedCard(
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Upgraded from another room", style = MaterialTheme.typography.titleSmall)
+                    TextButton(onClick = { onOpenRoom(state.predecessor.roomId) }) {
+                        Text("Open previous room")
+                    }
+                }
+            }
+            Spacer(Modifier.height(Spacing.md))
         }
     }
 }
@@ -400,4 +514,46 @@ private fun MemberRow(member: MemberSummary) {
             }
         }
     )
+}
+
+@Composable
+private fun PrivacySection(
+    profile: RoomProfile,
+    visibility: RoomDirectoryVisibility?,
+    isAdminBusy: Boolean,
+    onSetVisibility: () -> Unit,
+    onEnableEncryption: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Privacy", style = MaterialTheme.typography.titleMedium)
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Listed in room directory",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            val checked = visibility == RoomDirectoryVisibility.Public
+            Switch(
+                checked = checked,
+                enabled = !isAdminBusy,
+                onCheckedChange = { onSetVisibility() }
+            )
+        }
+
+        if (!profile.isEncrypted) {
+            Button(
+                onClick = onEnableEncryption,
+                enabled = !isAdminBusy,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Lock, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Enable encryption")
+            }
+        }
+    }
 }

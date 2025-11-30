@@ -69,7 +69,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                     is mages.TimelineDiffKind.Insert -> TimelineDiff.Insert(diff.value.toModel())
                     is mages.TimelineDiffKind.Set -> TimelineDiff.Update(diff.value.toModel())
                     is mages.TimelineDiffKind.Remove -> TimelineDiff.Remove(diff.index.toString())
-                    is mages.TimelineDiffKind.PopFront -> return // handled by Remove
+                    is mages.TimelineDiffKind.PopFront -> return
                     is mages.TimelineDiffKind.PopBack -> return
                     is mages.TimelineDiffKind.Truncate -> return
                 }
@@ -118,7 +118,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override fun stopVerificationInbox(token: ULong) {
         client.unobserveVerificationInbox(token)
     }
-
 
     override suspend fun send(roomId: String, body: String): Boolean =
         client.sendMessage(roomId, body)
@@ -453,7 +452,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         pushKey: String,
     ): Boolean = client.unregisterUnifiedpush(appId, pushKey)
 
-    // Unread parity
     override suspend fun roomUnreadStats(roomId: String): UnreadStats? =
         client.roomUnreadStats(roomId)?.let {
             UnreadStats(
@@ -476,7 +474,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
                     observer.onChanged()
                 }
             }
-        return client.observeOwnReceipt(roomId, cb) // mapped in Rust to receipt stream
+        return client.observeOwnReceipt(roomId, cb)
     }
 
     override suspend fun roomNotificationMode(roomId: String): RoomNotificationMode? =
@@ -576,7 +574,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 )
             }
 
-
     override fun roomListSetUnreadOnly(
         token: ULong,
         unreadOnly: Boolean
@@ -674,8 +671,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
     }
 
-    override suspend fun listMembers(roomId: String): List<MemberSummary> = withContext(
-        Dispatchers.IO) {
+    override suspend fun listMembers(roomId: String): List<MemberSummary> = withContext(Dispatchers.IO) {
         runCatching { client.listMembers(roomId) }.getOrElse { emptyList() }.map {
             MemberSummary(it.userId, it.displayName, it.isMe, it.membership)
         }
@@ -691,6 +687,7 @@ class RustMatrixPort(hs: String) : MatrixPort {
         val s = client.threadSummary(roomId, rootEventId, perPage.toUInt(), maxPages.toUInt())
         return ThreadSummary(s.rootEventId, s.roomId, s.count.toLong(), s.latestTsMs?.toLong())
     }
+
     override suspend fun threadReplies(
         roomId: String,
         rootEventId: String,
@@ -824,13 +821,137 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override suspend fun setRoomFavourite(roomId: String, favourite: Boolean): Boolean = withContext(Dispatchers.IO) {
-        runCatching { client.setRoomFavourite(roomId, favourite) }.getOrDefault(false)
+        runCatching { client.setRoomFavourite(roomId, favourite) }.isSuccess
     }
 
     override suspend fun setRoomLowPriority(roomId: String, lowPriority: Boolean): Boolean = withContext(Dispatchers.IO) {
-        runCatching { client.setRoomLowPriority(roomId, lowPriority) }.getOrDefault(false)
+        runCatching { client.setRoomLowPriority(roomId, lowPriority) }.isSuccess
+    }
+
+
+    override suspend fun setPresence(presence: Presence, status: String?): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.setPresence(presence.toFfi(), status) }.isSuccess
+    }
+
+    override suspend fun getPresence(userId: String): Pair<Presence, String?>? =
+        withContext(Dispatchers.IO) {
+            val info = runCatching { client.getPresence(userId) }.getOrNull()
+                ?: return@withContext null
+
+            info.presence.toKotlin() to info.statusMsg
+        }
+
+    override suspend fun ignoreUser(userId: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.ignoreUser(userId) }.isSuccess
+    }
+
+    override suspend fun unignoreUser(userId: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.unignoreUser(userId) }.isSuccess
+    }
+
+    override suspend fun ignoredUsers(): List<String> = withContext(Dispatchers.IO) {
+        runCatching { client.ignoredUsers() }.getOrElse { emptyList() }
+    }
+
+    override suspend fun roomDirectoryVisibility(roomId: String): RoomDirectoryVisibility? = withContext(Dispatchers.IO) {
+        runCatching { client.roomDirectoryVisibility(roomId) }.getOrNull()?.toKotlin()
+    }
+
+    override suspend fun setRoomDirectoryVisibility(roomId: String, visibility: RoomDirectoryVisibility): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.setRoomDirectoryVisibility(roomId, visibility.toFfi()) }.isSuccess
+    }
+
+    override suspend fun banUser(roomId: String, userId: String, reason: String?): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.banUser(roomId, userId, reason) }.isSuccess
+    }
+
+    override suspend fun unbanUser(roomId: String, userId: String, reason: String?): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.unbanUser(roomId, userId, reason) }.isSuccess
+    }
+
+    override suspend fun kickUser(roomId: String, userId: String, reason: String?): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.kickUser(roomId, userId, reason) }.isSuccess
+    }
+
+    override suspend fun inviteUser(roomId: String, userId: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.inviteUser(roomId, userId) }.isSuccess
+    }
+
+    override suspend fun enableRoomEncryption(roomId: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.enableRoomEncryption(roomId) }.isSuccess
+    }
+
+    override suspend fun roomSuccessor(roomId: String): RoomUpgradeInfo? = withContext(Dispatchers.IO) {
+        runCatching { client.roomSuccessor(roomId) }.getOrNull()?.let { ffi ->
+            RoomUpgradeInfo(roomId = ffi.roomId, reason = ffi.reason)
+        }
+    }
+
+    override suspend fun roomPredecessor(roomId: String): RoomPredecessorInfo? = withContext(Dispatchers.IO) {
+        runCatching { client.roomPredecessor(roomId) }.getOrNull()?.let { ffi ->
+            RoomPredecessorInfo(roomId = ffi.roomId)
+        }
+    }
+
+
+    override suspend fun startLiveLocationShare(
+        roomId: String,
+        durationMs: Long
+    ): Boolean = withContext(Dispatchers.IO) {
+        runCatching { client.startLiveLocation(roomId, durationMs.toULong(), null) }.isSuccess
+    }
+
+    override suspend fun stopLiveLocationShare(roomId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching { client.stopLiveLocation(roomId) }.isSuccess
+        }
+
+    override suspend fun sendLiveLocation(roomId: String, geoUri: String): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching { client.sendLiveLocation(roomId, geoUri) }.isSuccess
+        }
+
+    override fun observeLiveLocation(
+        roomId: String,
+        onShares: (List<LiveLocationShare>) -> Unit
+    ): ULong {
+        val cb = object : mages.LiveLocationObserver {
+            override fun onUpdate(shares: List<mages.LiveLocationShareInfo>) {
+                val mapped = shares.map {
+                    LiveLocationShare(
+                        userId = it.userId,
+                        geoUri = it.geoUri,
+                        tsMs = it.tsMs.toLong(),
+                        isLive = it.isLive
+                    )
+                }
+                onShares(mapped)
+            }
+        }
+        return client.observeLiveLocation(roomId, cb)
+    }
+
+    override fun stopObserveLiveLocation(token: ULong) {
+        client.unobserveLiveLocation(token)
+    }
+
+
+    override suspend fun sendPoll(
+        roomId: String,
+        question: String,
+        answers: List<String>
+    ): Boolean = withContext(Dispatchers.IO) {
+        val def = mages.PollDefinition(
+            question = question,
+            answers = answers,
+            kind = mages.PollKind.DISCLOSED,
+            maxSelections = 1u
+        )
+
+        runCatching { client.sendPollStart(roomId, def) }.isSuccess
     }
 }
+
 
 private fun FfiRoom.toModel() = RoomSummary(id = id, name = name)
 
@@ -906,6 +1027,28 @@ private fun RoomNotificationMode.toFfi(): FfiRoomNotificationMode = when (this) 
     RoomNotificationMode.AllMessages -> FfiRoomNotificationMode.ALL_MESSAGES
     RoomNotificationMode.MentionsAndKeywordsOnly -> FfiRoomNotificationMode.MENTIONS_AND_KEYWORDS_ONLY
     RoomNotificationMode.Mute -> FfiRoomNotificationMode.MUTE
+}
+
+private fun Presence.toFfi(): mages.Presence = when (this) {
+    Presence.Online -> mages.Presence.ONLINE
+    Presence.Offline -> mages.Presence.OFFLINE
+    Presence.Unavailable -> mages.Presence.UNAVAILABLE
+}
+
+private fun mages.Presence.toKotlin(): Presence = when (this) {
+    mages.Presence.ONLINE -> Presence.Online
+    mages.Presence.OFFLINE -> Presence.Offline
+    mages.Presence.UNAVAILABLE -> Presence.Unavailable
+}
+
+private fun RoomDirectoryVisibility.toFfi(): mages.RoomDirectoryVisibility = when (this) {
+    RoomDirectoryVisibility.Public -> mages.RoomDirectoryVisibility.PUBLIC
+    RoomDirectoryVisibility.Private -> mages.RoomDirectoryVisibility.PRIVATE
+}
+
+private fun mages.RoomDirectoryVisibility.toKotlin(): RoomDirectoryVisibility = when (this) {
+    mages.RoomDirectoryVisibility.PUBLIC -> RoomDirectoryVisibility.Public
+    mages.RoomDirectoryVisibility.PRIVATE -> RoomDirectoryVisibility.Private
 }
 
 actual fun createMatrixPort(hs: String): MatrixPort = RustMatrixPort(hs)

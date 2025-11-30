@@ -1,8 +1,9 @@
 #![allow(unused_imports)]
 use js_int::UInt;
 use matrix_sdk::{
-    PredecessorRoom, SuccessorRoom, notification_settings::NotificationSettings,
-    ruma::room::Restricted,
+    PredecessorRoom, SuccessorRoom,
+    notification_settings::NotificationSettings,
+    ruma::{events::ignored_user_list::IgnoredUserListEventContent, room::Restricted},
 };
 use matrix_sdk_base::notification_settings::RoomNotificationMode as RsMode;
 use matrix_sdk_ui::{
@@ -688,6 +689,12 @@ pub struct SendUpdate {
     pub state: SendState,
     pub event_id: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Record)]
+pub struct PresenceInfo {
+    pub presence: Presence,
+    pub status_msg: Option<String>,
 }
 
 #[export(callback_interface)]
@@ -4228,6 +4235,33 @@ impl Client {
         })
     }
 
+    pub fn ignored_users(&self) -> Result<Vec<String>, FfiError> {
+        RT.block_on(async {
+            let account = self.inner.account();
+
+            let raw_opt = account
+                .account_data::<IgnoredUserListEventContent>()
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let Some(raw) = raw_opt else {
+                return Ok(Vec::new());
+            };
+
+            let content = raw
+                .deserialize()
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let users = content
+                .ignored_users
+                .keys()
+                .map(|u| u.to_string())
+                .collect();
+
+            Ok(users)
+        })
+    }
+
     /// Check whether a user is currently ignored.
     pub fn is_user_ignored(&self, user_id: String) -> bool {
         RT.block_on(async {
@@ -4235,6 +4269,12 @@ impl Client {
                 Ok(uid) => self.inner.is_user_ignored(uid.as_ref()).await,
                 Err(_) => false,
             }
+        })
+    }
+
+    pub fn enable_room_encryption(&self, room_id: String) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            room.enable_encryption().await.is_ok()
         })
     }
 
@@ -4263,6 +4303,33 @@ impl Client {
                 .await
                 .map(|_: set_presence_v3::Response| ())
                 .map_err(|e| FfiError::Msg(e.to_string()))
+        })
+    }
+
+    pub fn get_presence(&self, user_id: String) -> Result<PresenceInfo, FfiError> {
+        RT.block_on(async {
+            let uid = user_id
+                .parse::<OwnedUserId>()
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let req = get_presence_v3::Request::new(uid);
+            let resp = self
+                .inner
+                .send(req)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            let presence = match resp.presence {
+                PresenceState::Online => Presence::Online,
+                PresenceState::Offline => Presence::Offline,
+                PresenceState::Unavailable => Presence::Unavailable,
+                _ => Presence::Offline,
+            };
+
+            Ok(PresenceInfo {
+                presence,
+                status_msg: resp.status_msg,
+            })
         })
     }
 
@@ -4355,6 +4422,72 @@ impl Client {
                 successor,
                 predecessor,
             })
+        })
+    }
+
+    pub fn ban_user(&self, room_id: String, user_id: String, reason: Option<String>) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            let Ok(uid) = OwnedUserId::try_from(user_id) else {
+                return false;
+            };
+            room.ban_user(uid.as_ref(), reason.as_deref()).await.is_ok()
+        })
+    }
+
+    pub fn unban_user(&self, room_id: String, user_id: String, reason: Option<String>) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            let Ok(uid) = OwnedUserId::try_from(user_id) else {
+                return false;
+            };
+            room.unban_user(uid.as_ref(), reason.as_deref())
+                .await
+                .is_ok()
+        })
+    }
+
+    pub fn kick_user(&self, room_id: String, user_id: String, reason: Option<String>) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            let Ok(uid) = OwnedUserId::try_from(user_id) else {
+                return false;
+            };
+            room.kick_user(uid.as_ref(), reason.as_deref())
+                .await
+                .is_ok()
+        })
+    }
+
+    pub fn invite_user(&self, room_id: String, user_id: String) -> bool {
+        with_room_async!(self, room_id, |room: Room, _rid| async move {
+            let Ok(uid) = OwnedUserId::try_from(user_id) else {
+                return false;
+            };
+            room.invite_user_by_id(uid.as_ref()).await.is_ok()
+        })
+    }
+
+    /// If this room is tombstoned, return its successor room details.
+    pub fn room_successor(&self, room_id: String) -> Option<SuccessorRoomInfo> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+            room.successor_room().map(Into::into)
+        })
+    }
+
+    /// Return the predecessor room if this room replaced an earlier room.
+    pub fn room_predecessor(&self, room_id: String) -> Option<PredecessorRoomInfo> {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return None;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return None;
+            };
+            room.predecessor_room().map(Into::into)
         })
     }
 }

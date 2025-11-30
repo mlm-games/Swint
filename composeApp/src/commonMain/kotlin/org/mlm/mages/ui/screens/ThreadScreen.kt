@@ -28,14 +28,49 @@ import kotlinx.coroutines.launch
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.matrix.ReactionChip
 import org.mlm.mages.matrix.SendState
+import org.mlm.mages.ui.ThreadUi
 import org.mlm.mages.ui.base.SnackbarController
 import org.mlm.mages.ui.components.core.Avatar
 import org.mlm.mages.ui.components.core.formatDisplayName
 import org.mlm.mages.ui.components.message.MessageBubble
 import org.mlm.mages.ui.components.sheets.MessageActionSheet
-import org.mlm.mages.ui.controller.ThreadUi
 import org.mlm.mages.ui.theme.Spacing
 import org.mlm.mages.ui.util.formatTime
+import org.mlm.mages.ui.viewmodel.ThreadViewModel
+
+@Composable
+fun ThreadRoute(
+    viewModel: ThreadViewModel,
+    onBack: () -> Unit,
+    snackbarController: SnackbarController
+) {
+    val state by viewModel.state.collectAsState()
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is ThreadViewModel.Event.ShowError -> snackbarController.showError(event.message)
+                is ThreadViewModel.Event.ShowSuccess -> snackbarController.show(event.message)
+            }
+        }
+    }
+
+    ThreadScreen(
+        state = state,
+        myUserId = viewModel.myUserId,
+        onReact = viewModel::react,
+        onBack = onBack,
+        onLoadMore = viewModel::loadMore,
+        onSendThread = { text, replyToId ->
+            viewModel.sendMessage(text, replyToId)
+        },
+        onEdit = viewModel::startEdit,
+        onDelete = { ev -> viewModel.delete(ev) },
+        onRetry = { ev -> viewModel.retry(ev) },
+        snackbarController = snackbarController
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

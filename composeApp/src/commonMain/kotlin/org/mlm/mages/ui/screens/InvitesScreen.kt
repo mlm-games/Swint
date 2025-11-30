@@ -14,7 +14,34 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.RoomProfile
+import org.mlm.mages.ui.viewmodel.InvitesViewModel
 
+@Composable
+fun InvitesRoute(
+    viewModel: InvitesViewModel,
+    onBack: () -> Unit
+) {
+    val state by viewModel.state.collectAsState()
+    val scope = rememberCoroutineScope()
+
+    InvitesScreen(
+        invites = state.invites,
+        busy = state.busy,
+        error = state.error,
+        onBack = onBack,
+        onRefresh = viewModel::refresh,
+        onAccept = { roomId ->
+            val profile = state.invites.firstOrNull { it.roomId == roomId }
+            if (profile != null) {
+                viewModel.accept(profile.roomId, profile.name)
+            }
+        },
+        onDecline = { roomId -> viewModel.decline(roomId) },
+        onOpenRoom = { roomId, title ->
+            // No-op; navigation handled via events
+        }
+    )
+}
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InvitesScreen(

@@ -9,68 +9,42 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.mages.RoomSummary
-import org.mlm.mages.ui.RoomsUiState
 import org.mlm.mages.ui.components.common.RoomListItem
 import org.mlm.mages.ui.components.core.EmptyState
 import org.mlm.mages.ui.components.core.ShimmerList
 import org.mlm.mages.ui.theme.Spacing
-
-enum class RoomSection { Favourites, Normal, LowPriority }
+import org.mlm.mages.ui.viewmodel.RoomsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RoomsScreen(
-    state: RoomsUiState,
-    onRefresh: () -> Unit,
-    onSearch: (String) -> Unit,
-    onOpen: (RoomSummary) -> Unit,
+    viewModel: RoomsViewModel,
     onOpenSecurity: () -> Unit,
-    onToggleUnreadOnly: () -> Unit,
     onOpenDiscover: () -> Unit,
     onOpenInvites: () -> Unit,
     onOpenCreateRoom: () -> Unit,
     onOpenSpaces: () -> Unit,
 ) {
+    val state by viewModel.state.collectAsState()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    // Group rooms by section, Matrix rooms are already sorted via sdk in reversed order (by recency from bottom)
-    val groupedRooms = remember(state.rooms, state.roomSearchQuery, state.unreadOnly, state.unread, state.favourites, state.lowPriority) {
-        var list = state.rooms
-
-        val q = state.roomSearchQuery.trim()
-        if (q.isNotBlank()) {
-            list = list.filter {
-                it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true)
-            }
-        }
-
-        if (state.unreadOnly) {
-            list = list.filter { (state.unread[it.id] ?: 0) > 0 }
-        }
-
-        val favourites = list.filter { state.favourites.contains(it.id) }
-        val lowPriority = list.filter { state.lowPriority.contains(it.id) }
-        val normal = list.filter { !state.favourites.contains(it.id) && !state.lowPriority.contains(it.id) }
-
-        mapOf(
-            RoomSection.Favourites to favourites,
-            RoomSection.Normal to normal,
-            RoomSection.LowPriority to lowPriority
-        )
-    }
-
-    val hasAnyRooms = groupedRooms.values.any { it.isNotEmpty() }
+    // Check if there are any rooms to display
+    val hasAnyRooms = state.favouriteRooms.isNotEmpty() ||
+            state.normalRooms.isNotEmpty() ||
+            state.lowPriorityRooms.isNotEmpty()
 
     // Scroll to top when first room changes (new unread activity)
-    val firstFavouriteId = groupedRooms[RoomSection.Favourites]?.firstOrNull()?.id
-    val firstNormalId = groupedRooms[RoomSection.Normal]?.firstOrNull()?.id
+    val firstFavouriteId = state.favouriteRooms.firstOrNull()?.id
+    val firstNormalId = state.normalRooms.firstOrNull()?.id
+
     LaunchedEffect(firstFavouriteId, firstNormalId) {
         if ((firstFavouriteId != null || firstNormalId != null) && listState.firstVisibleItemIndex > 0) {
             listState.animateScrollToItem(0)
@@ -78,97 +52,31 @@ fun RoomsScreen(
     }
 
     // Show FAB when not at top and there's unread activity
-    val showScrollToTopFab by remember(listState, groupedRooms, state.unread) {
+    val showScrollToTopFab by remember(listState, state) {
         derivedStateOf {
             listState.firstVisibleItemIndex > 2 &&
-                    (groupedRooms[RoomSection.Favourites]?.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true ||
-                            groupedRooms[RoomSection.Normal]?.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true)
+                    (state.favouriteRooms.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true ||
+                            state.normalRooms.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true)
         }
     }
 
     Scaffold(
         topBar = {
-            Column {
-                TopAppBar(
-                    title = { Text("Rooms", fontWeight = FontWeight.SemiBold) },
-                    actions = {
-                        IconButton(onClick = onRefresh, enabled = !state.isLoading) {
-                            Icon(Icons.Default.Refresh, "Refresh")
-                        }
-                        IconButton(onClick = onOpenSpaces) { Icon(Icons.Default.Workspaces, "Spaces") }
-                        IconButton(onClick = onOpenSecurity) {
-                            Icon(Icons.Default.Security, "Security")
-                        }
-                        IconButton(onClick = onOpenDiscover) {
-                            Icon(Icons.Default.NewLabel, "Discover")
-                        }
-                        IconButton(onClick = onOpenInvites) {
-                            Icon(Icons.Default.Mail, "Invites")
-                        }
-                        IconButton(onClick = onOpenCreateRoom) {
-                            Icon(Icons.Default.Add, "New Room")
-                        }
-                    }
-                )
-
-                // Connection banners
-                state.offlineBanner?.let {
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(vertical = 4.dp, horizontal = Spacing.lg)
-                        )
-                    }
-                } ?: state.syncBanner?.let {
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(vertical = 4.dp, horizontal = Spacing.lg)
-                        )
-                    }
-                }
-
-                if (state.isLoading && state.rooms.isNotEmpty()) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
-
-                // Search
-                OutlinedTextField(
-                    value = state.roomSearchQuery,
-                    onValueChange = onSearch,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-                    placeholder = { Text("Search rooms...") },
-                    leadingIcon = { Icon(Icons.Default.Search, null) },
-                    singleLine = true,
-                    shape = MaterialTheme.shapes.large
-                )
-
-                // Filters
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Spacing.lg),
-                    horizontalArrangement = Arrangement.Start
-                ) {
-                    FilterChip(
-                        selected = state.unreadOnly,
-                        onClick = onToggleUnreadOnly,
-                        label = { Text("Unread only") }
-                    )
-                }
-            }
+            RoomsTopBar(
+                offlineBanner = state.offlineBanner,
+                syncBanner = state.syncBanner,
+                isLoading = state.isLoading && state.rooms.isNotEmpty(),
+                searchQuery = state.roomSearchQuery,
+                unreadOnly = state.unreadOnly,
+                onSearchChange = viewModel::setSearchQuery,
+                onToggleUnreadOnly = viewModel::toggleUnreadOnly,
+                onRefresh = viewModel::refresh,
+                onOpenSpaces = onOpenSpaces,
+                onOpenSecurity = onOpenSecurity,
+                onOpenDiscover = onOpenDiscover,
+                onOpenInvites = onOpenInvites,
+                onOpenCreateRoom = onOpenCreateRoom
+            )
         },
         floatingActionButton = {
             AnimatedVisibility(
@@ -200,7 +108,16 @@ fun RoomsScreen(
                         "Join a room to start chatting"
                     else
                         "No rooms match \"${state.roomSearchQuery}\"",
-                    modifier = Modifier.padding(innerPadding)
+                    modifier = Modifier.padding(innerPadding),
+                    action = if (state.roomSearchQuery.isBlank()) {
+                        {
+                            Button(onClick = onOpenDiscover) {
+                                Icon(Icons.Default.Search, null)
+                                Spacer(Modifier.width(Spacing.sm))
+                                Text("Discover Rooms")
+                            }
+                        }
+                    } else null
                 )
             }
             else -> {
@@ -210,67 +127,199 @@ fun RoomsScreen(
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
                     // Favourites section
-                    val favourites = groupedRooms[RoomSection.Favourites] ?: emptyList()
-                    if (favourites.isNotEmpty()) {
+                    if (state.favouriteRooms.isNotEmpty()) {
                         item(key = "header_favourites") {
                             SectionHeader(
                                 icon = Icons.Default.Star,
                                 title = "Favourites",
-                                count = favourites.size
+                                count = state.favouriteRooms.size
                             )
                         }
-                        items(favourites, key = { "fav_${it.id}" }) { room ->
+                        items(state.favouriteRooms, key = { "fav_${it.id}" }) { room ->
                             RoomListItem(
                                 room = room,
                                 unreadCount = state.unread[room.id] ?: 0,
-                                onClick = { onOpen(room) },
+                                onClick = { viewModel.openRoom(room) },
                                 showFavouriteIcon = true
                             )
                         }
                     }
 
                     // Normal rooms section
-                    val normal = groupedRooms[RoomSection.Normal] ?: emptyList()
-                    if (normal.isNotEmpty()) {
-                        if (favourites.isNotEmpty()) {
+                    if (state.normalRooms.isNotEmpty()) {
+                        if (state.favouriteRooms.isNotEmpty()) {
                             item(key = "header_rooms") {
                                 SectionHeader(
                                     icon = Icons.Default.ChatBubble,
                                     title = "Rooms",
-                                    count = normal.size
+                                    count = state.normalRooms.size
                                 )
                             }
                         }
-                        items(normal, key = { "room_${it.id}" }) { room ->
+                        items(state.normalRooms, key = { "room_${it.id}" }) { room ->
                             RoomListItem(
                                 room = room,
                                 unreadCount = state.unread[room.id] ?: 0,
-                                onClick = { onOpen(room) }
+                                onClick = { viewModel.openRoom(room) }
                             )
                         }
                     }
 
                     // Low priority section
-                    val lowPriority = groupedRooms[RoomSection.LowPriority] ?: emptyList()
-                    if (lowPriority.isNotEmpty()) {
+                    if (state.lowPriorityRooms.isNotEmpty()) {
                         item(key = "header_low_priority") {
                             SectionHeader(
                                 icon = Icons.Default.ArrowDownward,
                                 title = "Low Priority",
-                                count = lowPriority.size
+                                count = state.lowPriorityRooms.size
                             )
                         }
-                        items(lowPriority, key = { "low_${it.id}" }) { room ->
+                        items(state.lowPriorityRooms, key = { "low_${it.id}" }) { room ->
                             RoomListItem(
                                 room = room,
                                 unreadCount = state.unread[room.id] ?: 0,
-                                onClick = { onOpen(room) },
-                                modifier = Modifier.alpha(0.6F)
+                                onClick = { viewModel.openRoom(room) },
+                                modifier = Modifier.alpha(0.6f)
                             )
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RoomsTopBar(
+    offlineBanner: String?,
+    syncBanner: String?,
+    isLoading: Boolean,
+    searchQuery: String,
+    unreadOnly: Boolean,
+    onSearchChange: (String) -> Unit,
+    onToggleUnreadOnly: () -> Unit,
+    onRefresh: () -> Unit,
+    onOpenSpaces: () -> Unit,
+    onOpenSecurity: () -> Unit,
+    onOpenDiscover: () -> Unit,
+    onOpenInvites: () -> Unit,
+    onOpenCreateRoom: () -> Unit
+) {
+    Column {
+        TopAppBar(
+            title = { Text("Rooms", fontWeight = FontWeight.SemiBold) },
+            actions = {
+                IconButton(onClick = onRefresh, enabled = !isLoading) {
+                    Icon(Icons.Default.Refresh, "Refresh")
+                }
+                IconButton(onClick = onOpenSpaces) {
+                    Icon(Icons.Default.Workspaces, "Spaces")
+                }
+                IconButton(onClick = onOpenSecurity) {
+                    Icon(Icons.Default.Security, "Security")
+                }
+                IconButton(onClick = onOpenDiscover) {
+                    Icon(Icons.Default.Explore, "Discover")
+                }
+                IconButton(onClick = onOpenInvites) {
+                    Icon(Icons.Default.Mail, "Invites")
+                }
+                IconButton(onClick = onOpenCreateRoom) {
+                    Icon(Icons.Default.Add, "New Room")
+                }
+            }
+        )
+
+        // Connection banners
+        AnimatedVisibility(visible = offlineBanner != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.CloudOff,
+                        null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(Modifier.width(Spacing.sm))
+                    Text(
+                        offlineBanner ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = offlineBanner == null && syncBanner != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Spacer(Modifier.width(Spacing.sm))
+                    Text(
+                        syncBanner ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = isLoading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        // Search bar
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+            placeholder = { Text("Search rooms...") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { onSearchChange("") }) {
+                        Icon(Icons.Default.Clear, "Clear search")
+                    }
+                }
+            },
+            singleLine = true,
+            shape = MaterialTheme.shapes.large
+        )
+
+        // Filters
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.lg, vertical = Spacing.xs),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            FilterChip(
+                selected = unreadOnly,
+                onClick = onToggleUnreadOnly,
+                label = { Text("Unread only") },
+                leadingIcon = if (unreadOnly) {
+                    { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
+                } else null
+            )
         }
     }
 }
@@ -285,7 +334,7 @@ private fun SectionHeader(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Icon(
@@ -297,7 +346,8 @@ private fun SectionHeader(
         Text(
             text = title,
             style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium
         )
         Text(
             text = "($count)",

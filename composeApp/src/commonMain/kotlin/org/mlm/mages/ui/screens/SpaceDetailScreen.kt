@@ -1,6 +1,6 @@
 package org.mlm.mages.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.*
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,37 +20,20 @@ import org.mlm.mages.matrix.SpaceChildInfo
 import org.mlm.mages.matrix.SpaceInfo
 import org.mlm.mages.ui.components.core.EmptyState
 import org.mlm.mages.ui.theme.Spacing
+import org.mlm.mages.ui.viewmodel.SpaceDetailViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SpaceDetailScreen(
-    space: SpaceInfo,
-    hierarchy: List<SpaceChildInfo>,
-    isLoading: Boolean,
-    hasMore: Boolean,
-    error: String?,
+    viewModel: SpaceDetailViewModel,
     onBack: () -> Unit,
-    onRefresh: () -> Unit,
-    onLoadMore: () -> Unit,
-    onOpenChild: (SpaceChildInfo) -> Unit,
     onOpenSettings: () -> Unit
 ) {
+    val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(error) {
-        error?.let {
-            snackbarHostState.showSnackbar(it)
-        }
-    }
-
-    // Filter out the space itself from hierarchy
-    val children = remember(hierarchy, space.roomId) {
-        hierarchy.filter { it.roomId != space.roomId }
-    }
-
-    // Separate rooms and subspaces
-    val (subspaces, rooms) = remember(children) {
-        children.partition { it.isSpace }
+    LaunchedEffect(state.error) {
+        state.error?.let { snackbarHostState.showSnackbar(it) }
     }
 
     Scaffold(
@@ -59,14 +42,14 @@ fun SpaceDetailScreen(
                 title = {
                     Column {
                         Text(
-                            space.name,
+                            state.space?.name ?: state.spaceName,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            "${children.size} items",
+                            "${state.hierarchy.size} items",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -78,7 +61,7 @@ fun SpaceDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onRefresh, enabled = !isLoading) {
+                    IconButton(onClick = viewModel::refresh, enabled = !state.isLoading) {
                         Icon(Icons.Default.Refresh, "Refresh")
                     }
                     IconButton(onClick = onOpenSettings) {
@@ -94,71 +77,85 @@ fun SpaceDetailScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Loading
-            AnimatedVisibility(visible = isLoading) {
+            // Loading indicator
+            AnimatedVisibility(visible = state.isLoading && state.hierarchy.isEmpty()) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
-            SpaceHeaderCard(space)
+            // Space header card
+            state.space?.let { space ->
+                SpaceHeaderCard(space = space)
+            }
 
-            if (children.isEmpty() && !isLoading) {
-                EmptyState(
-                    icon = Icons.Default.FolderOpen,
-                    title = "This space is empty",
-                    subtitle = "Add rooms or subspaces to organize your conversations"
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = Spacing.lg)
-                ) {
-                    // Subspaces section
-                    if (subspaces.isNotEmpty()) {
-                        item {
-                            SectionHeader("Spaces", subspaces.size)
-                        }
-                        items(subspaces, key = { it.roomId }) { child ->
-                            SpaceChildItem(
-                                child = child,
-                                onClick = { onOpenChild(child) }
-                            )
-                        }
+            when {
+                state.isLoading && state.hierarchy.isEmpty() -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
                     }
-
-                    // Rooms section
-                    if (rooms.isNotEmpty()) {
-                        item {
-                            SectionHeader("Rooms", rooms.size)
+                }
+                state.hierarchy.isEmpty() -> {
+                    EmptyState(
+                        icon = Icons.Default.FolderOpen,
+                        title = "This space is empty",
+                        subtitle = "Add rooms or subspaces to organize your conversations"
+                    )
+                }
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = Spacing.lg)
+                    ) {
+                        // Subspaces section
+                        if (state.subspaces.isNotEmpty()) {
+                            item(key = "header_subspaces") {
+                                SectionHeader("Spaces", state.subspaces.size)
+                            }
+                            items(state.subspaces, key = { "sub_${it.roomId}" }) { child ->
+                                SpaceChildItem(
+                                    child = child,
+                                    onClick = { viewModel.openChild(child) }
+                                )
+                            }
                         }
-                        items(rooms, key = { it.roomId }) { child ->
-                            SpaceChildItem(
-                                child = child,
-                                onClick = { onOpenChild(child) }
-                            )
-                        }
-                    }
 
-                    // Load more
-                    if (hasMore) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(Spacing.lg),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                OutlinedButton(
-                                    onClick = onLoadMore,
-                                    enabled = !isLoading
+                        // Rooms section
+                        if (state.rooms.isNotEmpty()) {
+                            item(key = "header_rooms") {
+                                SectionHeader("Rooms", state.rooms.size)
+                            }
+                            items(state.rooms, key = { "room_${it.roomId}" }) { child ->
+                                SpaceChildItem(
+                                    child = child,
+                                    onClick = { viewModel.openChild(child) }
+                                )
+                            }
+                        }
+
+                        // Load more button
+                        if (state.nextBatch != null) {
+                            item(key = "load_more") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(Spacing.lg),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    if (isLoading) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                        Spacer(Modifier.width(Spacing.sm))
+                                    OutlinedButton(
+                                        onClick = viewModel::loadMore,
+                                        enabled = !state.isLoadingMore
+                                    ) {
+                                        if (state.isLoadingMore) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                            Spacer(Modifier.width(Spacing.sm))
+                                        }
+                                        Text("Load more")
                                     }
-                                    Text("Load more")
                                 }
                             }
                         }
@@ -186,13 +183,10 @@ private fun SpaceHeaderCard(space: SpaceInfo) {
                     shape = CircleShape,
                     modifier = Modifier.size(56.dp)
                 ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Default.Workspaces,
-                            contentDescription = null,
+                            null,
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(28.dp)
                         )
@@ -230,10 +224,10 @@ private fun SpaceHeaderCard(space: SpaceInfo) {
                 }
             }
 
-            if (!space.topic.isNullOrBlank()) {
+            space.topic?.let { topic ->
                 Spacer(Modifier.height(Spacing.md))
                 Text(
-                    space.topic,
+                    topic,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -299,15 +293,9 @@ private fun SpaceChildItem(
                 }
             }
         },
-        supportingContent = if (!child.topic.isNullOrBlank()) {
-            {
-                Text(
-                    child.topic,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        } else null,
+        supportingContent = child.topic?.let {
+            { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        },
         leadingContent = {
             Surface(
                 color = if (child.isSpace)
@@ -317,13 +305,10 @@ private fun SpaceChildItem(
                 shape = MaterialTheme.shapes.small,
                 modifier = Modifier.size(40.dp)
             ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(
                         if (child.isSpace) Icons.Default.Workspaces else Icons.Default.Tag,
-                        contentDescription = null,
+                        null,
                         tint = if (child.isSpace)
                             MaterialTheme.colorScheme.onSecondaryContainer
                         else
@@ -342,7 +327,7 @@ private fun SpaceChildItem(
                 Spacer(Modifier.width(Spacing.xs))
                 Icon(
                     Icons.Default.ChevronRight,
-                    contentDescription = null,
+                    null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }

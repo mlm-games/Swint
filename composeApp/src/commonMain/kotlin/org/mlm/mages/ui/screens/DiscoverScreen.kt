@@ -13,9 +13,25 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.mages.matrix.DirectoryUser
 import org.mlm.mages.matrix.PublicRoom
-import org.mlm.mages.ui.controller.DiscoverController
-import org.mlm.mages.ui.controller.DiscoverUi
+import org.mlm.mages.ui.viewmodel.DiscoverUi
+import org.mlm.mages.ui.viewmodel.DiscoverViewModel
 
+@Composable
+fun DiscoverRoute(
+    viewModel: DiscoverViewModel,
+    onClose: () -> Unit
+) {
+    val state by viewModel.state.collectAsState()
+    val scope = rememberCoroutineScope()
+
+    DiscoverScreen(
+        state = state,
+        onQuery = viewModel::setQuery,
+        onClose = onClose,
+        onOpenUser = { u -> viewModel.openUser(u) },
+        onOpenRoom = { r -> viewModel.openRoom(r) }
+    )
+}
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiscoverScreen(

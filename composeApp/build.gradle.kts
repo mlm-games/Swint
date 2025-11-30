@@ -33,6 +33,8 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.work.runtime.ktx)
             implementation(libs.androidx.browser)
+            implementation(libs.koin.android)
+
         }
         commonMain.dependencies {
             implementation(libs.navigation3.ui)
@@ -53,6 +55,10 @@ kotlin {
             implementation(libs.kotlinx.datetime)
             implementation(compose.components.resources)
             implementation(libs.uri.kmp)
+
+            implementation(libs.koin.core)
+            implementation(libs.koin.compose)
+            implementation(libs.koin.compose.viewmodel)
         }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
