@@ -2652,15 +2652,43 @@ impl Client {
         profile_tag: Option<String>,
     ) -> bool {
         RT.block_on(async {
+            // Test with a cs secret (like the json output)
+            let client_secret = self
+                .inner
+                .user_id()
+                .map(|u| {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    u.as_str().hash(&mut hasher);
+                    format!("{:x}", hasher.finish())
+                })
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+            let mut http_data = HttpPusherData::new(gateway_url.clone());
+            http_data.format = Some(ruma::push::PushFormat::EventIdOnly);
+
+            http_data.data.insert(
+                "default_payload".to_owned(),
+                serde_json::json!({ "cs": client_secret }).into(),
+            );
+
             let init = PusherInit {
-                ids: PusherIds::new(app_id.into(), pushkey.into()),
-                kind: PusherKind::Http(HttpPusherData::new(gateway_url.into())),
+                ids: PusherIds::new(pushkey.clone(), app_id.clone()),
+                kind: PusherKind::Http(http_data),
                 app_display_name: "Mages".into(),
                 device_display_name,
                 profile_tag,
                 lang,
             };
+
             let pusher: Pusher = init.into();
+
+            info!(
+                "Registering pusher: app_id={}, gateway={}, secret={}",
+                app_id, gateway_url, client_secret
+            );
+
             self.inner.pusher().set(pusher).await.is_ok()
         })
     }

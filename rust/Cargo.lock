@@ -1830,6 +1830,7 @@ dependencies = [
  "tracing-subscriber",
  "uniffi",
  "uniffi_bindgen",
+ "uuid",
 ]
 
 [[package]]

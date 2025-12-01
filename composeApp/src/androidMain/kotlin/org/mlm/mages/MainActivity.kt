@@ -45,13 +45,22 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
 
-        val saved = UnifiedPush.getSavedDistributor(this)
-        if (saved.isNullOrBlank()) {
-            PushManager.registerWithDialog(this, PREF_INSTANCE)
-        } else {
-            UnifiedPush.register(this, PREF_INSTANCE)
-            lifecycleScope.launch {
-                runCatching { PusherReconciler.ensureServerPusherRegistered(this@MainActivity) }
+        UnifiedPush.tryUseCurrentOrDefaultDistributor(this) { success ->
+            val saved = UnifiedPush.getSavedDistributor(this)
+            val dists = UnifiedPush.getDistributors(this)
+            android.util.Log.i(
+                "UP-Mages",
+                "tryUseCurrentOrDefaultDistributor success=$success, " +
+                        "savedDistributor=$saved, distributors=$dists"
+            )
+
+            if (success) {
+                UnifiedPush.register(this, PREF_INSTANCE)
+                lifecycleScope.launch {
+                    runCatching { PusherReconciler.ensureServerPusherRegistered(this@MainActivity) }
+                }
+            } else {
+                PushManager.registerWithDialog(this, PREF_INSTANCE)
             }
         }
 
