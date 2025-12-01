@@ -85,6 +85,8 @@ data class RoomUiState(
     val showMembers: Boolean = false,
     val selectedMemberForAction: MemberSummary? = null,
     val showInviteDialog: Boolean = false,
+
+    val activeCall: ActiveCallUi? = null,
 )
 
 data class PresenceUiState(
@@ -184,4 +186,9 @@ data class ThreadUi(
 
     val editingEvent: MessageEvent? = null,
     val editInput: String = ""
+)
+
+data class ActiveCallUi(
+    val sessionId: ULong,
+    val widgetUrl: String
 )

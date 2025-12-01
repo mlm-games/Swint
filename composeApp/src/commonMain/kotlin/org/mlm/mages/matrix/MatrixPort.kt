@@ -157,6 +157,20 @@ data class SpaceHierarchyPage(
     val nextBatch: String?
 )
 
+enum class CallIntent {
+    StartCall,
+    JoinExisting
+}
+
+data class CallSession(
+    val sessionId: ULong,
+    val widgetUrl: String
+)
+
+interface CallWidgetObserver {
+    fun onToWidget(message: String)
+}
+
 interface MatrixPort {
 
     data class SyncStatus(val phase: SyncPhase, val message: String?)
@@ -392,6 +406,16 @@ interface MatrixPort {
     fun stopObserveLiveLocation(token: ULong)
 
     suspend fun sendPoll(roomId: String, question: String, answers: List<String>): Boolean
+    suspend fun startElementCall(
+        roomId: String,
+        intent: CallIntent,
+        elementCallUrl: String? = null,
+        observer: CallWidgetObserver
+    ): CallSession?
+
+    fun callWidgetFromWebview(sessionId: ULong, message: String): Boolean
+    fun stopElementCall(sessionId: ULong): Boolean
+
 }
 
 expect fun createMatrixPort(hs: String): MatrixPort

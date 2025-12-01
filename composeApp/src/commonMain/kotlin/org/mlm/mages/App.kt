@@ -159,28 +159,6 @@ private fun AppContent(
                             parameters = { parametersOf(key.roomId, key.name) }
                         )
 
-                        LaunchedEffect(Unit) {
-                            viewModel.events.collect { event ->
-                                when (event) {
-                                    is RoomViewModel.Event.NavigateToThread -> {
-                                        backStack.add(Route.Thread(event.roomId, event.eventId, event.roomName))
-                                    }
-                                    is RoomViewModel.Event.NavigateToRoom -> {
-                                        backStack.add(Route.Room(event.roomId, event.name))
-                                    }
-                                    is RoomViewModel.Event.NavigateBack -> {
-                                        if (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
-                                    }
-                                    is RoomViewModel.Event.ShowError -> {
-                                        snackbar.showError(event.message)
-                                    }
-                                    is RoomViewModel.Event.ShowSuccess -> {
-                                        snackbar.show(event.message)
-                                    }
-                                }
-                            }
-                        }
-
                         RoomScreen(
                             viewModel = viewModel,
                             onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
@@ -188,7 +166,8 @@ private fun AppContent(
                             onNavigateToRoom = { roomId, name -> backStack.add(Route.Room(roomId, name)) },
                             onNavigateToThread = { roomId, eventId, roomName ->
                                 backStack.add(Route.Thread(roomId, eventId, roomName))
-                            }
+                            },
+                            onStartCall = { viewModel.startCall() }
                         )
                     }
 

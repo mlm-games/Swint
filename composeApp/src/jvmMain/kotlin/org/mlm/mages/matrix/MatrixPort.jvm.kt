@@ -950,6 +950,38 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
         runCatching { client.sendPollStart(roomId, def) }.isSuccess
     }
+
+    override suspend fun startElementCall(
+        roomId: String,
+        intent: CallIntent,
+        elementCallUrl: String?,
+        observer: CallWidgetObserver
+    ): CallSession? {
+        val ffiIntent = when (intent) {
+            CallIntent.StartCall -> mages.ElementCallIntent.START_CALL
+            CallIntent.JoinExisting -> mages.ElementCallIntent.JOIN_EXISTING
+        }
+        val cb = object : mages.CallWidgetObserver {
+            override fun onToWidget(message: String) {
+                observer.onToWidget(message)
+            }
+        }
+        return try {
+            val info = client.startElementCall(roomId, elementCallUrl, ffiIntent, cb)
+            CallSession(
+                sessionId = info.sessionId,
+                widgetUrl = info.widgetUrl
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    override fun callWidgetFromWebview(sessionId: ULong, message: String): Boolean =
+        runCatching { client.callWidgetFromWebview(sessionId, message) }.isSuccess
+
+    override fun stopElementCall(sessionId: ULong): Boolean =
+        client.stopElementCall(sessionId)
 }
 
 

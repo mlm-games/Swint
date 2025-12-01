@@ -9,7 +9,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import org.mlm.mages.*
 import org.mlm.mages.matrix.*
+import org.mlm.mages.platform.CallWebViewController
 import org.mlm.mages.platform.Notifier
+import org.mlm.mages.ui.ActiveCallUi
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.AttachmentData
 
@@ -59,6 +61,8 @@ class RoomViewModel(
     private var dmPeer: String? = null
     private var uploadJob: Job? = null
     private var typingJob: Job? = null
+
+    private var callWebViewController: CallWebViewController? = null
 
     init {
         initialize()
@@ -529,6 +533,50 @@ class RoomViewModel(
         launch {
             _events.send(Event.NavigateToThread(currentState.roomId, event.eventId, currentState.roomName))
         }
+    }
+
+    fun startCall(intent: CallIntent = CallIntent.StartCall) {
+        if (currentState.activeCall != null) return
+
+        launch {
+            val roomId = currentState.roomId
+            val session = service.startCall(
+                roomId = roomId,
+                intent = intent,
+                elementCallUrl = null, // own setting later
+            ) { messageFromSdk ->
+                // SDK -> app -> widget
+                callWebViewController?.sendToWidget(messageFromSdk)
+            }
+
+            if (session != null) {
+                updateState {
+                    copy(
+                        activeCall = ActiveCallUi(
+                            sessionId = session.sessionId,
+                            widgetUrl = session.widgetUrl
+                        )
+                    )
+                }
+            } else {
+                _events.send(Event.ShowError("Failed to start call"))
+            }
+        }
+    }
+
+    fun onCallWidgetMessage(message: String) {
+        val sid = _state.value.activeCall?.sessionId ?: return
+        service.sendCallWidgetMessage(sid, message)
+    }
+
+    fun attachCallWebViewController(controller: CallWebViewController?) {
+        callWebViewController = controller
+    }
+
+    fun endCall() {
+        _state.value.activeCall?.sessionId?.let { service.stopCall(it) }
+        callWebViewController = null
+        _state.update { it.copy(activeCall = null) }
     }
 
     //  Private Helpers 

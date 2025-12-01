@@ -19,10 +19,14 @@ matrix-sdk = { version = "0.14", default-features = false, features = [
     "sso-login",
     "automatic-room-key-forwarding",
     "bundled-sqlite",
+    "experimental-widgets",
+    # "uniffi",
 ] }
 matrix-sdk-ui = { version = "0.14", default-features = false, features = [
     "rustls-tls",
 ] }
+matrix-sdk-base = "0.14"
+matrix-sdk-crypto = "0.14"
 futures-util = "0.3"
 
 
@@ -36,9 +40,7 @@ tracing = "0.1"
 thiserror = "2"
 mime = "0.3"
 rand = "0.9.2"
-matrix-sdk-base = "0.14"
 blake3 = "1.8.2"
-matrix-sdk-crypto = "0.14"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 js_int = "0.2.2"
 

@@ -1,6 +1,9 @@
 package org.mlm.mages
 
 import kotlinx.coroutines.flow.Flow
+import org.mlm.mages.matrix.CallIntent
+import org.mlm.mages.matrix.CallSession
+import org.mlm.mages.matrix.CallWidgetObserver
 import org.mlm.mages.matrix.DeviceSummary
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.SendUpdate
@@ -148,4 +151,21 @@ class MatrixService(val port: MatrixPort) {
     suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean =
         runCatching { port.spaceInviteUser(spaceId, userId) }.getOrDefault(false)
 
+    suspend fun startCall(
+        roomId: String,
+        intent: CallIntent,
+        elementCallUrl: String? = null,
+        onToWidget: (String) -> Unit
+    ): CallSession? {
+        val observer = object : CallWidgetObserver {
+            override fun onToWidget(message: String) = onToWidget(message)
+        }
+        return port.startElementCall(roomId, intent, elementCallUrl, observer)
+    }
+
+    fun sendCallWidgetMessage(sessionId: ULong, message: String): Boolean =
+        port.callWidgetFromWebview(sessionId, message)
+
+    fun stopCall(sessionId: ULong): Boolean =
+        port.stopElementCall(sessionId)
 }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -21,10 +22,13 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.matrix.SendState
+import org.mlm.mages.platform.CallWebViewController
+import org.mlm.mages.platform.CallWebViewHost
 import org.mlm.mages.platform.ShareContent
 import org.mlm.mages.platform.rememberFilePicker
 import org.mlm.mages.platform.rememberFileOpener
 import org.mlm.mages.platform.rememberShareHandler
+import org.mlm.mages.ui.ActiveCallUi
 import org.mlm.mages.ui.components.RoomUpgradeBanner
 import org.mlm.mages.ui.components.attachment.AttachmentPicker
 import org.mlm.mages.ui.components.attachment.AttachmentProgress
@@ -56,6 +60,7 @@ fun RoomScreen(
     onOpenInfo: () -> Unit,
     onNavigateToRoom: (roomId: String, name: String) -> Unit,
     onNavigateToThread: (roomId: String, eventId: String, roomName: String) -> Unit,
+    onStartCall: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     val scope = rememberCoroutineScope()
@@ -155,7 +160,9 @@ fun RoomScreen(
                 onBack = onBack,
                 onOpenInfo = onOpenInfo,
                 onOpenNotifications = viewModel::showNotificationSettings,
-                onOpenMembers = viewModel::showMembers
+                onOpenMembers = viewModel::showMembers,
+                onStartCall = onStartCall,
+                hasActiveCall = state.activeCall != null,
             )
         },
         bottomBar = {
@@ -346,6 +353,16 @@ fun RoomScreen(
         )
     }
 
+    val activeCall = state.activeCall
+    if (activeCall != null) {
+        CallOverlay(
+            activeCall = activeCall,
+            onMessageFromWidget = viewModel::onCallWidgetMessage,
+            onEndCall = viewModel::endCall,
+            onAttachController = viewModel::attachCallWebViewController
+        )
+    }
+
     // Message action sheet
     sheetEvent?.let { event ->
         val isMine = event.sender == state.myUserId
@@ -367,8 +384,6 @@ fun RoomScreen(
     }
 }
 
-//  Sub-composables 
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RoomTopBar(
@@ -376,10 +391,12 @@ private fun RoomTopBar(
     roomId: String,
     typingNames: List<String>,
     isOffline: Boolean,
+    hasActiveCall: Boolean,
     onBack: () -> Unit,
     onOpenInfo: () -> Unit,
     onOpenNotifications: () -> Unit,
-    onOpenMembers: () -> Unit
+    onOpenMembers: () -> Unit,
+    onStartCall: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
         Column {
@@ -431,6 +448,9 @@ private fun RoomTopBar(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onStartCall, enabled = !hasActiveCall) {
+                        Icon(Icons.Default.Call, "Start call")
+                    }
                     IconButton(onClick = onOpenNotifications) {
                         Icon(Icons.Default.Notifications, "Notifications")
                     }
@@ -664,5 +684,62 @@ private fun DateHeader(date: String) {
             modifier = Modifier.weight(1f),
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
         )
+    }
+}
+
+@Composable
+private fun CallOverlay(
+    activeCall: ActiveCallUi,
+    onMessageFromWidget: (String) -> Unit,
+    onEndCall: () -> Unit,
+    onAttachController: (CallWebViewController?) -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+        tonalElevation = 12.dp,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            // Simple call header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(Spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "Call in progress",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TextButton(onClick = onEndCall) {
+                    Icon(
+                        Icons.Default.CallEnd,
+                        "End call",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("End", color = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            // WebView host fills remaining space
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(Spacing.md)
+            ) {
+                val controller = CallWebViewHost(
+                    widgetUrl = activeCall.widgetUrl,
+                    onMessageFromWidget = onMessageFromWidget,
+                    onClosed = onEndCall
+                )
+
+                LaunchedEffect(controller) {
+                    onAttachController(controller)
+                }
+            }
+        }
     }
 }

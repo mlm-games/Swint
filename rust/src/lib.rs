@@ -125,6 +125,10 @@ use matrix_sdk::ruma::{
     },
     presence::PresenceState,
 };
+use matrix_sdk::widget::{
+    Capabilities, CapabilitiesProvider, ClientProperties, EncryptionSystem, Intent as WidgetIntent,
+    VirtualElementCallWidgetOptions, WidgetDriver, WidgetDriverHandle, WidgetSettings,
+};
 use std::panic::AssertUnwindSafe;
 
 // UniFFI macro-first setup
@@ -578,6 +582,30 @@ impl From<PredecessorRoom> for PredecessorRoomInfo {
     }
 }
 
+#[derive(Clone, Copy, Enum)]
+pub enum ElementCallIntent {
+    /// Start a new call in this room.
+    StartCall,
+    /// Join an existing call in this room.
+    JoinExisting,
+}
+
+#[derive(Clone, Record)]
+pub struct CallSessionInfo {
+    /// Token to identify this running call session on the Rust side.
+    pub session_id: u64,
+    /// Fully-expanded Element Call URL to load into a WebView.
+    pub widget_url: String,
+}
+
+#[export(callback_interface)]
+pub trait CallWidgetObserver: Send + Sync {
+    /// Called whenever a JSON `postMessage` payload needs to go *to* the widget.
+    ///
+    /// Kotlin should forward this verbatim into the WebView using `postMessage`.
+    fn on_to_widget(&self, message: String);
+}
+
 fn cache_dir(dir: &PathBuf) -> PathBuf {
     dir.join("media_cache")
 }
@@ -670,6 +698,9 @@ pub struct Client {
     send_handles_by_txn: Mutex<HashMap<String, matrix_sdk::send_queue::SendHandle>>,
     call_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
     live_location_subs: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    widget_handles: Mutex<HashMap<u64, WidgetDriverHandle>>,
+    widget_driver_tasks: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    widget_recv_tasks: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone, Enum)]
@@ -817,6 +848,9 @@ impl Client {
             send_handles_by_txn: Mutex::new(HashMap::new()),
             call_subs: Mutex::new(HashMap::new()),
             live_location_subs: Mutex::new(HashMap::new()),
+            widget_handles: Mutex::new(HashMap::new()),
+            widget_driver_tasks: Mutex::new(HashMap::new()),
+            widget_recv_tasks: Mutex::new(HashMap::new()),
         };
 
         {
@@ -1347,6 +1381,13 @@ impl Client {
         for (_, h) in self.live_location_subs.lock().unwrap().drain() {
             h.abort();
         }
+        for (_, h) in self.widget_driver_tasks.lock().unwrap().drain() {
+            h.abort();
+        }
+        for (_, h) in self.widget_recv_tasks.lock().unwrap().drain() {
+            h.abort();
+        }
+        self.widget_handles.lock().unwrap().clear();
     }
 
     pub fn logout(&self) -> bool {
@@ -4490,6 +4531,174 @@ impl Client {
             room.predecessor_room().map(Into::into)
         })
     }
+
+    /// Start or join an Element Call session for a room.
+    ///
+    /// `element_call_url`:
+    ///   - `None` -> use "https://call.element.io".
+    ///   - `Some(url)` -> use a self-hosted Element Call instance.
+    ///
+    /// Returns a session token + a fully-expanded URL for the WebView.
+    pub fn start_element_call(
+        &self,
+        room_id: String,
+        element_call_url: Option<String>,
+        intent: ElementCallIntent,
+        observer: Box<dyn CallWidgetObserver>,
+    ) -> Result<CallSessionInfo, FfiError> {
+        let inner = self.inner.clone();
+        let obs: Arc<dyn CallWidgetObserver> = Arc::from(observer);
+        let session_id = self.next_sub_id();
+
+        // Step 1: build WidgetSettings + final WebView URL using the SDK helpers.
+        let (widget_settings, widget_url) = RT.block_on(async {
+            let rid = OwnedRoomId::try_from(room_id.as_str())
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+            let Some(room) = inner.get_room(&rid) else {
+                return Err(FfiError::Msg("room not found".into()));
+            };
+
+            let options = VirtualElementCallWidgetOptions {
+                element_call_url: element_call_url
+                    .unwrap_or_else(|| "https://call.element.io".to_owned()),
+                widget_id: format!("mages-ecall-{}", session_id),
+
+                // Target for postMessage; for a dedicated webview, letting this be None
+                // makes it default to `element_call_url`.
+                parent_url: None,
+
+                preload: Some(true),
+                app_prompt: Some(true),
+                confine_to_room: Some(true),
+
+                font_scale: None,
+                font: None,
+
+                // E2EE by default.
+                encryption: EncryptionSystem::PerParticipantKeys,
+
+                // Map our own intent enum into the SDK’s.
+                intent: Some(match intent {
+                    ElementCallIntent::StartCall => WidgetIntent::StartCall,
+                    ElementCallIntent::JoinExisting => WidgetIntent::JoinExisting,
+                }),
+
+                hide_screensharing: false,
+
+                // No analytics / Sentry / rageshake by default.
+                posthog_user_id: None,
+                posthog_api_host: None,
+                posthog_api_key: None,
+                rageshake_submit_url: None,
+                sentry_dsn: None,
+                sentry_environment: None,
+
+                // Let the webview manage media devices (mobile use‑case).
+                controlled_media_devices: false,
+
+                // Don’t request any special call notifications.
+                send_notification_type: None,
+                ..Default::default()
+            };
+
+            let settings = WidgetSettings::new_virtual_element_call_widget(options)
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            // Client properties: pass client id so EC can brand / adapt.
+            let client_props = ClientProperties::new("org.mlm.mages", None, None);
+
+            // Generate the actual WebView URL (with userId, roomId, baseUrl, theme, etc).
+            let url = settings
+                .generate_webview_url(&room, client_props)
+                .await
+                .map_err(|e| FfiError::Msg(e.to_string()))?;
+
+            Ok::<_, FfiError>((settings, url.to_string()))
+        })?;
+
+        // Step 2: start the widget driver & hook it to the observer.
+        let (driver, handle) = WidgetDriver::new(widget_settings);
+        let cap_provider = AllCapabilitiesProvider;
+
+        // Store handle so Kotlin can send messages into the widget.
+        self.widget_handles
+            .lock()
+            .unwrap()
+            .insert(session_id, handle.clone());
+
+        // Forward messages from the widget -> Kotlin -> WebView.
+        let recv_task = {
+            let obs = obs.clone();
+            RT.spawn(async move {
+                while let Some(msg) = handle.recv().await {
+                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        obs.on_to_widget(msg);
+                    }));
+                }
+            })
+        };
+        self.widget_recv_tasks
+            .lock()
+            .unwrap()
+            .insert(session_id, recv_task);
+
+        // Run the driver against this room in the background.
+        let inner2 = self.inner.clone();
+        let room_str = room_id.clone();
+        let driver_task = RT.spawn(async move {
+            if let Ok(rid) = OwnedRoomId::try_from(room_str.as_str()) {
+                if let Some(room) = inner2.get_room(&rid) {
+                    let _ = driver.run(room, cap_provider).await;
+                }
+            }
+        });
+        self.widget_driver_tasks
+            .lock()
+            .unwrap()
+            .insert(session_id, driver_task);
+
+        Ok(CallSessionInfo {
+            session_id,
+            widget_url,
+        })
+    }
+
+    /// Called by the platform when the WebView receives a postMessage from Element Call.
+    ///
+    /// `message` must be the JSON string from `event.data`.
+    pub fn call_widget_from_webview(&self, session_id: u64, message: String) -> bool {
+        if let Some(handle) = self
+            .widget_handles
+            .lock()
+            .unwrap()
+            .get(&session_id)
+            .cloned()
+        {
+            RT.spawn(async move {
+                let _ = handle.send(message).await;
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Stop an Element Call widget session: aborts driver + recv loops and drops the handle.
+    pub fn stop_element_call(&self, session_id: u64) -> bool {
+        let mut any = false;
+
+        if let Some(h) = self.widget_driver_tasks.lock().unwrap().remove(&session_id) {
+            h.abort();
+            any = true;
+        }
+        if let Some(h) = self.widget_recv_tasks.lock().unwrap().remove(&session_id) {
+            h.abort();
+            any = true;
+        }
+        self.widget_handles.lock().unwrap().remove(&session_id);
+
+        any
+    }
 }
 
 impl Client {
@@ -5131,4 +5340,14 @@ fn fetch_reply_if_needed(ei: &EventTimelineItem, tl: &Arc<Timeline>) {
 #[export(callback_interface)]
 pub trait UrlOpener: Send + Sync {
     fn open(&self, url: String) -> bool;
+}
+
+#[derive(Clone)]
+struct AllCapabilitiesProvider;
+
+impl CapabilitiesProvider for AllCapabilitiesProvider {
+    async fn acquire_capabilities(&self, requested_capabilities: Capabilities) -> Capabilities {
+        // Minimal, grant whatever is asked
+        requested_capabilities
+    }
 }
