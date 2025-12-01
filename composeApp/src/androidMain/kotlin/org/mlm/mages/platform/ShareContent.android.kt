@@ -16,36 +16,40 @@ actual fun rememberShareHandler(): (ShareContent) -> Unit {
         { content ->
             try {
                 val intent = Intent(Intent.ACTION_SEND).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     content.subject?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
 
-                    if (content.filePath == null && content.text != null) {
-                        // Text-only share
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, content.text)
-                    } else if (content.filePath != null) {
-                        val file = File(content.filePath)
-                        val uri: Uri = FileProvider.getUriForFile(
-                            context,
-                            context.packageName + ".fileprovider",
-                            file
-                        )
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        type = content.mimeType ?: "*/*"
-                        content.text?.let { putExtra(Intent.EXTRA_TEXT, it) }
-                    } else {
-                        // Nothing to share
-                        return@remember
+                    when {
+                        content.filePath == null && content.text != null -> {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, content.text)
+                        }
+                        content.filePath != null -> {
+                            val file = File(content.filePath)
+
+                            if (!file.exists() || !file.canRead()) {
+                                return@remember
+                            }
+
+                            val uri: Uri = FileProvider.getUriForFile(
+                                context,
+                                context.packageName + ".provider",
+                                file
+                            )
+
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            type = content.mimeType ?: "*/*"
+                            content.text?.let { putExtra(Intent.EXTRA_TEXT, it) }
+                        }
+                        else -> return@remember
                     }
                 }
 
-                context.startActivity(
-                    Intent.createChooser(intent, null)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            } catch (_: Throwable) {
-                // Best-effort
+                val chooser = Intent.createChooser(intent, null)
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(chooser)
+            } catch (e: Throwable) {
+                e.printStackTrace()
             }
         }
     }

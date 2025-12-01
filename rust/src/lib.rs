@@ -3134,7 +3134,6 @@ impl Client {
         let dir = cache_dir(&self.store_dir);
         ensure_dir(&dir);
 
-        // Safe-ish filename
         fn sanitize(name: &str) -> String {
             let mut s = String::with_capacity(name.len());
             for ch in name.chars() {
@@ -3146,6 +3145,7 @@ impl Client {
             }
             s.trim_matches('_').to_string()
         }
+
         let hint = filename_hint
             .as_deref()
             .map(sanitize)
@@ -3169,9 +3169,16 @@ impl Client {
                 .await
                 .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
 
-            handle
-                .persist(&out)
-                .map_err(|e| FfiError::Msg(format!("persist: {e}")))?;
+            // Try persist then copy (perf. for bigger files)
+            match handle.persist(&out) {
+                Ok(_) => {}
+                Err(persist_error) => {
+                    // cross-device link err
+                    let src_path = persist_error.file.path();
+                    std::fs::copy(src_path, &out)
+                        .map_err(|e| FfiError::Msg(format!("copy fallback failed: {e}")))?;
+                }
+            }
 
             let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             Ok(DownloadResult {
