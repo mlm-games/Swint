@@ -2,5 +2,6 @@
 <paths>
     <cache-path name="cache" path="." />
     <external-cache-path name="ext_cache" path="." />
+    <cache-path name="share_temp" path="share_temp/" />
     <files-path name="files" path="." />
 </paths>
