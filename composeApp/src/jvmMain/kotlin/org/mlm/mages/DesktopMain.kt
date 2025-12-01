@@ -2,123 +2,173 @@
 
 package org.mlm.mages
 
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.window.Tray
+import androidx.compose.runtime.*
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import dorkbox.systemTray.MenuItem
+import dorkbox.systemTray.SystemTray
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import mages.composeapp.generated.resources.Res
-import mages.composeapp.generated.resources.ic_notif
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.DBusInterface
 import org.freedesktop.dbus.types.UInt32
 import org.freedesktop.dbus.types.Variant
-import org.jetbrains.compose.resources.painterResource
 import org.mlm.mages.matrix.createMatrixPort
 import org.mlm.mages.platform.MagesPaths
 import org.mlm.mages.platform.Notifier
-import org.mlm.mages.storage.loadBoolean
-import org.mlm.mages.storage.loadString
-import org.mlm.mages.storage.provideAppDataStore
-import org.mlm.mages.storage.saveBoolean
+import org.mlm.mages.storage.*
 import java.io.IOException
+import javax.swing.SwingUtilities
 
 private const val PREF_START_IN_TRAY = "pref.startInTray"
 
-
-
 fun main() = application {
-    val dataStore = provideAppDataStore()
+    MagesPaths.init()
+
+    val dataStore = remember { provideAppDataStore() }
+
     val initialStartInTray = remember {
         runBlocking { loadBoolean(dataStore, PREF_START_IN_TRAY) ?: false }
     }
+
     var startInTray by remember { mutableStateOf(initialStartInTray) }
     var showWindow by remember { mutableStateOf(!startInTray) }
+
     val scope = rememberCoroutineScope()
 
-    var service: MatrixService? = null
+    var service by remember { mutableStateOf<MatrixService?>(null) }
+    val serviceLock = remember { Any() }
 
-    fun get(): MatrixService {
+    fun getService(): MatrixService {
         service?.let { return it }
-        synchronized(this) {
+        return synchronized(serviceLock) {
             service?.let { return it }
-            // Ensure store paths
-            MagesPaths.init()
-            // Use saved homeserver or sensible default
+
             val hs = runBlocking { loadString(dataStore, "homeserver") } ?: "https://matrix.org"
-            val s = MatrixService(createMatrixPort(hs))
-            service = s
-            return s
+            MatrixService(createMatrixPort(hs)).also { created ->
+                service = created
+            }
         }
     }
 
-    val trayIcon = painterResource(Res.drawable.ic_notif)
+    val windowState = rememberWindowState()
 
-    Tray(
-//        icon = painterResource("fastlane/android/metadata/en-US/images/icon.svg"), // fallback
-        icon = trayIcon,
-        tooltip = "Mages",
-        onAction = { showWindow = true },
-        menu = {
-            Item("Show",
-//                trayIcon, shortcut = KeyShortcut(Key.A, true) // TODO: Check why this doesn't build (most likely not supported for wayland yet)
-            ) { showWindow = true; }
-            Separator()
-            Item(if (startInTray) "✓ Minimize to tray on launch" else "Minimize to tray on launch") {
+    val tray: SystemTray? = remember {
+        // Enable this if you need diagnostics in the console
+        SystemTray.DEBUG = false
+
+        val osName = System.getProperty("os.name").lowercase()
+        // Work around some macOS issues by forcing Swing
+        if (osName.contains("mac")) {
+            SystemTray.FORCE_TRAY_TYPE = SystemTray.TrayType.Swing
+        }
+
+        val t = SystemTray.get()
+        if (t == null) {
+            println("SystemTray.get() returned null – no tray available on this platform/configuration.")
+        }
+        t
+    }
+
+    DisposableEffect(tray) {
+        if (tray == null) {
+            return@DisposableEffect onDispose { }
+        }
+
+        val iconStream = Thread.currentThread()
+            .contextClassLoader
+            .getResourceAsStream("ic_notif.png")
+
+        if (iconStream != null) {
+            tray.setImage(iconStream)
+        } else {
+            println("Error: icon not found on classpath.")
+        }
+
+        tray.setStatus("Mages")
+
+        tray.menu.add(MenuItem("Show").apply {
+            setCallback {
+                // Dorkbox callbacks are on their own thread – bounce to EDT/Compose thread
+                SwingUtilities.invokeLater {
+                    showWindow = true
+                }
+            }
+        })
+
+        tray.menu.add(dorkbox.systemTray.Separator())
+
+        val minimizeItem = MenuItem(
+            if (startInTray) "✓ Minimize to tray on launch"
+            else "Minimize to tray on launch"
+        )
+
+        minimizeItem.setCallback {
+            SwingUtilities.invokeLater {
                 startInTray = !startInTray
-                scope.launch { saveBoolean(dataStore, PREF_START_IN_TRAY, startInTray) }
+                minimizeItem.text =
+                    if (startInTray) "✓ Minimize to tray on launch"
+                    else "Minimize to tray on launch"
             }
-            Separator()
-            Item("Quit") { exitApplication() }
+
+            scope.launch {
+                saveBoolean(dataStore, PREF_START_IN_TRAY, startInTray)
+            }
         }
-    )
+        tray.menu.add(minimizeItem)
 
-    // hide on close (go to tray)
-    if (showWindow) {
-        val windowState = rememberWindowState()
-        Window(
-            onCloseRequest = { showWindow = false },
-            state = windowState,
-            title = "Mages"
-        ) {
-            val window = this.window
+        tray.menu.add(dorkbox.systemTray.Separator())
 
-            DisposableEffect(window) {
-                val listener = object : java.awt.event.WindowFocusListener {
-                    override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
-                        Notifier.setWindowFocused(true)
-                    }
-
-                    override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
-                        Notifier.setWindowFocused(false)
-                    }
-                }
-                window.addWindowFocusListener(listener)
-
-                Notifier.setWindowFocused(window.isFocused)
-
-                onDispose {
-                    window.removeWindowFocusListener(listener)
-                    Notifier.setWindowFocused(false)  // Assume unfocused when window closes
+        tray.menu.add(MenuItem("Quit").apply {
+            setCallback {
+                SwingUtilities.invokeLater {
+                    tray.shutdown()
+                    exitApplication()
                 }
             }
+        })
 
-            App(dataStore, get())
+        onDispose {
+            tray.shutdown()
         }
     }
 
-    MagesPaths.init()
-}
+    Window(
+        onCloseRequest = {
+            showWindow = false
+        },
+        state = windowState,
+        visible = showWindow,
+        title = "Mages"
+    ) {
+        val window = this.window
 
+        DisposableEffect(window) {
+            val listener = object : java.awt.event.WindowFocusListener {
+                override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
+                    Notifier.setWindowFocused(true)
+                }
+
+                override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
+                    Notifier.setWindowFocused(false)
+                }
+            }
+
+            window.addWindowFocusListener(listener)
+            Notifier.setWindowFocused(window.isFocused)
+
+            onDispose {
+                window.removeWindowFocusListener(listener)
+                Notifier.setWindowFocused(false)
+            }
+        }
+
+        App(dataStore, getService())
+    }
+}
 
 object NotifierImpl {
     private var conn: DBusConnection? = null
@@ -164,7 +214,6 @@ object NotifierImpl {
         }
     }
 
-    // DBus interface def
     @DBusInterfaceName("org.freedesktop.Notifications")
     interface Notifications : DBusInterface {
         fun Notify(

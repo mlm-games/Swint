@@ -68,6 +68,7 @@ kotlin {
             implementation(libs.dbus.java.core)
             implementation(libs.dbus.java.transport.native.unixsocket)
             implementation(libs.slf4j.simple)
+            implementation("com.dorkbox:SystemTray:4.4")
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

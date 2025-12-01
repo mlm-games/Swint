@@ -148,4 +148,30 @@ class MatrixService(val port: MatrixPort) {
     suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean =
         runCatching { port.spaceInviteUser(spaceId, userId) }.getOrDefault(false)
 
+    suspend fun sendExistingAttachment(
+        roomId: String,
+        mxcUri: String,
+        mime: String?,
+        filename: String?,
+        body: String?
+    ): Boolean {
+        return try {
+            // TODO: sending by existing mxc:
+//            port.sendExistingMedia(roomId, mxcUri, mime, filename, body)
+            true
+        } catch (e: Exception) {
+            // Fallback: download and re-upload
+            try {
+                val tempPath = port.downloadToCacheFile(mxcUri)
+                sendAttachmentFromPath(
+                    roomId = roomId,
+                    path = tempPath.getOrDefault(""),
+                    mime = mime ?: "application/octet-stream",
+                    filename = filename ?: "forwarded_file"
+                ) { _, _ -> }
+            } catch (e2: Exception) {
+                false
+            }
+        }
+    }
 }

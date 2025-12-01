@@ -42,6 +42,7 @@ import org.mlm.mages.ui.components.sheets.MemberListSheet
 import org.mlm.mages.ui.components.sheets.MessageActionSheet
 import org.mlm.mages.ui.components.sheets.PollCreatorSheet
 import org.mlm.mages.ui.components.sheets.RoomNotificationSheet
+import org.mlm.mages.ui.components.sheets.RoomPickerSheet
 import org.mlm.mages.ui.theme.Spacing
 import org.mlm.mages.ui.util.formatDate
 import org.mlm.mages.ui.util.formatTime
@@ -362,7 +363,20 @@ fun RoomScreen(
                 { viewModel.retry(event); sheetEvent = null }
             } else null,
             onReplyInThread = { viewModel.openThread(event); sheetEvent = null },
-            onShare = { viewModel.shareMessage(event) }, // TODO: Doesn't work yet, also add forward action
+            onShare = { viewModel.shareMessage(event) },
+            onForward = { viewModel.startForward(event); sheetEvent = null },
+        )
+    }
+
+    if (state.showForwardPicker && state.forwardingEvent != null) {
+        RoomPickerSheet(
+            event = state.forwardingEvent!!,
+            rooms = viewModel.filteredForwardRooms,
+            isLoading = state.isLoadingForwardRooms,
+            searchQuery = state.forwardSearchQuery,
+            onSearchChange = viewModel::setForwardSearch,
+            onRoomSelected = viewModel::forwardTo,
+            onDismiss = viewModel::cancelForward
         )
     }
 }

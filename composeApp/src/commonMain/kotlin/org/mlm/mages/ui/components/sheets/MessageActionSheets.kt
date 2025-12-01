@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -40,6 +41,7 @@ fun MessageActionSheet(
     onRetry: (() -> Unit)? = null,
     onReplyInThread: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
+    onForward: (() -> Unit)? = null,
 ) {
     val clipboard = LocalClipboardManager.current
 
@@ -57,10 +59,10 @@ fun MessageActionSheet(
             }
             ActionItem(Icons.Default.ContentCopy, "Copy") { clipboard.setText(AnnotatedString(event.body)); onDismiss() }
             if (onShare != null) {
-                ActionItem(Icons.Default.Share, "Share") {
-                    onShare()
-                    onDismiss()
-                }
+                ActionItem(Icons.Default.Share, "Share") { onShare(); onDismiss() }
+            }
+            if (onForward != null) {
+                ActionItem(Icons.AutoMirrored.Filled.Forward, "Forward") { onForward(); onDismiss() }
             }
             ActionItem(Icons.AutoMirrored.Filled.Reply, "Reply") { onReply(); onDismiss() }
             if (onReplyInThread != null) {

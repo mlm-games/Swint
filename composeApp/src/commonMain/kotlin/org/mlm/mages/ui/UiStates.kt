@@ -85,6 +85,21 @@ data class RoomUiState(
     val showMembers: Boolean = false,
     val selectedMemberForAction: MemberSummary? = null,
     val showInviteDialog: Boolean = false,
+
+    val showForwardPicker: Boolean = false,
+    val forwardingEvent: MessageEvent? = null,
+    val forwardableRooms: List<ForwardableRoom> = emptyList(),
+    val isLoadingForwardRooms: Boolean = false,
+    val forwardSearchQuery: String = "",
+)
+
+
+data class ForwardableRoom(
+    val roomId: String,
+    val name: String,
+    val avatarUrl: String?,
+    val isDm: Boolean,
+    val lastActivity: Long
 )
 
 data class PresenceUiState(

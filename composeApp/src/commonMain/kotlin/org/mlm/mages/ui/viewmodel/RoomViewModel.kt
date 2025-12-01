@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.*
 import org.mlm.mages.*
 import org.mlm.mages.matrix.*
 import org.mlm.mages.platform.Notifier
+import org.mlm.mages.ui.ForwardableRoom
 import org.mlm.mages.ui.RoomUiState
 import org.mlm.mages.ui.components.AttachmentData
 
@@ -519,6 +520,108 @@ class RoomViewModel(
                 _events.send(Event.NavigateToRoom(dmId, userId))
             } else {
                 _events.send(Event.ShowError("Failed to start conversation"))
+            }
+        }
+    }
+
+    fun startForward(event: MessageEvent) {
+        updateState {
+            copy(
+                forwardingEvent = event,
+                showForwardPicker = true,
+                isLoadingForwardRooms = true,
+                forwardSearchQuery = ""
+            )
+        }
+        loadForwardableRooms()
+    }
+
+    fun cancelForward() {
+        updateState {
+            copy(
+                forwardingEvent = null,
+                showForwardPicker = false,
+                forwardableRooms = emptyList(),
+                forwardSearchQuery = ""
+            )
+        }
+    }
+
+    fun setForwardSearch(query: String) {
+        updateState { copy(forwardSearchQuery = query) }
+    }
+
+    val filteredForwardRooms: List<ForwardableRoom>
+        get() {
+            val query = currentState.forwardSearchQuery.lowercase()
+            return if (query.isBlank()) {
+                currentState.forwardableRooms
+            } else {
+                currentState.forwardableRooms.filter { it.name.lowercase().contains(query) }
+            }
+        }
+
+    fun forwardTo(targetRoomId: String) {
+        val event = currentState.forwardingEvent ?: return
+
+        launch {
+            updateState { copy(showForwardPicker = false) }
+
+            val success = forwardMessage(event, targetRoomId)
+
+            if (success) {
+                _events.send(Event.ShowSuccess("Message forwarded"))
+                // Optionally navigate to the target room
+                val targetName = currentState.forwardableRooms
+                    .find { it.roomId == targetRoomId }?.name ?: "Room"
+                _events.send(Event.NavigateToRoom(targetRoomId, targetName))
+            } else {
+                _events.send(Event.ShowError("Failed to forward message"))
+            }
+
+            updateState { copy(forwardingEvent = null, forwardableRooms = emptyList()) }
+        }
+    }
+
+    private suspend fun forwardMessage(event: MessageEvent, targetRoomId: String): Boolean {
+        return try {
+            val attachment = event.attachment
+
+            if (attachment != null) {
+                service.sendExistingAttachment(
+                    roomId = targetRoomId,
+                    mxcUri = attachment.mxcUri,
+                    mime = attachment.mime,
+                    filename = attachment.mxcUri, // TODO: Add filename to AttachmentInfo
+                    body = event.body.takeIf { it.isNotBlank() && it != attachment.mxcUri }
+                )
+            } else {
+                service.sendMessage(targetRoomId, event.body)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun loadForwardableRooms() {
+        launch {
+            val rooms = runSafe {
+                service.port.listRooms()
+            }?.filter {
+                it.id != currentState.roomId // Exclude current room
+            }?.map { room ->
+                ForwardableRoom(
+                    roomId = room.id,
+                    name = room.name,
+                    avatarUrl = "", //TODO 3 addns
+                    isDm = true,
+                    lastActivity = 0L
+                )
+            }?.sortedByDescending { it.lastActivity } ?: emptyList()
+
+            updateState {
+                copy(forwardableRooms = rooms, isLoadingForwardRooms = false)
             }
         }
     }
