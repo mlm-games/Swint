@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.compose.runtime.remember
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -48,7 +49,7 @@ class MainActivity : ComponentActivity() {
         UnifiedPush.tryUseCurrentOrDefaultDistributor(this) { success ->
             val saved = UnifiedPush.getSavedDistributor(this)
             val dists = UnifiedPush.getDistributors(this)
-            android.util.Log.i(
+            Log.i(
                 "UP-Mages",
                 "tryUseCurrentOrDefaultDistributor success=$success, " +
                         "savedDistributor=$saved, distributors=$dists"

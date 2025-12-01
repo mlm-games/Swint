@@ -20,13 +20,7 @@ import org.mlm.mages.storage.provideAppDataStore
 const val PUSH_PREFS = "unifiedpush_prefs"
 const val PREF_ENDPOINT = "endpoint"
 const val PREF_INSTANCE = "default"
-
-@Serializable
-private data class MatrixPushPayload(
-    val eventId: String? = null,
-    val roomId: String? = null,
-    val prio: String? = null,
-)
+private const val TAG = "UP-Mages"
 
 /**
  * UnifiedPush entrypoint
@@ -36,9 +30,9 @@ class AppPushService : PushService() {
 
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
         val url = endpoint.url
+        Log.i(TAG, "onNewEndpoint: instance=$instance url=$url")
         scope.launch {
             saveEndpoint(applicationContext, url, instance)
-            // Register with Matrix push gateway (same logic as before)
             registerPusher(applicationContext, url, instance, token = null)
         }
     }
@@ -46,45 +40,26 @@ class AppPushService : PushService() {
     override fun onMessage(message: PushMessage, instance: String) {
         val raw = try {
             message.content.toString(Charsets.UTF_8)
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to decode message content", e)
             ""
         }
-        val svc = MatrixProvider.get(this)
-        val pairs = extractMatrixPushPayload(raw) // [(roomId, eventId)]
 
-        if (svc.isLoggedIn() && pairs.isNotEmpty()) {
-            scope.launch {
-                runCatching { svc.port.encryptionCatchupOnce() }
-                var shown = 0
-                for ((roomId, eventId) in pairs) {
-                    val notif =
-                        runCatching { svc.port.fetchNotification(roomId, eventId) }.getOrNull()
-                    if (notif != null) {
-                        val ds = provideAppDataStore(this@AppPushService)
-                        val mode = runCatching {
-                            getRoomNotifMode(
-                                ds,
-                                roomId
-                            )
-                        }.getOrDefault(org.mlm.mages.notifications.RoomNotifMode.Default)
-                        if (shouldNotify(mode, notif.hasMention)) {
-                            AndroidNotificationHelper.showSingleEvent(
-                                this@AppPushService,
-                                AndroidNotificationHelper.NotificationText(
-                                    notif.sender,
-                                    notif.body
-                                ),
-                                roomId, eventId
-                            )
-                            shown++
-                        }
-                    }
-                    if (shown >= 3) break
-                }
-                if (shown == 0) {
-                }
-            }
-        } else {
+        val pairs = extractMatrixPushPayload(raw)
+        Log.i(TAG, "Extracted ${pairs.size} events: $pairs")
+
+        if (pairs.isEmpty()) {
+            Log.w(TAG, "No events extracted from push")
+            return
+        }
+
+        // Show message is unstable with the current method (bg network issues), for now this is fine
+        for ((roomId, eventId) in pairs.take(3)) {
+            AndroidNotificationHelper.showSingleEvent(
+                this,
+                AndroidNotificationHelper.NotificationText("New message", "You have a new message"),
+                roomId, eventId
+            )
         }
     }
 
@@ -113,15 +88,28 @@ class AppPushService : PushService() {
         context: Context,
         endpoint: String,
         instance: String,
-        token: String?,  // for embedded FCM distributor
+        token: String?,
     ) {
+        Log.d("PusherDebug", "=== registerPusher called ===")
+        Log.d("PusherDebug", "endpoint: $endpoint")
+        Log.d("PusherDebug", "instance: $instance")
+
         val gatewayUrl = GatewayResolver.resolveGateway(endpoint)
+        Log.d("PusherDebug", "resolved gateway: $gatewayUrl")
 
         val pushKey = token ?: endpoint
 
         val service = MatrixProvider.get(context)
-        if (service.isLoggedIn()) {
-            service.port.registerUnifiedPush(
+        val loggedIn = service.isLoggedIn()
+        Log.d("PusherDebug", "isLoggedIn: $loggedIn")
+
+        if (!loggedIn) {
+            Log.w("PusherDebug", "NOT LOGGED IN - skipping pusher registration")
+            return
+        }
+
+        try {
+            val result = service.port.registerUnifiedPush(
                 appId = context.packageName,
                 pushKey = pushKey,
                 gatewayUrl = gatewayUrl,
@@ -129,6 +117,9 @@ class AppPushService : PushService() {
                 lang = java.util.Locale.getDefault().toLanguageTag(),
                 profileTag = instance,
             )
+            Log.d("PusherDebug", "registerUnifiedPush result: $result")
+        } catch (e: Exception) {
+            Log.e("PusherDebug", "registerUnifiedPush FAILED", e)
         }
     }
 }

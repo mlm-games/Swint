@@ -618,6 +618,7 @@ struct SessionInfo {
     homeserver: String,
 }
 
+// TODO: remove later (after the login fix, should not be needed)
 fn session_file(dir: &PathBuf) -> PathBuf {
     dir.join("session.json")
 }
@@ -630,13 +631,19 @@ pub enum FfiError {
 
 impl From<matrix_sdk::Error> for FfiError {
     fn from(e: matrix_sdk::Error) -> Self {
-        FfiError::Msg(e.to_string())
+        FfiError::Msg(format!("matrix_sdk error: {e:?}"))
+    }
+}
+
+impl From<matrix_sdk_ui::notification_client::Error> for FfiError {
+    fn from(e: matrix_sdk_ui::notification_client::Error) -> Self {
+        FfiError::Msg(format!("NotificationClient error: {e:?}"))
     }
 }
 
 impl From<std::io::Error> for FfiError {
     fn from(e: std::io::Error) -> Self {
-        FfiError::Msg(e.to_string())
+        FfiError::Msg(format!("io error: {e:?}"))
     }
 }
 
@@ -3229,9 +3236,10 @@ impl Client {
         room_id: String,
         event_id: String,
     ) -> Result<Option<RenderedNotification>, FfiError> {
-        let rid = ruma::OwnedRoomId::try_from(room_id).map_err(|e| FfiError::Msg(e.to_string()))?;
-        let eid =
-            ruma::OwnedEventId::try_from(event_id).map_err(|e| FfiError::Msg(e.to_string()))?;
+        let rid = ruma::OwnedRoomId::try_from(room_id)
+            .map_err(|e| FfiError::Msg(format!("bad room id: {e}")))?;
+        let eid = ruma::OwnedEventId::try_from(event_id)
+            .map_err(|e| FfiError::Msg(format!("bad event id: {e}")))?;
 
         let sync = {
             let g = self.sync_service.lock().unwrap();
@@ -3239,6 +3247,8 @@ impl Client {
                 .cloned()
                 .ok_or_else(|| FfiError::Msg("SyncService not ready".into()))?
         };
+
+        info!("fetch_notification: room_id={}, event_id={}", rid, eid);
 
         let nc = RT
             .block_on(async {
@@ -3248,11 +3258,23 @@ impl Client {
                 )
                 .await
             })
-            .map_err(|e| FfiError::Msg(e.to_string()))?;
+            .map_err(|e| {
+                error!(
+                    "NotificationClient::new failed for room_id={}, event_id={}: {e:?}",
+                    rid, eid
+                );
+                FfiError::from(e)
+            })?;
 
         let status = RT
-            .block_on(async { nc.get_notification(&rid, &eid).await })
-            .map_err(|e| FfiError::Msg(e.to_string()))?;
+        .block_on(async { nc.get_notification(&rid, &eid).await })
+        .map_err(|e| {
+            error!(
+                "NotificationClient::get_notification failed for room_id={}, event_id={}: {e:?}",
+                rid, eid
+            );
+            FfiError::from(e)
+        })?;
 
         match status {
             NotificationStatus::Event(item) => {
