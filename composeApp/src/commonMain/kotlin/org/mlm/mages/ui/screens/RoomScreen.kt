@@ -16,12 +16,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.mlm.mages.MessageEvent
 import org.mlm.mages.matrix.SendState
+import org.mlm.mages.platform.ShareContent
 import org.mlm.mages.platform.rememberFilePicker
 import org.mlm.mages.platform.rememberFileOpener
+import org.mlm.mages.platform.rememberShareHandler
 import org.mlm.mages.ui.components.RoomUpgradeBanner
 import org.mlm.mages.ui.components.attachment.AttachmentPicker
 import org.mlm.mages.ui.components.attachment.AttachmentProgress
@@ -56,20 +59,18 @@ fun RoomScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val scope = rememberCoroutineScope()
+    val shareHandler = rememberShareHandler()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val openExternal = rememberFileOpener()
 
-    // File picker
     val picker = rememberFilePicker { data ->
         if (data != null) viewModel.sendAttachment(data)
         viewModel.hideAttachmentPicker()
     }
 
-    // Selected message for action sheet
     var sheetEvent by remember { mutableStateOf<MessageEvent?>(null) }
 
-    // Collect one-time events
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
             when (event) {
@@ -87,6 +88,15 @@ fun RoomScreen(
                 }
                 is RoomViewModel.Event.NavigateBack -> {
                     onBack()
+                }
+                is RoomViewModel.Event.ShareMessage -> {
+                    shareHandler(
+                        ShareContent(
+                            text = event.text,
+                            filePath = event.filePath,
+                            mimeType = event.mimeType
+                        )
+                    )
                 }
             }
         }
@@ -351,7 +361,8 @@ fun RoomScreen(
             onRetry = if (isMine && event.sendState == SendState.Failed) {
                 { viewModel.retry(event); sheetEvent = null }
             } else null,
-            onReplyInThread = { viewModel.openThread(event); sheetEvent = null }
+            onReplyInThread = { viewModel.openThread(event); sheetEvent = null },
+            onShare = { viewModel.shareMessage(event) }, // TODO: Doesn't work yet, also add forward action
         )
     }
 }
@@ -384,13 +395,14 @@ private fun RoomTopBar(
                                 Text(
                                     roomName.take(2).uppercase(),
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text(roomName, style = MaterialTheme.typography.titleMedium)
+                            Text(roomName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             AnimatedContent(
                                 targetState = typingNames.isNotEmpty(),
                                 transitionSpec = { fadeIn() togetherWith fadeOut() },
@@ -403,15 +415,11 @@ private fun RoomTopBar(
                                         Text(
                                             formatTypingText(typingNames),
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.primary
+                                            color = MaterialTheme.colorScheme.primary,
+                                            overflow = TextOverflow.Ellipsis,
+                                            maxLines = 1,
                                         )
                                     }
-                                } else {
-                                    Text(
-                                        roomId,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
                                 }
                             }
                         }

@@ -42,6 +42,12 @@ class RoomViewModel(
         data class NavigateToThread(val roomId: String, val eventId: String, val roomName: String) : Event()
         data class NavigateToRoom(val roomId: String, val name: String) : Event()
         data object NavigateBack : Event()
+
+        data class ShareMessage(
+            val text: String?,
+            val filePath: String?,
+            val mimeType: String?
+        ) : Event()
     }
 
     private val _events = Channel<Event>(Channel.BUFFERED)
@@ -297,6 +303,36 @@ class RoomViewModel(
             service.downloadToCacheFile(a.mxcUri, nameHint)
                 .onSuccess { path -> onOpen(path, a.mime) }
                 .onFailure { t -> _events.send(Event.ShowError(t.message ?: "Download failed")) }
+        }
+    }
+
+    fun shareMessage(event: MessageEvent) {
+        launch {
+            val text = event.body.takeIf { it.isNotBlank() }
+            val attachment = event.attachment
+
+            if (attachment == null) {
+                // Text-only
+                _events.send(Event.ShareMessage(text = text, filePath = null, mimeType = null))
+            } else {
+                val nameHint = run {
+                    val ext = attachment.mime?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                    val base = event.eventId.ifBlank { "file" }
+                    if (ext != null) "$base.$ext" else base
+                }
+                val res = service.downloadToCacheFile(attachment.mxcUri, nameHint)
+                res.onSuccess { path ->
+                    _events.send(
+                        Event.ShareMessage(
+                            text = text,
+                            filePath = path,
+                            mimeType = attachment.mime
+                        )
+                    )
+                }.onFailure { t ->
+                    _events.send(Event.ShowError(t.message ?: "Failed to prepare share"))
+                }
+            }
         }
     }
 

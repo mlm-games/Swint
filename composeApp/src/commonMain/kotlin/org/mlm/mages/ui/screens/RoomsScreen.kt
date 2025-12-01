@@ -126,7 +126,6 @@ fun RoomsScreen(
                     modifier = Modifier.fillMaxSize().padding(innerPadding),
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
-                    // Favourites section
                     if (state.favouriteRooms.isNotEmpty()) {
                         item(key = "header_favourites") {
                             SectionHeader(
@@ -145,7 +144,6 @@ fun RoomsScreen(
                         }
                     }
 
-                    // Normal rooms section
                     if (state.normalRooms.isNotEmpty()) {
                         if (state.favouriteRooms.isNotEmpty()) {
                             item(key = "header_rooms") {
@@ -165,7 +163,7 @@ fun RoomsScreen(
                         }
                     }
 
-                    // Low priority section
+                    // last
                     if (state.lowPriorityRooms.isNotEmpty()) {
                         item(key = "header_low_priority") {
                             SectionHeader(

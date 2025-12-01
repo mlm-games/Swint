@@ -38,7 +38,8 @@ fun MessageActionSheet(
     onReact: (String) -> Unit,
     onMarkReadHere: () -> Unit,
     onRetry: (() -> Unit)? = null,
-    onReplyInThread: (() -> Unit)? = null
+    onReplyInThread: (() -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
 ) {
     val clipboard = LocalClipboardManager.current
 
@@ -55,6 +56,12 @@ fun MessageActionSheet(
                 ActionItem(Icons.Default.Refresh, "Retry send") { onRetry(); onDismiss() }
             }
             ActionItem(Icons.Default.ContentCopy, "Copy") { clipboard.setText(AnnotatedString(event.body)); onDismiss() }
+            if (onShare != null) {
+                ActionItem(Icons.Default.Share, "Share") {
+                    onShare()
+                    onDismiss()
+                }
+            }
             ActionItem(Icons.AutoMirrored.Filled.Reply, "Reply") { onReply(); onDismiss() }
             if (onReplyInThread != null) {
                 ActionItem(Icons.Default.Forum, "Reply in thread") { onReplyInThread(); onDismiss() }

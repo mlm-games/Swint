@@ -77,12 +77,10 @@ fun SpaceDetailScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Loading indicator
             AnimatedVisibility(visible = state.isLoading && state.hierarchy.isEmpty()) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
-            // Space header card
             state.space?.let { space ->
                 SpaceHeaderCard(space = space)
             }
@@ -108,7 +106,6 @@ fun SpaceDetailScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = Spacing.lg)
                     ) {
-                        // Subspaces section
                         if (state.subspaces.isNotEmpty()) {
                             item(key = "header_subspaces") {
                                 SectionHeader("Spaces", state.subspaces.size)
@@ -121,7 +118,6 @@ fun SpaceDetailScreen(
                             }
                         }
 
-                        // Rooms section
                         if (state.rooms.isNotEmpty()) {
                             item(key = "header_rooms") {
                                 SectionHeader("Rooms", state.rooms.size)
@@ -134,7 +130,6 @@ fun SpaceDetailScreen(
                             }
                         }
 
-                        // Load more button
                         if (state.nextBatch != null) {
                             item(key = "load_more") {
                                 Box(

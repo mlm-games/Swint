@@ -36,7 +36,7 @@ fun RoomInfoRoute(
             when (event) {
                 RoomInfoViewModel.Event.LeaveSuccess -> onLeaveSuccess()
                 is RoomInfoViewModel.Event.OpenRoom -> {
-                    // Navigation handled in App.kt via events (see below) or here if you pass a lambda
+                    // handled in App.kt (no anim though)
                 }
                 is RoomInfoViewModel.Event.ShowError -> snackbarHostState.showSnackbar(event.message)
                 is RoomInfoViewModel.Event.ShowSuccess -> snackbarHostState.showSnackbar(event.message)
@@ -44,7 +44,6 @@ fun RoomInfoRoute(
         }
     }
 
-    // Use your existing RoomInfoScreen composable
     RoomInfoScreen(
         state = state,
         onBack = onBack,
@@ -182,6 +181,7 @@ fun RoomInfoScreen(
                     }
                 }
 
+
                 // Edit name
                 item {
                     EditableField(
@@ -221,19 +221,6 @@ fun RoomInfoScreen(
 
                 item { HorizontalDivider() }
 
-                // Members header
-                item {
-                    Text(
-                        text = "Members (${state.members.size})",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-
-                // Members list
-                items(state.members) { member ->
-                    MemberRow(member)
-                }
-
                 item {
                     state.profile?.let { profile ->
                         PrivacySection(
@@ -257,6 +244,20 @@ fun RoomInfoScreen(
                         )
                     }
                 }
+
+                // Members header (duplicate)
+//                item {
+//                    Text(
+//                        text = "Members (${state.members.size})",
+//                        style = MaterialTheme.typography.titleMedium
+//                    )
+//                }
+//
+//                items(state.members) { member ->
+//                    MemberRow(member)
+//                }
+
+
 
                 item { HorizontalDivider() }
 
@@ -375,11 +376,11 @@ private fun RoomHeader(state: RoomInfoUiState, onOpenRoom: (String) -> Unit) {
                         )
                     }
                 }
-
                 Text(
-                    text = "${profile.memberCount} members",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    profile.roomId,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -450,7 +451,7 @@ private fun EditableField(
         Button(
             onClick = onSave,
             enabled = !isSaving,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
+            modifier = Modifier.align(Alignment.CenterHorizontally).fillMaxWidth()
         ) {
             if (isSaving) {
                 CircularProgressIndicator(

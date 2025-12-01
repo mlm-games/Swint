@@ -9,7 +9,6 @@ import org.mlm.mages.matrix.MatrixProvider
 import org.mlm.mages.platform.AppCtx
 import org.mlm.mages.platform.MagesPaths
 import org.mlm.mages.push.PusherReconciler
-import org.mlm.mages.push.WakeSyncScheduler
 
 class MagesApp : Application() {
     override fun onCreate() {
@@ -18,7 +17,6 @@ class MagesApp : Application() {
         AppCtx.init(this)
         val svc = MatrixProvider.get(this)
         Log.println(Log.INFO, "Mages", "Sync started with status: ${MatrixProvider.ensureSyncStarted()}")
-        WakeSyncScheduler.ensurePeriodic(this)
 
         CoroutineScope(Dispatchers.Default).launch {
             runCatching { PusherReconciler.ensureServerPusherRegistered(this@MagesApp) }
