@@ -7,8 +7,10 @@ android-targetSdk = "36"
 connector = "3.1.2"
 dbusJavaCore = "5.1.1"
 dbusJavaTransportNativeUnixsocket = "5.1.1"
+koinComposeNavigation3 = "4.2.0-alpha3"
 navigation3Ui = "1.0.0-alpha05"
 slf4jSimple = "2.0.17"
+systemtray = "4.4"
 up-fcm = "3.0.0"
 up-ui = "1.1.0"
 androidx-activity = "1.12.0"
@@ -42,6 +44,7 @@ connector-ui = { module = "org.unifiedpush.android:connector-ui", version.ref = 
 dbus-java-transport-native-unixsocket = { module = "com.github.hypfvieh:dbus-java-transport-native-unixsocket", version.ref = "dbusJavaTransportNativeUnixsocket" }
 dbus-java-core = { module = "com.github.hypfvieh:dbus-java-core", version.ref = "dbusJavaCore" }
 embedded-fcm-distributor = { module = "org.unifiedpush.android:embedded-fcm-distributor", version.ref = "up-fcm" }
+koin-compose-navigation3 = { module = "io.insert-koin:koin-compose-navigation3", version.ref = "koinComposeNavigation3" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 junit = { module = "junit:junit", version.ref = "junit" }
@@ -62,6 +65,7 @@ navigation3-ui = { module = "org.jetbrains.androidx.navigation3:navigation3-ui",
 net-jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4jSimple" }
+systemtray = { module = "com.dorkbox:SystemTray", version.ref = "systemtray" }
 uri-kmp = { module = "com.eygraber:uri-kmp", version.ref = "uriKmp" }
 koin-core = { module = "io.insert-koin:koin-core", version.ref = "koin" }
 koin-compose = { module = "io.insert-koin:koin-compose", version.ref = "koin" }

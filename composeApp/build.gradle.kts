@@ -59,6 +59,7 @@ kotlin {
             implementation(libs.koin.core)
             implementation(libs.koin.compose)
             implementation(libs.koin.compose.viewmodel)
+//            implementation(libs.koin.compose.navigation3) Causes a desktop err
         }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
@@ -68,7 +69,7 @@ kotlin {
             implementation(libs.dbus.java.core)
             implementation(libs.dbus.java.transport.native.unixsocket)
             implementation(libs.slf4j.simple)
-            implementation("com.dorkbox:SystemTray:4.4")
+            implementation(libs.systemtray)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
