@@ -10,6 +10,7 @@ import dorkbox.systemTray.MenuItem
 import dorkbox.systemTray.SystemTray
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import mages.composeapp.generated.resources.Res
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
@@ -78,15 +79,11 @@ fun main() = application {
             return@DisposableEffect onDispose { }
         }
 
-        val iconStream = Thread.currentThread()
-            .contextClassLoader
-            .getResourceAsStream("ic_notif.png")
-
-        if (iconStream != null) {
-            tray.setImage(iconStream)
-        } else {
-            println("Error: icon not found on classpath.")
+        val iconBytes = runBlocking {
+            Res.readBytes("files/ic_notif.png")
         }
+
+        tray.setImage(iconBytes.inputStream())
 
         tray.setStatus("Mages")
 
