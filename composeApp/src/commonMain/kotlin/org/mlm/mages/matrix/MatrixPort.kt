@@ -14,11 +14,16 @@ data class DeviceSummary(
 )
 
 sealed class TimelineDiff<out T> {
-    data class Insert<T>(val item: T) : TimelineDiff<T>()
-    data class Update<T>(val item: T) : TimelineDiff<T>()
-    data class Remove(val itemId: String) : TimelineDiff<Nothing>()
-    data object Clear : TimelineDiff<Nothing>()
     data class Reset<T>(val items: List<T>) : TimelineDiff<T>()
+    class Clear<T> : TimelineDiff<T>()
+
+    data class InsertAt<T>(val index: Int, val item: T) : TimelineDiff<T>()
+    data class UpdateAt<T>(val index: Int, val item: T) : TimelineDiff<T>()
+    data class RemoveAt<T>(val index: Int) : TimelineDiff<T>()
+    data class Truncate<T>(val length: Int) : TimelineDiff<T>()
+    data class Append<T>(val items: List<T>) : TimelineDiff<T>()
+    object PopFront : TimelineDiff<Nothing>()
+    object PopBack : TimelineDiff<Nothing>()
 }
 
 enum class SasPhase { Requested, Ready, Emojis, Confirmed, Cancelled, Failed, Done }
@@ -207,6 +212,14 @@ interface MatrixPort {
     suspend fun recent(roomId: String, limit: Int = 50): List<MessageEvent>
     fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>>
     suspend fun send(roomId: String, body: String): Boolean
+
+    suspend fun sendExistingAttachment(
+        roomId: String,
+        attachment: AttachmentInfo,
+        body: String? = null,
+        onProgress: ((Long, Long?) -> Unit)? = null
+    ): Boolean
+
     fun isLoggedIn(): Boolean
     fun close()
 
@@ -236,8 +249,6 @@ interface MatrixPort {
     }
 
     suspend fun retryByTxn(roomId: String, txnId: String): Boolean
-
-    suspend fun downloadToCacheFile(mxcUri: String, filenameHint: String? = null): Result<String>
 
     fun stopTypingObserver(token: ULong)
 
@@ -287,11 +298,17 @@ interface MatrixPort {
         onProgress: ((Long, Long?) -> Unit)? = null,
     ): Boolean
 
-    suspend fun downloadToPath(
-        mxcUri: String,
-        savePath: String,
-        onProgress: ((Long, Long?) -> Unit)? = null,
+    suspend fun downloadAttachmentToCache(
+        info: AttachmentInfo,
+        filenameHint: String? = null
     ): Result<String>
+
+    suspend fun downloadAttachmentToPath(
+        info: AttachmentInfo,
+        savePath: String,
+        onProgress: ((Long, Long?) -> Unit)? = null
+    ): Result<String>
+
 
     suspend fun recoverWithKey(recoveryKey: String): Boolean
     fun observeReceipts(roomId: String, observer: ReceiptsObserver): ULong

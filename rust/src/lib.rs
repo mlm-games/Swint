@@ -3,7 +3,19 @@ use js_int::UInt;
 use matrix_sdk::{
     PredecessorRoom, SuccessorRoom,
     notification_settings::NotificationSettings,
-    ruma::{events::ignored_user_list::IgnoredUserListEventContent, room::Restricted},
+    ruma::{
+        events::{
+            ignored_user_list::IgnoredUserListEventContent,
+            room::{
+                ImageInfo,
+                message::{
+                    FileInfo, FileMessageEventContent, ImageMessageEventContent, VideoInfo,
+                    VideoMessageEventContent,
+                },
+            },
+        },
+        room::Restricted,
+    },
 };
 use matrix_sdk_base::notification_settings::RoomNotificationMode as RsMode;
 use matrix_sdk_ui::{
@@ -1899,47 +1911,6 @@ impl Client {
         })
     }
 
-    pub fn download_to_path(
-        &self,
-        mxc_uri: String,
-        save_path: String,
-        progress: Option<Box<dyn ProgressObserver>>,
-    ) -> Result<DownloadResult, FfiError> {
-        RT.block_on(async {
-            use mime::APPLICATION_OCTET_STREAM;
-
-            let mxc: OwnedMxcUri = mxc_uri.into();
-            let req = MediaRequestParameters {
-                source: MediaSource::Plain(mxc),
-                format: MediaFormat::File,
-            };
-
-            let handle = self
-                .inner
-                .media()
-                .get_media_file(&req, None, &APPLICATION_OCTET_STREAM, true, None)
-                .await
-                .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
-
-            // progress (can stat the temp file)
-            if let Some(p) = progress.as_ref() {
-                if let Ok(md) = std::fs::metadata(handle.path()) {
-                    p.on_progress(md.len(), Some(md.len()));
-                }
-            }
-
-            handle
-                .persist(Path::new(&save_path))
-                .map_err(|e| FfiError::Msg(format!("persist: {e}")))?;
-
-            let bytes = std::fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0);
-            Ok(DownloadResult {
-                path: save_path,
-                bytes,
-            })
-        })
-    }
-
     pub fn start_supervised_sync(&self, observer: Box<dyn SyncObserver>) {
         let obs: Arc<dyn SyncObserver> = Arc::from(observer);
         let svc_slot = self.sync_service.clone();
@@ -3202,11 +3173,11 @@ impl Client {
         })
     }
 
-    /// Download full media into the SDK's cache dir and return its path.
-    /// filename_hint is used to derive a friendly name/extension.
-    pub fn download_to_cache_file(
+    /// Download full media described by AttachmentInfo into the SDK's cache dir.
+    /// `filename_hint` is used to derive a friendly name/extension.
+    pub fn download_attachment_to_cache_file(
         &self,
-        mxc_uri: String,
+        att: AttachmentInfo,
         filename_hint: Option<String>,
     ) -> Result<DownloadResult, FfiError> {
         let dir = cache_dir(&self.store_dir);
@@ -3234,9 +3205,17 @@ impl Client {
         RT.block_on(async {
             use mime::APPLICATION_OCTET_STREAM;
 
-            let mxc: OwnedMxcUri = mxc_uri.into();
+            // IMPORTANT: use encryption info when available
+            let source = if let Some(enc) = att.encrypted.as_ref() {
+                let ef: EncryptedFile = serde_json::from_str(&enc.json)
+                    .map_err(|e| FfiError::Msg(format!("file enc parse: {e}")))?;
+                MediaSource::Encrypted(Box::new(ef))
+            } else {
+                MediaSource::Plain(att.mxc_uri.clone().into())
+            };
+
             let req = MediaRequestParameters {
-                source: MediaSource::Plain(mxc),
+                source,
                 format: MediaFormat::File,
             };
 
@@ -3247,11 +3226,10 @@ impl Client {
                 .await
                 .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
 
-            // Try persist then copy (perf. for bigger files)
+            // Try persist then copy (cross-device link fallback)
             match handle.persist(&out) {
                 Ok(_) => {}
                 Err(persist_error) => {
-                    // cross-device link err
                     let src_path = persist_error.file.path();
                     std::fs::copy(src_path, &out)
                         .map_err(|e| FfiError::Msg(format!("copy fallback failed: {e}")))?;
@@ -3261,6 +3239,55 @@ impl Client {
             let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             Ok(DownloadResult {
                 path: out.to_string_lossy().to_string(),
+                bytes,
+            })
+        })
+    }
+
+    /// Download full media described by AttachmentInfo directly to `save_path`.
+    pub fn download_attachment_to_path(
+        &self,
+        att: AttachmentInfo,
+        save_path: String,
+        progress: Option<Box<dyn ProgressObserver>>,
+    ) -> Result<DownloadResult, FfiError> {
+        RT.block_on(async {
+            use mime::APPLICATION_OCTET_STREAM;
+
+            let source = if let Some(enc) = att.encrypted.as_ref() {
+                let ef: EncryptedFile = serde_json::from_str(&enc.json)
+                    .map_err(|e| FfiError::Msg(format!("file enc parse: {e}")))?;
+                MediaSource::Encrypted(Box::new(ef))
+            } else {
+                MediaSource::Plain(att.mxc_uri.clone().into())
+            };
+
+            let req = MediaRequestParameters {
+                source,
+                format: MediaFormat::File,
+            };
+
+            let handle = self
+                .inner
+                .media()
+                .get_media_file(&req, None, &APPLICATION_OCTET_STREAM, true, None)
+                .await
+                .map_err(|e| FfiError::Msg(format!("download: {e}")))?;
+
+            // simple progress callback using temp file size
+            if let Some(p) = progress.as_ref() {
+                if let Ok(md) = std::fs::metadata(handle.path()) {
+                    p.on_progress(md.len(), Some(md.len()));
+                }
+            }
+
+            handle
+                .persist(Path::new(&save_path))
+                .map_err(|e| FfiError::Msg(format!("persist: {e}")))?;
+
+            let bytes = std::fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0);
+            Ok(DownloadResult {
+                path: save_path,
                 bytes,
             })
         })
@@ -4588,6 +4615,101 @@ impl Client {
                 return None;
             };
             room.predecessor_room().map(Into::into)
+        })
+    }
+
+    pub fn send_existing_attachment(
+        &self,
+        room_id: String,
+        att: AttachmentInfo,
+        body: Option<String>,
+        progress: Option<Box<dyn ProgressObserver>>,
+    ) -> bool {
+        RT.block_on(async {
+            let Ok(rid) = OwnedRoomId::try_from(room_id) else {
+                return false;
+            };
+            let Some(room) = self.inner.get_room(&rid) else {
+                return false;
+            };
+
+            // Text shown in the timeline for this media
+            let default_caption = match att.kind {
+                AttachmentKind::Image => "Image",
+                AttachmentKind::Video => "Video",
+                AttachmentKind::File => "File",
+            };
+            let caption = body.unwrap_or_else(|| default_caption.to_string());
+
+            let media_source = if let Some(enc) = att.encrypted.as_ref() {
+                // Encrypted attachment: parse full EncryptedFile JSON
+                let ef: EncryptedFile = match serde_json::from_str(&enc.json) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("send_existing_attachment: enc parse error: {e}");
+                        return false;
+                    }
+                };
+                MediaSource::Encrypted(Box::new(ef))
+            } else {
+                // Plain mxc:// URL
+                MediaSource::Plain(att.mxc_uri.clone().into())
+            };
+
+            // Build MessageType based on kind + basic metadata
+            let msgtype = match att.kind {
+                AttachmentKind::Image => {
+                    let mut info = ImageInfo::new();
+                    info.mimetype = att.mime.clone();
+                    info.size = att.size_bytes.and_then(UInt::new);
+                    info.width = att.width.map(UInt::from);
+                    info.height = att.height.map(UInt::from);
+
+                    let mut img = ImageMessageEventContent::new(caption.clone(), media_source);
+                    img.info = Some(Box::new(info));
+                    MessageType::Image(img)
+                }
+
+                AttachmentKind::Video => {
+                    let mut info = VideoInfo::new();
+                    info.mimetype = att.mime.clone();
+                    info.size = att.size_bytes.and_then(UInt::new);
+                    info.width = att.width.map(UInt::from);
+                    info.height = att.height.map(UInt::from);
+                    info.duration = att
+                        .duration_ms
+                        .map(|ms| std::time::Duration::from_millis(ms));
+
+                    let mut vid = VideoMessageEventContent::new(caption.clone(), media_source);
+                    vid.info = Some(Box::new(info));
+                    MessageType::Video(vid)
+                }
+
+                AttachmentKind::File => {
+                    let mut info = FileInfo::new();
+                    info.mimetype = att.mime.clone();
+                    info.size = att.size_bytes.and_then(UInt::new);
+
+                    let mut file = FileMessageEventContent::new(caption.clone(), media_source);
+                    file.info = Some(Box::new(info));
+                    MessageType::File(file)
+                }
+            };
+
+            let content = RoomMessageEventContent::new(msgtype);
+
+            // Reuse has no upload, but keep API symmetric: 0 → 1
+            if let Some(p) = progress.as_ref() {
+                p.on_progress(0, None);
+            }
+
+            let res = room.send(content).await;
+
+            if let Some(p) = progress {
+                p.on_progress(1, Some(1));
+            }
+
+            res.is_ok()
         })
     }
 }

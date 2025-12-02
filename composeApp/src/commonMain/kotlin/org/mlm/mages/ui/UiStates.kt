@@ -46,6 +46,7 @@ data class RoomUiState(
     val roomId: String,
     val roomName: String,
     val myUserId: String? = null,
+    val allEvents: List<MessageEvent> = emptyList(),
     val events: List<MessageEvent> = emptyList(),
     val input: String = "",
     val replyingTo: MessageEvent? = null,

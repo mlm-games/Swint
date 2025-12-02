@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import mages.FfiRoomNotificationMode
+import mages.TimelineDiffKind
 import org.mlm.mages.AttachmentInfo
 import org.mlm.mages.AttachmentKind
 import org.mlm.mages.EncFile
@@ -62,23 +63,56 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
         val obs = object : mages.TimelineObserver {
-            override fun onDiff(diff: mages.TimelineDiffKind) {
+            override fun onDiff(diff: TimelineDiffKind) {
                 val mapped: TimelineDiff<MessageEvent> = when (diff) {
-                    is mages.TimelineDiffKind.Reset -> TimelineDiff.Reset(diff.values.map { it.toModel() })
-                    is mages.TimelineDiffKind.Clear -> TimelineDiff.Clear
-                    is mages.TimelineDiffKind.Append -> {
-                        diff.values.forEach { trySendBlocking(TimelineDiff.Insert(it.toModel())) }
-                        return
+                    is TimelineDiffKind.Reset -> {
+                        TimelineDiff.Reset(diff.values.map { it.toModel() })
                     }
-                    is mages.TimelineDiffKind.PushBack -> TimelineDiff.Insert(diff.value.toModel())
-                    is mages.TimelineDiffKind.PushFront -> TimelineDiff.Insert(diff.value.toModel())
-                    is mages.TimelineDiffKind.Insert -> TimelineDiff.Insert(diff.value.toModel())
-                    is mages.TimelineDiffKind.Set -> TimelineDiff.Update(diff.value.toModel())
-                    is mages.TimelineDiffKind.Remove -> TimelineDiff.Remove(diff.index.toString())
-                    is mages.TimelineDiffKind.PopFront -> return
-                    is mages.TimelineDiffKind.PopBack -> return
-                    is mages.TimelineDiffKind.Truncate -> return
+
+                    is TimelineDiffKind.Clear -> {
+                        TimelineDiff.Clear()
+                    }
+
+                    is TimelineDiffKind.Append -> {
+                        // semantics: values appended at the end in order
+                        TimelineDiff.Append(diff.values.map { it.toModel() })
+                    }
+
+                    is TimelineDiffKind.PushBack -> {
+                        // append a single element at end
+                        TimelineDiff.Append(listOf(diff.value.toModel()))
+                    }
+
+                    is TimelineDiffKind.PushFront -> {
+                        // equivalent to insert at index 0
+                        TimelineDiff.InsertAt(0, diff.value.toModel())
+                    }
+
+                    is TimelineDiffKind.Insert -> {
+                        TimelineDiff.InsertAt(diff.index.toInt(), diff.value.toModel())
+                    }
+
+                    is TimelineDiffKind.Set -> {
+                        TimelineDiff.UpdateAt(diff.index.toInt(), diff.value.toModel())
+                    }
+
+                    is TimelineDiffKind.Remove -> {
+                        TimelineDiff.RemoveAt(diff.index.toInt())
+                    }
+
+                    is TimelineDiffKind.PopFront -> {
+                        TimelineDiff.PopFront
+                    }
+
+                    is TimelineDiffKind.PopBack -> {
+                        TimelineDiff.PopBack
+                    }
+
+                    is TimelineDiffKind.Truncate -> {
+                        TimelineDiff.Truncate(diff.length.toInt())
+                    }
                 }
+
                 trySendBlocking(mapped)
             }
             override fun onError(message: String) { /* log */ }
@@ -130,6 +164,20 @@ class RustMatrixPort(hs: String) : MatrixPort {
             client.sendMessage(roomId, body)
         }
 
+    override suspend fun sendExistingAttachment(
+        roomId: String,
+        attachment: AttachmentInfo,
+        body: String?,
+        onProgress: ((Long, Long?) -> Unit)?
+    ): Boolean = withContext(Dispatchers.IO) {
+        val cb = if (onProgress != null) object : mages.ProgressObserver {
+            override fun onProgress(sent: ULong, total: ULong?) {
+                onProgress(sent.toLong(), total?.toLong())
+            }
+        } else null
+
+        client.sendExistingAttachment(roomId, attachment.toFfi(), body, cb)
+    }
 
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
         client.enqueueText(roomId, body, txnId)
@@ -401,13 +449,6 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.retryByTxn(roomId, txnId)
     }
 
-    override suspend fun downloadToCacheFile(
-        mxcUri: String,
-        filenameHint: String?
-    ): Result<String> {
-        return runCatching { client.downloadToCacheFile(mxcUri, filenameHint).path }
-    }
-
     override suspend fun checkVerificationRequest(userId: String, flowId: String): Boolean =
         client.checkVerificationRequest(userId, flowId)
 
@@ -441,8 +482,18 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.sendAttachmentBytes(roomId, filename, mime, data, cb)
     }
 
-    override suspend fun downloadToPath(
-        mxcUri: String,
+    override suspend fun downloadAttachmentToCache(
+        info: AttachmentInfo,
+        filenameHint: String?
+    ): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                client.downloadAttachmentToCacheFile(info.toFfi(), filenameHint).path
+            }
+        }
+
+    override suspend fun downloadAttachmentToPath(
+        info: AttachmentInfo,
         savePath: String,
         onProgress: ((Long, Long?) -> Unit)?
     ): Result<String> {
@@ -451,7 +502,12 @@ class RustMatrixPort(hs: String) : MatrixPort {
                 onProgress(sent.toLong(), total?.toLong())
             }
         } else null
-        return runCatching { client.downloadToPath(mxcUri, savePath, cb).path }
+
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                client.downloadAttachmentToPath(info.toFfi(), savePath, cb).path
+            }
+        }
     }
 
     override suspend fun recoverWithKey(recoveryKey: String): Boolean =

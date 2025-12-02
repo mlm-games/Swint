@@ -90,12 +90,6 @@ class MatrixService(val port: MatrixPort) {
         onProgress: ((Long, Long?) -> Unit)? = null
     ) = runCatching { port.sendAttachmentBytes(roomId, data, mime, filename, onProgress) }.getOrElse { false }
 
-    suspend fun downloadToPath(
-        mxc: String,
-        savePath: String,
-        onProgress: ((Long, Long?) -> Unit)? = null
-    ): Result<String> = port.downloadToPath(mxc, savePath, onProgress)
-
     // Recovery
     suspend fun recoverWithKey(recoveryKey: String) =
         runCatching { port.recoverWithKey(recoveryKey) }.getOrElse { false }
@@ -108,9 +102,6 @@ class MatrixService(val port: MatrixPort) {
 
         suspend fun retryByTxn(roomId: String, txnId: String) =
         runCatching { port.retryByTxn(roomId, txnId) }.getOrElse { false }
-
-    suspend fun downloadToCacheFile(mxc: String, filenameHint: String? = null): Result<String> =
-                port.downloadToCacheFile(mxc, filenameHint)
 
     suspend fun isSpace(roomId: String): Boolean =
         runCatching { port.isSpace(roomId) }.getOrDefault(false)
@@ -147,31 +138,4 @@ class MatrixService(val port: MatrixPort) {
 
     suspend fun spaceInviteUser(spaceId: String, userId: String): Boolean =
         runCatching { port.spaceInviteUser(spaceId, userId) }.getOrDefault(false)
-
-    suspend fun sendExistingAttachment(
-        roomId: String,
-        mxcUri: String,
-        mime: String?,
-        filename: String?,
-        body: String?
-    ): Boolean {
-        return try {
-            // TODO: sending by existing mxc:
-//            port.sendExistingMedia(roomId, mxcUri, mime, filename, body)
-            true
-        } catch (e: Exception) {
-            // Fallback: download and re-upload
-            try {
-                val tempPath = port.downloadToCacheFile(mxcUri)
-                sendAttachmentFromPath(
-                    roomId = roomId,
-                    path = tempPath.getOrDefault(""),
-                    mime = mime ?: "application/octet-stream",
-                    filename = filename ?: "forwarded_file"
-                ) { _, _ -> }
-            } catch (e2: Exception) {
-                false
-            }
-        }
-    }
 }

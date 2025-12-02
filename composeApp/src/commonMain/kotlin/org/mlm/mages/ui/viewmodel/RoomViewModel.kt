@@ -216,16 +216,19 @@ class RoomViewModel(
         launch {
             updateState { copy(isPaginatingBack = true) }
             try {
-                val hitStart = service.paginateBack(s.roomId, 50)
+                val hitStart = runSafe { service.paginateBack(s.roomId, 50) } ?: false
                 updateState { copy(hitStart = hitStart || this.hitStart) }
 
                 withTimeoutOrNull(1500) {
                     state.first { it.events.size > s.events.size || it.hitStart }
                 } ?: run {
+                    // fallback snapshot if no diff came through
                     val snap = service.loadRecent(s.roomId, limit = (s.events.size + 50).coerceAtLeast(50))
-                    val filtered = filterOutThreadReplies(snap)
                     updateState {
-                        copy(events = filtered.distinctBy { it.itemId }.sortedBy { it.timestamp })
+                        copy(
+                            allEvents = snap,
+                            events = snap.withoutThreadReplies(),
+                        )
                     }
                 }
             } finally {
@@ -301,9 +304,23 @@ class RoomViewModel(
                 val base = event.eventId.ifBlank { "file" }
                 if (ext != null) "$base.$ext" else base
             }
-            service.downloadToCacheFile(a.mxcUri, nameHint)
-                .onSuccess { path -> onOpen(path, a.mime) }
-                .onFailure { t -> _events.send(Event.ShowError(t.message ?: "Download failed")) }
+
+            service.port.downloadAttachmentToCache(a, nameHint)
+                .onSuccess { path ->
+                    val f = java.io.File(path)
+                    if (!f.exists() || f.length() == 0L) {
+                        _events.send(
+                            Event.ShowError("Downloaded file is missing or empty: $path")
+                        )
+                        return@onSuccess
+                    }
+                    onOpen(path, a.mime)
+                }
+                .onFailure { t ->
+                    _events.send(
+                        Event.ShowError(t.message ?: "Download failed")
+                    )
+                }
         }
     }
 
@@ -313,26 +330,35 @@ class RoomViewModel(
             val attachment = event.attachment
 
             if (attachment == null) {
-                // Text-only
-                _events.send(Event.ShareMessage(text = text, filePath = null, mimeType = null))
+                _events.send(
+                    Event.ShareMessage(
+                        text = text,
+                        filePath = null,
+                        mimeType = null
+                    )
+                )
             } else {
                 val nameHint = run {
                     val ext = attachment.mime?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
                     val base = event.eventId.ifBlank { "file" }
                     if (ext != null) "$base.$ext" else base
                 }
-                val res = service.downloadToCacheFile(attachment.mxcUri, nameHint)
-                res.onSuccess { path ->
-                    _events.send(
-                        Event.ShareMessage(
-                            text = text,
-                            filePath = path,
-                            mimeType = attachment.mime
+
+                service.port.downloadAttachmentToCache(attachment, nameHint)
+                    .onSuccess { path ->
+                        _events.send(
+                            Event.ShareMessage(
+                                text = text,
+                                filePath = path,
+                                mimeType = attachment.mime
+                            )
                         )
-                    )
-                }.onFailure { t ->
-                    _events.send(Event.ShowError(t.message ?: "Failed to prepare share"))
-                }
+                    }
+                    .onFailure { t ->
+                        _events.send(
+                            Event.ShowError(t.message ?: "Failed to prepare share")
+                        )
+                    }
             }
         }
     }
@@ -588,11 +614,10 @@ class RoomViewModel(
             val attachment = event.attachment
 
             if (attachment != null) {
-                service.sendExistingAttachment(
+                // no download/re-upload
+                service.port.sendExistingAttachment(
                     roomId = targetRoomId,
-                    mxcUri = attachment.mxcUri,
-                    mime = attachment.mime,
-                    filename = attachment.mxcUri, // TODO: Add filename to AttachmentInfo
+                    attachment = attachment,
                     body = event.body.takeIf { it.isNotBlank() && it != attachment.mxcUri }
                 )
             } else {
@@ -666,95 +691,131 @@ class RoomViewModel(
         }
     }
 
+    private fun postProcessNewEvents(newEvents: List<MessageEvent>) {
+        val visible = newEvents.filter { it.threadRootEventId == null }
+
+        visible.takeLast(10).forEach { ev ->
+            if (ev.eventId.isNotBlank()) {
+                launch { refreshReactionsFor(ev.eventId) }
+                launch { refreshThreadSummaryFor(ev.eventId) }
+            }
+        }
+
+        prefetchThumbnailsForEvents(visible.takeLast(8))
+
+        // send notifications only for visible events
+        visible.forEach { notifyIfNeeded(it) }
+    }
+
     private fun processDiff(diff: TimelineDiff<MessageEvent>) {
         when (diff) {
             is TimelineDiff.Reset -> {
-                val filtered = filterOutThreadReplies(diff.items)
+                val all = diff.items
                 updateState {
-                    copy(events = filtered.distinctBy { it.itemId }.sortedBy { it.timestamp })
+                    copy(
+                        allEvents = all,
+                        events = all.withoutThreadReplies().dedupByItemId(),
+                    )
                 }
-                filtered.takeLast(10).forEach { ev ->
-                    if (ev.eventId.isNotBlank()) {
-                        launch { refreshReactionsFor(ev.eventId) }
-                    }
-                }
-                prefetchThumbnailsForEvents(filtered.takeLast(8))
+                postProcessNewEvents(diff.items)
             }
-            is TimelineDiff.Clear -> updateState { copy(events = emptyList()) }
-            is TimelineDiff.Insert -> handleInsert(diff.item)
-            is TimelineDiff.Update -> handleUpdate(diff.item)
-            is TimelineDiff.Remove -> updateState {
-                copy(events = events.filterNot { it.itemId == diff.itemId })
+
+            is TimelineDiff.Clear -> {
+                updateState {
+                    copy(
+                        allEvents = emptyList(),
+                        events = emptyList()
+                    )
+                }
+            }
+
+            is TimelineDiff.Append -> {
+                updateState {
+                    val newAll = allEvents + diff.items
+                    copy(
+                        allEvents = newAll,
+                        events = newAll.withoutThreadReplies().dedupByItemId(),
+                    )
+                }
+                postProcessNewEvents(diff.items)
+            }
+
+            is TimelineDiff.InsertAt -> {
+                updateState {
+                    val idx = diff.index.coerceIn(0, allEvents.size)
+                    val mutable = allEvents.toMutableList()
+                    mutable.add(idx, diff.item)
+                    val newAll = mutable.toList()
+                    copy(
+                        allEvents = newAll,
+                        events = newAll.withoutThreadReplies().dedupByItemId(),
+                    )
+                }
+                postProcessNewEvents(listOf(diff.item))
+            }
+
+            is TimelineDiff.UpdateAt -> {
+                updateState {
+                    if (diff.index !in allEvents.indices) return@updateState this
+                    val mutable = allEvents.toMutableList()
+                    mutable[diff.index] = diff.item
+                    val newAll = mutable.toList()
+                    copy(
+                        allEvents = newAll,
+                        events = newAll.withoutThreadReplies().dedupByItemId(),
+                    )
+                }
+                postProcessNewEvents(listOf(diff.item))
+            }
+
+            is TimelineDiff.RemoveAt -> {
+                updateState {
+                    if (diff.index !in allEvents.indices) return@updateState this
+                    val mutable = allEvents.toMutableList()
+                    mutable.removeAt(diff.index)
+                    val newAll = mutable.toList()
+                    copy(
+                        allEvents = newAll,
+                        events = newAll.withoutThreadReplies().dedupByItemId(),
+                    )
+                }
+            }
+
+            is TimelineDiff.Truncate -> {
+                updateState {
+                    val len = diff.length.coerceAtMost(allEvents.size)
+                    val newAll = allEvents.take(len)
+                    copy(
+                        allEvents = newAll,
+                        events = newAll.withoutThreadReplies().dedupByItemId(),
+                    )
+                }
+            }
+
+            TimelineDiff.PopFront -> {
+                updateState {
+                    if (allEvents.isEmpty()) return@updateState this
+                    val newAll = allEvents.drop(1)
+                    copy(
+                        allEvents = newAll,
+                        events = newAll.withoutThreadReplies().dedupByItemId(),
+                    )
+                }
+            }
+
+            TimelineDiff.PopBack -> {
+                updateState {
+                    if (allEvents.isEmpty()) return@updateState this
+                    val newAll = allEvents.dropLast(1)
+                    copy(
+                        allEvents = newAll,
+                        events = newAll.withoutThreadReplies().dedupByItemId(),
+                    )
+                }
             }
         }
+
         recomputeDerived()
-    }
-
-    private fun handleInsert(item: MessageEvent) {
-        if (item.threadRootEventId != null) return
-
-        updateState {
-            if (events.any { it.itemId == item.itemId }) return@updateState this
-
-            val current = events
-            val newList = when {
-                current.isEmpty() || item.timestamp >= current.last().timestamp ->
-                    current + item                      // normal append
-                item.timestamp <= current.first().timestamp ->
-                    listOf(item) + current             // very old item
-                else -> {
-                    val insertIndex = current.indexOfFirst { it.timestamp > item.timestamp }
-                        .takeIf { it >= 0 } ?: current.size
-                    current.toMutableList().apply { add(insertIndex, item) }
-                }
-            }
-
-            copy(events = newList)
-        }
-
-        if (item.eventId.isNotBlank()) {
-            launch { refreshReactionsFor(item.eventId) }
-            launch { refreshThreadSummaryFor(item.eventId) }
-        }
-
-        notifyIfNeeded(item)
-        prefetchThumbnailsForEvents(listOf(item))
-    }
-
-    private fun handleUpdate(item: MessageEvent) {
-        val wasInTimeline = currentState.events.any { it.itemId == item.itemId }
-        val shouldBeInTimeline = item.threadRootEventId == null
-
-        when {
-            wasInTimeline && shouldBeInTimeline -> {
-                updateState {
-                    val idx = events.indexOfFirst { it.itemId == item.itemId }
-                    val next = if (idx >= 0) {
-                        events.toMutableList().apply { set(idx, item) }
-                    } else {
-                        events + item
-                    }
-                    copy(events = next)
-                }
-                if (item.eventId.isNotBlank()) {
-                    launch { refreshReactionsFor(item.eventId) }
-                }
-                prefetchThumbnailsForEvents(listOf(item))
-            }
-            wasInTimeline && !shouldBeInTimeline -> {
-                updateState { copy(events = events.filterNot { it.itemId == item.itemId }) }
-            }
-            !wasInTimeline && shouldBeInTimeline -> {
-                updateState {
-                    val next = (events + item).distinctBy { it.itemId }.sortedBy { it.timestamp }
-                    copy(events = next)
-                }
-                if (item.eventId.isNotBlank()) {
-                    launch { refreshReactionsFor(item.eventId) }
-                }
-                prefetchThumbnailsForEvents(listOf(item))
-            }
-        }
     }
 
     private fun observeTyping() {
@@ -883,6 +944,12 @@ class RoomViewModel(
             }
         }
     }
+
+    private fun List<MessageEvent>.withoutThreadReplies(): List<MessageEvent> =
+        this.filter { it.threadRootEventId == null }
+
+    private fun List<MessageEvent>.dedupByItemId(): List<MessageEvent> =
+        distinctBy { it.itemId }
 
     override fun onCleared() {
         super.onCleared()
