@@ -23,6 +23,7 @@ data class LoginUiState(
     val isBusy: Boolean = false,
     val error: String? = null
 )
+
 data class RoomsUiState(
     val rooms: List<RoomSummary> = emptyList(),
     val roomSearchQuery: String = "",
@@ -35,9 +36,10 @@ data class RoomsUiState(
     val favourites: Set<String> = emptySet(),
     val lowPriority: Set<String> = emptySet(),
 
-    val favouriteRooms: List<RoomSummary> = emptyList(),
-    val normalRooms: List<RoomSummary> = emptyList(),
-    val lowPriorityRooms: List<RoomSummary> = emptyList(),
+    val allItems: List<RoomListItemUi> = emptyList(),
+    val favouriteItems: List<RoomListItemUi> = emptyList(),
+    val normalItems: List<RoomListItemUi> = emptyList(),
+    val lowPriorityItems: List<RoomListItemUi> = emptyList(),
 )
 
 data class RoomUiState(
@@ -199,4 +201,39 @@ data class ThreadUi(
 
     val editingEvent: MessageEvent? = null,
     val editInput: String = ""
+)
+
+enum class LastMessageType {
+    Text,
+    Image,
+    Video,
+    Audio,
+    File,
+    Sticker,
+    Location,
+    Poll,
+    Call,
+    Encrypted,
+    Redacted,
+    Unknown
+}
+
+/**
+ * UI model, contains only what the UI needs (preview text, unread, etc).
+ */
+data class RoomListItemUi(
+    val roomId: String,
+    val name: String,
+    val avatarUrl: String? = null,
+    val isDm: Boolean = false,
+    val isEncrypted: Boolean = false,
+
+    val unreadCount: Int = 0,
+    val isFavourite: Boolean = false,
+    val isLowPriority: Boolean = false,
+
+    val lastMessageBody: String? = null,
+    val lastMessageSender: String? = null,
+    val lastMessageType: LastMessageType = LastMessageType.Text,
+    val lastMessageTs: Long? = null,
 )

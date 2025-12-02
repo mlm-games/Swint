@@ -516,16 +516,33 @@ class RustMatrixPort(hs: String) : MatrixPort {
         val cb = object : mages.RoomListObserver {
             override fun onReset(items: List<mages.RoomListEntry>) {
                 val mapped = items.map {
-                    MatrixPort.RoomListEntry(
-                        roomId = it.roomId,
-                        name = it.name,
-                        lastTs = it.lastTs,
+                    RoomListEntry(
+                        roomId        = it.roomId,
+                        name          = it.name,
+                        lastTs        = it.lastTs,
                         notifications = it.notifications,
-                        messages = it.messages,
-                        mentions = it.mentions,
-                        markedUnread = it.markedUnread,
-                        isFavourite = it.isFavourite,
-                        isLowPriority = it.isLowPriority
+                        messages      = it.messages,
+                        mentions      = it.mentions,
+                        markedUnread  = it.markedUnread,
+                        isFavourite   = it.isFavourite,
+                        isLowPriority = it.isLowPriority,
+                        avatarUrl     = it.avatarUrl,
+                        isDm          = it.isDm,
+                        isEncrypted   = it.isEncrypted,
+                        memberCount   = it.memberCount.toInt(),
+                        topic         = it.topic,
+                        latestEvent   = it.latestEvent?.let { e ->
+                            LatestRoomEvent(
+                                eventId     = e.eventId,
+                                sender      = e.sender,
+                                body        = e.body,
+                                msgtype     = e.msgtype,
+                                eventType   = e.eventType,
+                                timestamp   = e.timestamp,
+                                isRedacted  = e.isRedacted,
+                                isEncrypted = e.isEncrypted
+                            )
+                        }
                     )
                 }
                 observer.onReset(mapped)
@@ -533,16 +550,33 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
             override fun onUpdate(item: mages.RoomListEntry) {
                 observer.onUpdate(
-                    MatrixPort.RoomListEntry(
-                        roomId = item.roomId,
-                        name = item.name,
-                        lastTs = item.lastTs,
+                    RoomListEntry(
+                        roomId        = item.roomId,
+                        name          = item.name,
+                        lastTs        = item.lastTs,
                         notifications = item.notifications,
-                        messages = item.messages,
-                        mentions = item.mentions,
-                        markedUnread = item.markedUnread,
-                        isFavourite = item.isFavourite,
-                        isLowPriority = item.isLowPriority
+                        messages      = item.messages,
+                        mentions      = item.mentions,
+                        markedUnread  = item.markedUnread,
+                        isFavourite   = item.isFavourite,
+                        isLowPriority = item.isLowPriority,
+                        avatarUrl     = item.avatarUrl,
+                        isDm          = item.isDm,
+                        isEncrypted   = item.isEncrypted,
+                        memberCount   = item.memberCount.toInt(),
+                        topic         = item.topic,
+                        latestEvent   = item.latestEvent?.let { e ->
+                            LatestRoomEvent(
+                                eventId     = e.eventId,
+                                sender      = e.sender,
+                                body        = e.body,
+                                msgtype     = e.msgtype,
+                                eventType   = e.eventType,
+                                timestamp   = e.timestamp,
+                                isRedacted  = e.isRedacted,
+                                isEncrypted = e.isEncrypted
+                            )
+                        }
                     )
                 )
             }

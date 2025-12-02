@@ -4,6 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -37,13 +38,13 @@ fun RoomsScreen(
     val scope = rememberCoroutineScope()
 
     // Check if there are any rooms to display
-    val hasAnyRooms = state.favouriteRooms.isNotEmpty() ||
-            state.normalRooms.isNotEmpty() ||
-            state.lowPriorityRooms.isNotEmpty()
+    val hasAnyRooms = state.favouriteItems.isNotEmpty() ||
+            state.normalItems.isNotEmpty() ||
+            state.lowPriorityItems.isNotEmpty()
 
     // Scroll to top when first room changes (new unread activity)
-    val firstFavouriteId = state.favouriteRooms.firstOrNull()?.id
-    val firstNormalId = state.normalRooms.firstOrNull()?.id
+    val firstFavouriteId = state.favouriteItems.firstOrNull()?.roomId
+    val firstNormalId = state.normalItems.firstOrNull()?.roomId
 
     LaunchedEffect(firstFavouriteId, firstNormalId) {
         if ((firstFavouriteId != null || firstNormalId != null) && listState.firstVisibleItemIndex > 0) {
@@ -55,8 +56,8 @@ fun RoomsScreen(
     val showScrollToTopFab by remember(listState, state) {
         derivedStateOf {
             listState.firstVisibleItemIndex > 2 &&
-                    (state.favouriteRooms.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true ||
-                            state.normalRooms.firstOrNull()?.let { (state.unread[it.id] ?: 0) > 0 } == true)
+                    (state.favouriteItems.firstOrNull()?.let { (state.unread[it.roomId] ?: 0) > 0 } == true ||
+                            state.normalItems.firstOrNull()?.let { (state.unread[it.roomId] ?: 0) > 0 } == true)
         }
     }
 
@@ -126,57 +127,71 @@ fun RoomsScreen(
                     modifier = Modifier.fillMaxSize().padding(innerPadding),
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
-                    if (state.favouriteRooms.isNotEmpty()) {
+                    if (state.favouriteItems.isNotEmpty()) {
                         item(key = "header_favourites") {
                             SectionHeader(
                                 icon = Icons.Default.Star,
                                 title = "Favourites",
-                                count = state.favouriteRooms.size
+                                count = state.favouriteItems.size
                             )
                         }
-                        items(state.favouriteRooms, key = { "fav_${it.id}" }) { room ->
+                        itemsIndexed(state.favouriteItems, key = {_, item -> "fav_${item.roomId}" }) { index, item ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = Spacing.lg),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                )
+                            }
                             RoomListItem(
-                                room = room,
-                                unreadCount = state.unread[room.id] ?: 0,
-                                onClick = { viewModel.openRoom(room) },
-                                showFavouriteIcon = true
+                                item = item,
+                                onClick = { viewModel.openRoom(RoomSummary(item.roomId, item.name)) }
                             )
                         }
                     }
 
-                    if (state.normalRooms.isNotEmpty()) {
-                        if (state.favouriteRooms.isNotEmpty()) {
+                    if (state.normalItems.isNotEmpty()) {
+                        if (state.favouriteItems.isNotEmpty()) {
                             item(key = "header_rooms") {
                                 SectionHeader(
                                     icon = Icons.Default.ChatBubble,
                                     title = "Rooms",
-                                    count = state.normalRooms.size
+                                    count = state.normalItems.size
                                 )
                             }
                         }
-                        items(state.normalRooms, key = { "room_${it.id}" }) { room ->
+                        itemsIndexed(state.normalItems, key = { _, item -> "room_${item.roomId}" }) { index, item ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = Spacing.lg),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                )
+                            }
+
                             RoomListItem(
-                                room = room,
-                                unreadCount = state.unread[room.id] ?: 0,
-                                onClick = { viewModel.openRoom(room) }
+                                item = item,
+                                onClick = { viewModel.openRoom(RoomSummary(item.roomId, item.name)) }
                             )
                         }
                     }
 
-                    // last
-                    if (state.lowPriorityRooms.isNotEmpty()) {
+                    if (state.lowPriorityItems.isNotEmpty()) {
                         item(key = "header_low_priority") {
                             SectionHeader(
                                 icon = Icons.Default.ArrowDownward,
                                 title = "Low Priority",
-                                count = state.lowPriorityRooms.size
+                                count = state.lowPriorityItems.size
                             )
                         }
-                        items(state.lowPriorityRooms, key = { "low_${it.id}" }) { room ->
+                        itemsIndexed(state.lowPriorityItems, key = { _, item -> "low_${item.roomId}" }) { index, item ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = Spacing.lg),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                )
+                            }
                             RoomListItem(
-                                room = room,
-                                unreadCount = state.unread[room.id] ?: 0,
-                                onClick = { viewModel.openRoom(room) },
+                                item = item,
+                                onClick = { viewModel.openRoom(RoomSummary(item.roomId, item.name)) },
                                 modifier = Modifier.alpha(0.6f)
                             )
                         }

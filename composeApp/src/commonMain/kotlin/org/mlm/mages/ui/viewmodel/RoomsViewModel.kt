@@ -9,7 +9,11 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import org.mlm.mages.MatrixService
 import org.mlm.mages.RoomSummary
+import org.mlm.mages.matrix.LatestRoomEvent
 import org.mlm.mages.matrix.MatrixPort
+import org.mlm.mages.matrix.RoomListEntry
+import org.mlm.mages.ui.LastMessageType
+import org.mlm.mages.ui.RoomListItemUi
 import org.mlm.mages.ui.RoomsUiState
 
 class RoomsViewModel(
@@ -65,19 +69,92 @@ class RoomsViewModel(
         observeRoomList()
     }
 
+    private fun mapRoomSummary(entry: RoomListEntry): RoomSummary {
+        return RoomSummary(
+            id = entry.roomId,
+            name = entry.name,
+            avatarUrl = entry.avatarUrl,
+            isDm = entry.isDm,
+            isEncrypted = entry.isEncrypted
+        )
+    }
+
+    private fun mapRoomEntryToUi(entry: RoomListEntry): RoomListItemUi {
+        val lastEvent = entry.latestEvent
+        val lastType = determineMessageType(lastEvent)
+        val lastBody = formatBodyForPreview(lastEvent, lastType)
+
+        return RoomListItemUi(
+            roomId = entry.roomId,
+            name = entry.name,
+            avatarUrl = entry.avatarUrl,
+            isDm = entry.isDm,
+            isEncrypted = entry.isEncrypted,
+            unreadCount = entry.notifications.toInt(),
+            isFavourite = entry.isFavourite,
+            isLowPriority = entry.isLowPriority,
+            lastMessageBody = lastBody,
+            lastMessageSender = lastEvent?.sender,
+            lastMessageType = lastType,
+            lastMessageTs = lastEvent?.timestamp
+        )
+    }
+
+    private fun determineMessageType(event: LatestRoomEvent?): LastMessageType {
+        if (event == null) return LastMessageType.Unknown
+        if (event.isRedacted) return LastMessageType.Redacted
+
+        val msgtype = event.msgtype
+        val evType = event.eventType
+
+        return when {
+            msgtype == "m.image"    -> LastMessageType.Image
+            msgtype == "m.video"    -> LastMessageType.Video
+            msgtype == "m.audio"    -> LastMessageType.Audio
+            msgtype == "m.file"     -> LastMessageType.File
+            msgtype == "m.sticker"  -> LastMessageType.Sticker
+            msgtype == "m.location" -> LastMessageType.Location
+            evType  == "m.poll.start"   -> LastMessageType.Poll
+            evType  == "m.call.invite"  -> LastMessageType.Call
+            event.isEncrypted && event.body == null -> LastMessageType.Encrypted
+            else -> LastMessageType.Text
+        }
+    }
+
+    private fun formatBodyForPreview(event: LatestRoomEvent?, type: LastMessageType): String? {
+        if (event == null) return null
+        val body = event.body
+
+        // Hide raw mxc:// URLs for media
+        if (body != null && body.startsWith("mxc://")) {
+            return when (type) {
+                LastMessageType.Image -> "Photo"
+                LastMessageType.Video -> "Video"
+                LastMessageType.Audio -> "Audio"
+                LastMessageType.File  -> "File"
+                else -> null
+            }
+        }
+        return body
+    }
+
     //  Private Methods 
 
     private fun observeRoomList() {
         roomListToken?.let { service.port.unobserveRoomList(it) }
 
         roomListToken = service.port.observeRoomList(object : MatrixPort.RoomListObserver {
-            override fun onReset(items: List<MatrixPort.RoomListEntry>) {
+            override fun onReset(items: List<RoomListEntry>) {
+                val domainRooms = items.map(::mapRoomSummary)
+                val uiItems     = items.map(::mapRoomEntryToUi)
+
                 updateState {
                     copy(
-                        rooms = items.map { e -> RoomSummary(e.roomId, e.name) },
+                        rooms = domainRooms,
                         unread = items.associate { e -> e.roomId to e.notifications.toInt() },
                         favourites = items.filter { e -> e.isFavourite }.map { e -> e.roomId }.toSet(),
                         lowPriority = items.filter { e -> e.isLowPriority }.map { e -> e.roomId }.toSet(),
+                        allItems = uiItems,
                         isLoading = false
                     )
                 }
@@ -85,33 +162,31 @@ class RoomsViewModel(
                 initialized = true
             }
 
-            override fun onUpdate(item: MatrixPort.RoomListEntry) {
-                // SDK sends full list via onReset, individual updates are rare
-                // But handle them for completeness
+            override fun onUpdate(item: RoomListEntry) {
                 updateState {
-                    val updatedRooms =rooms.map { room ->
-                        if (room.id == item.roomId) RoomSummary(item.roomId, item.name)
-                        else room
-                    }
-                    val updatedUnread =unread.toMutableMap().apply {
-                        put(item.roomId, item.notifications.toInt())
-                    }
-                    val updatedFavourites = if (item.isFavourite) {
-                       favourites + item.roomId
-                    } else {
-                       favourites - item.roomId
-                    }
-                    val updatedLowPriority = if (item.isLowPriority) {
-                       lowPriority + item.roomId
-                    } else {
-                       lowPriority - item.roomId
+                    val updatedRooms = rooms.map { room ->
+                        if (room.id == item.roomId) mapRoomSummary(item) else room
                     }
 
-                   copy(
+                    val updatedUiItems = allItems.map { existing ->
+                        if (existing.roomId == item.roomId) mapRoomEntryToUi(item) else existing
+                    }
+
+                    val updatedUnread = unread.toMutableMap().apply {
+                        put(item.roomId, item.notifications.toInt())
+                    }
+
+                    val updatedFavourites =
+                        if (item.isFavourite) favourites + item.roomId else favourites - item.roomId
+                    val updatedLowPriority =
+                        if (item.isLowPriority) lowPriority + item.roomId else lowPriority - item.roomId
+
+                    copy(
                         rooms = updatedRooms,
                         unread = updatedUnread,
                         favourites = updatedFavourites,
-                        lowPriority = updatedLowPriority
+                        lowPriority = updatedLowPriority,
+                        allItems = updatedUiItems
                     )
                 }
                 recomputeGroupedRooms()
@@ -145,34 +220,32 @@ class RoomsViewModel(
 
     private fun recomputeGroupedRooms() {
         val s = currentState
-        var list = s.rooms
-
-        // Apply search filter
         val query = s.roomSearchQuery.trim()
+
+        var list = s.allItems
+
+        // Search filter
         if (query.isNotBlank()) {
             list = list.filter {
                 it.name.contains(query, ignoreCase = true) ||
-                        it.id.contains(query, ignoreCase = true)
+                        it.roomId.contains(query, ignoreCase = true)
             }
         }
 
-        // Apply unread filter
+        // Unread filter
         if (s.unreadOnly) {
-            list = list.filter { (s.unread[it.id] ?: 0) > 0 }
+            list = list.filter { it.unreadCount > 0 }
         }
 
-        // Group by category
-        val favourites = list.filter { s.favourites.contains(it.id) }
-        val lowPriority = list.filter { s.lowPriority.contains(it.id) }
-        val normal = list.filter {
-            !s.favourites.contains(it.id) && !s.lowPriority.contains(it.id)
-        }
+        val favourites  = list.filter { it.isFavourite }
+        val lowPriority = list.filter { it.isLowPriority }
+        val normal      = list.filter { !it.isFavourite && !it.isLowPriority }
 
         updateState {
             copy(
-                favouriteRooms = favourites,
-                normalRooms = normal,
-                lowPriorityRooms = lowPriority
+                favouriteItems = favourites,
+                normalItems = normal,
+                lowPriorityItems = lowPriority
             )
         }
     }

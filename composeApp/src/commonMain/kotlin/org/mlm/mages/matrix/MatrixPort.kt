@@ -113,6 +113,36 @@ data class RoomProfile(
     val isDm: Boolean
 )
 
+data class LatestRoomEvent(
+    val eventId: String,
+    val sender: String,
+    val body: String?,
+    val msgtype: String?,
+    val eventType: String,
+    val timestamp: Long,
+    val isRedacted: Boolean,
+    val isEncrypted: Boolean
+)
+
+data class RoomListEntry(
+    val roomId: String,
+    val name: String,
+    val lastTs: ULong,
+    val notifications: ULong,
+    val messages: ULong,
+    val mentions: ULong,
+    val markedUnread: Boolean,
+    val isFavourite: Boolean = false,
+    val isLowPriority: Boolean = false,
+
+    val avatarUrl: String? = null,
+    val isDm: Boolean = false,
+    val isEncrypted: Boolean = false,
+    val memberCount: Int = 0,
+    val topic: String? = null,
+    val latestEvent: LatestRoomEvent? = null,
+)
+
 data class MemberSummary(
     val userId: String,
     val displayName: String?,
@@ -283,17 +313,7 @@ interface MatrixPort {
     suspend fun encryptionCatchupOnce(): Boolean
 
     interface RoomListObserver { fun onReset(items: List<RoomListEntry>); fun onUpdate(item: RoomListEntry) }
-    data class RoomListEntry(
-        val roomId: String,
-        val name: String,
-        val lastTs: ULong,
-        val notifications: ULong,
-        val messages: ULong,
-        val mentions: ULong,
-        val markedUnread: Boolean,
-        val isFavourite: Boolean = false,
-        val isLowPriority: Boolean = false,
-    )
+
     fun observeRoomList(observer: RoomListObserver): ULong
     fun unobserveRoomList(token: ULong)
 

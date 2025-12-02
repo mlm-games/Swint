@@ -12,6 +12,7 @@ use matrix_sdk_ui::{
 };
 use mime::Mime;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -366,7 +367,19 @@ pub trait VerificationInboxObserver: Send + Sync {
     fn on_error(&self, message: String);
 }
 
-#[derive(Clone, Record)]
+#[derive(Clone, Debug, Serialize, Deserialize, uniffi::Record)]
+pub struct LatestRoomEvent {
+    pub event_id: String,
+    pub sender: String,
+    pub body: Option<String>,
+    pub msgtype: Option<String>,
+    pub event_type: String,
+    pub timestamp: i64,
+    pub is_redacted: bool,
+    pub is_encrypted: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, uniffi::Record)]
 pub struct RoomListEntry {
     pub room_id: String,
     pub name: String,
@@ -377,6 +390,13 @@ pub struct RoomListEntry {
     pub marked_unread: bool,
     pub is_favourite: bool,
     pub is_low_priority: bool,
+
+    pub avatar_url: Option<String>,
+    pub is_dm: bool,
+    pub is_encrypted: bool,
+    pub member_count: u32,
+    pub topic: Option<String>,
+    pub latest_event: Option<LatestRoomEvent>,
 }
 
 #[derive(Clone, Enum)]
@@ -2837,12 +2857,14 @@ impl Client {
     pub fn observe_room_list(&self, observer: Box<dyn RoomListObserver>) -> u64 {
         let obs: std::sync::Arc<dyn RoomListObserver> = std::sync::Arc::from(observer);
         let svc_slot = self.sync_service.clone();
+        let client = self.inner.clone();
         let id = self.next_sub_id();
 
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<RoomListCmd>();
         self.room_list_cmds.lock().unwrap().insert(id, cmd_tx);
 
         let h = RT.spawn(async move {
+            // Wait until SyncService is ready
             let svc = loop {
                 if let Some(s) = { svc_slot.lock().unwrap().as_ref().cloned() } {
                     break s;
@@ -2864,7 +2886,7 @@ impl Client {
 
             controller.set_filter(Box::new(filters::new_filter_non_left()));
 
-            // Maintain local ordered state
+            // Maintain local ordered state of rooms.
             let mut rooms = Vector::<matrix_sdk::Room>::new();
 
             loop {
@@ -2883,6 +2905,7 @@ impl Client {
                             }
                         }
                     }
+
                     Some(diffs) = stream.next() => {
                         let mut changed = false;
 
@@ -2939,7 +2962,7 @@ impl Client {
                                     rooms.truncate(length as usize);
                                     changed = true;
                                 }
-                                VectorDiff::Append {values} => {
+                                VectorDiff::Append { values } => {
                                     rooms.append(values);
                                     changed = true;
                                 }
@@ -2947,19 +2970,33 @@ impl Client {
                         }
 
                         if changed {
-                            let snapshot: Vec<RoomListEntry> = rooms
-                            .iter()
-                            .map(|room| {
+                            let mut snapshot: Vec<RoomListEntry> = Vec::with_capacity(rooms.len());
+
+                            for room_ref in rooms.iter() {
+                                let room = room_ref.clone();
+
                                 let notifications = room.num_unread_notifications();
-                                let messages = room.num_unread_messages();
-                                let mentions = room.num_unread_mentions();
+                                let messages      = room.num_unread_messages();
+                                let mentions      = room.num_unread_mentions();
                                 let marked_unread = room.is_marked_unread();
 
-                                let is_favourite = room.is_favourite();
-                                let is_low_priority = room.is_low_priority();
-                                let last_ts = room.recency_stamp().map_or(0, |s| s);
+                                let is_favourite   = room.is_favourite();
+                                let is_low_priority= room.is_low_priority();
+                                let last_ts        = room.recency_stamp().map_or(0, |s| s);
 
-                                RoomListEntry {
+                                let avatar_url = room.avatar_url().map(|mxc| mxc.to_string());
+                                let is_dm = room.is_direct().await.unwrap_or(false);
+                                let is_encrypted = matches!(
+                                    room.encryption_state(),
+                                    matrix_sdk::EncryptionState::Encrypted
+                                );
+                                let member_count_u64 = room.joined_members_count();
+                                let member_count = member_count_u64.min(u32::MAX as u64) as u32;
+                                let topic = room.topic();
+
+                                let latest_event: Option<LatestRoomEvent> = latest_room_event_for(&client, &room).await;
+
+                                snapshot.push(RoomListEntry {
                                     room_id: room.room_id().to_string(),
                                     name: room
                                         .cached_display_name()
@@ -2972,9 +3009,14 @@ impl Client {
                                     marked_unread,
                                     is_favourite,
                                     is_low_priority,
-                                }
-                            })
-                            .collect();
+                                    avatar_url,
+                                    is_dm,
+                                    is_encrypted,
+                                    member_count,
+                                    topic,
+                                    latest_event,
+                                });
+                            }
 
                             let obs_clone = obs.clone();
                             let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
@@ -2982,6 +3024,7 @@ impl Client {
                             }));
                         }
                     }
+
                     else => break,
                 }
             }
@@ -4116,7 +4159,7 @@ impl Client {
                 return;
             };
             let observable = room.observe_live_location_shares();
-            let mut stream = observable.subscribe();
+            let stream = observable.subscribe();
 
             use futures_util::{StreamExt, pin_mut};
 
@@ -4964,6 +5007,85 @@ fn render_message_text(msg: &matrix_sdk_ui::timeline::Message) -> String {
         s.push_str(" \n(edited)");
     }
     s
+}
+
+async fn latest_room_event_for(client: &SdkClient, room: &Room) -> Option<LatestRoomEvent> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+
+    let rid = room.room_id().to_owned();
+    let tl = get_timeline_for(client, &rid).await?;
+    let ev = tl.latest_event().await?;
+
+    let ts: u64 = ev.timestamp().0.into();
+    let event_id = ev.event_id().map(|e| e.to_string()).unwrap_or_default();
+    let sender = ev.sender().to_string();
+
+    let mut msgtype: Option<String> = None;
+    let mut event_type = "m.room.message".to_owned();
+    let mut is_redacted = false;
+    let mut is_encrypted = false;
+    let body: Option<String>;
+
+    match ev.content() {
+        TimelineItemContent::MsgLike(ml) => match &ml.kind {
+            MsgLikeKind::Message(m) => {
+                let text = render_message_text(m);
+                body = Some(text);
+
+                match m.msgtype() {
+                    MessageType::Image(_) => msgtype = Some("m.image".to_owned()),
+                    MessageType::Video(_) => msgtype = Some("m.video".to_owned()),
+                    MessageType::Audio(_) => msgtype = Some("m.audio".to_owned()),
+                    MessageType::File(_) => msgtype = Some("m.file".to_owned()),
+                    MessageType::Location(_) => msgtype = Some("m.location".to_owned()),
+                    MessageType::Notice(_) => msgtype = Some("m.notice".to_owned()),
+                    MessageType::Emote(_) => msgtype = Some("m.emote".to_owned()),
+                    MessageType::Text(_) => msgtype = Some("m.text".to_owned()),
+                    _ => {}
+                }
+            }
+            MsgLikeKind::Sticker(_) => {
+                msgtype = Some("m.sticker".to_owned());
+                body = None;
+            }
+            MsgLikeKind::Poll(_) => {
+                event_type = "m.poll.start".to_owned();
+                body = None;
+            }
+            MsgLikeKind::Redacted => {
+                is_redacted = true;
+                body = None;
+            }
+            MsgLikeKind::UnableToDecrypt(_) => {
+                is_encrypted = true;
+                body = None;
+            }
+        },
+        TimelineItemContent::CallInvite => {
+            event_type = "m.call.invite".to_owned();
+            body = None;
+        }
+        TimelineItemContent::CallNotify => {
+            event_type = "m.call.notify".to_owned();
+            body = None;
+        }
+        // Membership changes, profile changes, other state events..
+        _ => {
+            let text = render_timeline_text(&ev);
+            body = Some(text);
+        }
+    }
+
+    Some(LatestRoomEvent {
+        event_id,
+        sender,
+        body,
+        msgtype,
+        event_type,
+        timestamp: ts as i64,
+        is_redacted,
+        is_encrypted,
+    })
 }
 
 fn strip_reply_fallback(body: &str) -> String {
