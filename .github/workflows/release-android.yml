@@ -30,6 +30,7 @@ env:
   ANDROID_API: '36'
   ANDROID_BUILD_TOOLS: '36.0.0'
   ANDROID_NDK_VERSION: '27.0.12077973'
+  CARGO_NDK_VERSION: "4.1.2"
 
 jobs:
   prepare-version:
@@ -116,9 +117,8 @@ jobs:
       - name: Install Rust + cargo-ndk + Android targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android, i686-linux-android
-      - run: cargo install cargo-ndk --locked
+      - run: cargo install cargo-ndk@${{ env.CARGO_NDK_VERSION }} --locked
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4

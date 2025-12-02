@@ -45,8 +45,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
 
       - name: Build Rust JNI (host)
         run: cargo build --release --manifest-path rust/Cargo.toml
