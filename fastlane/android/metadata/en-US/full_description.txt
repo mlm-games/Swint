@@ -1,0 +1,14 @@
+Multiplatform Matrix client
+
+It uses a Rust library built on top of matrix-sdk for the core Matrix
+functionality and a Compose Multiplatform UI for Android and desktop.
+
+Current capabilities:
+- room list with basic previews and unread counts
+- room and thread timelines (text and media)
+- end-to-end encryption (via matrix-sdk)
+- spaces view
+- basic presence and privacy settings
+
+This app is not intended as a feature-complete client with breezily fast updates (nor is trying to cover all features of matrix). 
+Currently use a lot of alpha/beta deps which may take time to become stable.
