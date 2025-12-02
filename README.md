@@ -1,50 +1,86 @@
 # Mages
 
-Kotlin Multiplatform (Compose for Android) app with a Rust core called via JNI.
+Mages is an experimental matrix chat client.
 
-## Layout
-- `composeApp/` — KMP Android app (Compose)
-- `rust/` — Rust crate that builds a shared library (`libmages_native.so`)
+- UI: [Compose Multiplatform](https://www.jetbrains.com/lp/compose-multiplatform/)
+- Core: a Rust library built on top of [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk), exposed to Kotlin via UniFFI (not using matrix-sdk-ffi)
 
-## Prerequisites
-- Android Studio + Android SDK + NDK installed
-- Rust toolchain (`rustup`), stable channel
-- cargo-ndk: `cargo install cargo-ndk`
+The goal was to have a cross‑platform desktop/mobile client, (initially which notifies me on desktop, and stays in my tray). It's never going to be as feature-rich or stable as element's clients (or other focused clients with a proper consumer-focused goal)
 
-Ensure `cargo` and `cargo-ndk` are on your PATH, and the Android NDK is installed in your SDK.
+## Status 
 
+This is experimental‑stage software. If you use it, assume things may break and encryption bugs are still possible.
 
-## Build & Run (Android)
-- macOS/Linux:
-  ```bash
-  ./gradlew :composeApp:assembleDebug
-  ```
-- Windows:
-  ```powershell
-  .\gradlew.bat :composeApp:assembleDebug
-  ```
+## Features (as of the last README update)
 
-Gradle will invoke `cargo ndk` to build Rust for `arm64-v8a`, `x86_64`, and `armeabi-v7a`, and place the `.so` files under:
+- Room list with basic previews and unread counts
+- Room and thread timelines (text, media, polls)
+- End‑to‑end encryption (via matrix‑sdk)
+- Spaces browser
+- Simple presence / privacy settings
+- Android app and Linux desktop builds (AppImage, AUR `mages-bin`)
+
+## Platforms
+
+- **Android**  
+  - Signed APKs and AABs are published on GitHub Releases.
+  - F‑Droid metadata is planned; for now you can sideload the APK.
+
+- **Linux desktop**  
+  - AppImage builds for x86_64 and aarch64.
+  - AUR:  wraps the AppImage.
+  - Other package formats (Flatpak, Snap) may follow.
+
+- **Other platforms**  
+  - The UI is Compose Multiplatform. In practice, only Android + Linux AppImage are actively tested.
+
+## Architecture
+
+- **Rust core**  
+  - Uses `matrix-sdk` and `matrix-sdk-ui` for sync, room list, timelines, E2EE, etc.
+  - Exposed as a UniFFI library (`mages_ffi`) that Kotlin/JVM can call.
+
+- **Kotlin UI**  
+  - Compose Multiplatform for Android and desktop.
+  - Koin for dependency injection.
+  - ViewModels for state, backed by the Rust core.
+
+Most Matrix‑specific logic lives in Rust; Kotlin mostly handles presentation.
+
+## Building from source
+
+### Prerequisites
+
+- JDK 21
+- Kotlin/Gradle
+- Rust toolchain (stable)
+- On Android:
+  - Android SDK + NDK (see `android-release` workflow for versions)
+  - `cargo-ndk` (for building the Rust library for Android ABIs)
+
+### Android
+
+```bash
+./gradlew :composeApp:assembleRelease
+# APKs end up under composeApp/build/outputs/apk/release
 ```
-composeApp/src/androidMain/jniLibs/<abi>/libmages_native.so
+
+### Desktop (Linux)
+
+```bash
+# Build Rust JNI + desktop distribution
+cargo build --release --manifest-path rust/Cargo.toml
+./gradlew :composeApp:genUniFFIJvm :composeApp:packageDistributionForCurrentOS
+# AppImage is assembled by the desktop release workflow
 ```
 
-## Code Usage
-Call Rust from shared code via an expect/actual facade:
-```kotlin
-val msg = RustApi.greet(getPlatform().name)
-```
+## Contributing
 
-Rust implements the logic, JNI exposes:
-```rust
-Java_org_mlm_mages_NativeLib_greetFromRust(env, class, name)
-```
+Issues and small PRs are welcome. Please keep changes focused and self‑contained.
 
-## Notes
-- We catch Rust panics at the JNI boundary and throw a Java `RuntimeException`, returning `""` as a fallback.
-- Adjust `ndk.abiFilters` in `composeApp/build.gradle.kts` to the ABIs you intend to ship.
-```
+- Rust changes: try to keep the FFI surface small and stable.
+- Kotlin changes: avoid expensive work in composables; use ViewModels and background dispatchers.
 
-Notes:
-- Install the Android NDK, cargo-ndk and std libs for targets before building.
-- No other files need to change; existing UI (App.kt) will display the Rust greeting.
+## License
+
+Mages is licensed under the **GNU GPL v3** (see `LICENSE`).
