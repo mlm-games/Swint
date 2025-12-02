@@ -103,8 +103,7 @@ fun RoomScreen(
         }
     }
 
-    // Computed values
-    val events = remember(state.events) { state.events.sortedBy { it.timestamp } }
+    val events = state.events
 
     val isNearBottom by remember(listState, events) {
         derivedStateOf {
@@ -566,8 +565,10 @@ private fun MessageItem(
     onOpenAttachment: () -> Unit,
     onOpenThread: () -> Unit
 ) {
-    val eventDate = formatDate(event.timestamp)
-    val prevDate = events.getOrNull(index - 1)?.let { formatDate(it.timestamp) }
+
+    val eventDate = remember(event.timestamp) { formatDate(event.timestamp) }
+    val prevDate = remember(event.timestamp) { events.getOrNull(index - 1)?.let { formatDate(it.timestamp) } }
+    val displayTime = remember(event.timestamp) { formatTime(event.timestamp) }
 
     // Date header
     if (prevDate != eventDate) {

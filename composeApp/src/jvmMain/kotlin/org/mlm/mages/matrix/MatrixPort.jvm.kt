@@ -50,9 +50,15 @@ class RustMatrixPort(hs: String) : MatrixPort {
 
     override fun isLoggedIn(): Boolean = client.isLoggedIn()
 
-    override suspend fun listRooms(): List<RoomSummary> = client.rooms().map { it.toModel() }
+    override suspend fun listRooms(): List<RoomSummary> =
+        withContext(Dispatchers.IO) {
+            client.rooms().map { it.toModel() }
+        }
+
     override suspend fun recent(roomId: String, limit: Int): List<MessageEvent> =
-        client.recentEvents(roomId, limit.toUInt()).map { it.toModel() }
+        withContext(Dispatchers.IO) {
+            client.recentEvents(roomId, limit.toUInt()).map { it.toModel() }
+        }
 
     override fun timelineDiffs(roomId: String): Flow<TimelineDiff<MessageEvent>> = callbackFlow {
         val obs = object : mages.TimelineObserver {
@@ -120,7 +126,10 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override suspend fun send(roomId: String, body: String): Boolean =
-        client.sendMessage(roomId, body)
+        withContext(Dispatchers.IO) {
+            client.sendMessage(roomId, body)
+        }
+
 
     override suspend fun enqueueText(roomId: String, body: String, txnId: String?): String =
         client.enqueueText(roomId, body, txnId)
@@ -151,12 +160,11 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override suspend fun thumbnailToCache(
-        info: AttachmentInfo,
-        width: Int,
-        height: Int,
-        crop: Boolean
+        info: AttachmentInfo, width: Int, height: Int, crop: Boolean
     ): Result<String> =
-        runCatching { client.thumbnailToCache(info.toFfi(), width.toUInt(), height.toUInt(), crop) }
+        withContext(Dispatchers.IO) {
+            runCatching { client.thumbnailToCache(info.toFfi(), width.toUInt(), height.toUInt(), crop) }
+        }
 
     override suspend fun setTyping(roomId: String, typing: Boolean): Boolean {
         return client.setTyping(roomId, typing)
@@ -166,15 +174,25 @@ class RustMatrixPort(hs: String) : MatrixPort {
         return client.whoami()
     }
 
-    override suspend fun paginateBack(roomId: String, count: Int) =
-        client.paginateBackwards(roomId, count.toUShort())
+    override suspend fun paginateBack(roomId: String, count: Int): Boolean =
+        withContext(Dispatchers.IO) {
+            client.paginateBackwards(roomId, count.toUShort())
+        }
 
-    override suspend fun paginateForward(roomId: String, count: Int) =
-        client.paginateForwards(roomId, count.toUShort())
+    override suspend fun paginateForward(roomId: String, count: Int): Boolean =
+        withContext(Dispatchers.IO) {
+            client.paginateForwards(roomId, count.toUShort())
+        }
 
-    override suspend fun markRead(roomId: String) = client.markRead(roomId)
-    override suspend fun markReadAt(roomId: String, eventId: String) =
-        client.markReadAt(roomId, eventId)
+    override suspend fun markRead(roomId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            client.markRead(roomId)
+        }
+
+    override suspend fun markReadAt(roomId: String, eventId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            client.markReadAt(roomId, eventId)
+        }
 
     override suspend fun react(roomId: String, eventId: String, emoji: String) =
         client.react(roomId, eventId, emoji)
@@ -214,9 +232,11 @@ class RustMatrixPort(hs: String) : MatrixPort {
         client.unobserveReceipts(token)
     }
 
-    override suspend fun dmPeerUserId(roomId: String): String? = client.dmPeerUserId(roomId)
+    override suspend fun dmPeerUserId(roomId: String): String? =
+        withContext(Dispatchers.IO) { client.dmPeerUserId(roomId) }
+
     override suspend fun isEventReadBy(roomId: String, eventId: String, userId: String): Boolean =
-        client.isEventReadBy(roomId, eventId, userId)
+        withContext(Dispatchers.IO) { client.isEventReadBy(roomId, eventId, userId) }
 
     override fun startCallInbox(observer: MatrixPort.CallObserver): ULong {
         val cb = object : mages.CallObserver {
@@ -462,7 +482,9 @@ class RustMatrixPort(hs: String) : MatrixPort {
         }
 
     override suspend fun ownLastRead(roomId: String): Pair<String?, Long?> =
-        client.ownLastRead(roomId).let { it.eventId to it.tsMs?.toLong() }
+        withContext(Dispatchers.IO) {
+            client.ownLastRead(roomId).let { it.eventId to it.tsMs?.toLong() }
+        }
 
     override fun observeOwnReceipt(
         roomId: String,
@@ -483,10 +505,10 @@ class RustMatrixPort(hs: String) : MatrixPort {
     override suspend fun setRoomNotificationMode(roomId: String, mode: RoomNotificationMode): Boolean =
         runCatching { client.setRoomNotificationMode(roomId, mode.toFfi()) }.isSuccess
 
-    override suspend fun markFullyReadAt(
-        roomId: String,
-        eventId: String,
-    ): Boolean = client.markFullyReadAt(roomId, eventId)
+    override suspend fun markFullyReadAt(roomId: String, eventId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            client.markFullyReadAt(roomId, eventId)
+        }
 
     override suspend fun encryptionCatchupOnce(): Boolean = client.encryptionCatchupOnce()
 
@@ -678,14 +700,22 @@ class RustMatrixPort(hs: String) : MatrixPort {
     }
 
     override suspend fun reactions(roomId: String, eventId: String): List<ReactionChip> =
-        client.reactionsForEvent(roomId, eventId).map { ReactionChip(it.key, it.count.toInt(), it.me) }
+        withContext(Dispatchers.IO) {
+            client.reactionsForEvent(roomId, eventId)
+                .map { ReactionChip(it.key, it.count.toInt(), it.me) }
+        }
 
     override suspend fun sendThreadText(roomId: String, rootEventId: String, body: String, replyToEventId: String?): Boolean =
         client.sendThreadText(roomId, rootEventId, body, replyToEventId)
 
-    override suspend fun threadSummary(roomId: String, rootEventId: String, perPage: Int, maxPages: Int): ThreadSummary {
+    override suspend fun threadSummary(
+        roomId: String,
+        rootEventId: String,
+        perPage: Int,
+        maxPages: Int
+    ): ThreadSummary = withContext(Dispatchers.IO) {
         val s = client.threadSummary(roomId, rootEventId, perPage.toUInt(), maxPages.toUInt())
-        return ThreadSummary(s.rootEventId, s.roomId, s.count.toLong(), s.latestTsMs?.toLong())
+        ThreadSummary(s.rootEventId, s.roomId, s.count.toLong(), s.latestTsMs?.toLong())
     }
 
     override suspend fun threadReplies(
@@ -694,9 +724,9 @@ class RustMatrixPort(hs: String) : MatrixPort {
         from: String?,
         limit: Int,
         forward: Boolean
-    ): ThreadPage {
+    ): ThreadPage = withContext(Dispatchers.IO) {
         val page = client.threadReplies(roomId, rootEventId, from, limit.toUInt(), forward)
-        return ThreadPage(
+        ThreadPage(
             rootEventId = page.rootEventId,
             roomId = page.roomId,
             messages = page.messages.map { it.toModel() },

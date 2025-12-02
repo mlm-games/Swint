@@ -659,7 +659,7 @@ class RoomViewModel(
     private fun observeTimeline() {
         Notifier.setCurrentRoom(currentState.roomId)
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             service.timelineDiffs(currentState.roomId)
                 .buffer(capacity = Channel.BUFFERED)
                 .collect { diff -> processDiff(diff) }
@@ -694,8 +694,22 @@ class RoomViewModel(
         if (item.threadRootEventId != null) return
 
         updateState {
-            val next = (events + item).distinctBy { it.itemId }.sortedBy { it.timestamp }
-            copy(events = next)
+            if (events.any { it.itemId == item.itemId }) return@updateState this
+
+            val current = events
+            val newList = when {
+                current.isEmpty() || item.timestamp >= current.last().timestamp ->
+                    current + item                      // normal append
+                item.timestamp <= current.first().timestamp ->
+                    listOf(item) + current             // very old item
+                else -> {
+                    val insertIndex = current.indexOfFirst { it.timestamp > item.timestamp }
+                        .takeIf { it >= 0 } ?: current.size
+                    current.toMutableList().apply { add(insertIndex, item) }
+                }
+            }
+
+            copy(events = newList)
         }
 
         if (item.eventId.isNotBlank()) {
@@ -720,7 +734,7 @@ class RoomViewModel(
                     } else {
                         events + item
                     }
-                    copy(events = next.sortedBy { it.timestamp })
+                    copy(events = next)
                 }
                 if (item.eventId.isNotBlank()) {
                     launch { refreshReactionsFor(item.eventId) }
