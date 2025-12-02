@@ -1,0 +1,39 @@
+name: mages
+base: core22
+adopt-info: mages
+summary: Matrix client with a tray notifier.
+description: |
+  Matrix chat client written in kotlin and rust.
+
+grade: devel
+confinement: strict
+
+apps:
+  mages:
+    command: bin/mages
+    plugs:
+      - network
+      - network-bind
+      - pulseaudio
+      - wayland
+      - x11
+      - home
+
+parts:
+  mages:
+    plugin: dump
+    source: https://github.com/mlm-games/mages/releases/download/0.9.6/mages-0.9.6-x86_64.AppImage
+    source-type: http
+    organize:
+      'mages-*.AppImage': bin/mages.AppImage
+    override-build: |
+      mkdir -p $SNAP/bin
+      cp mages-*.AppImage $SNAP/bin/mages.AppImage
+      cat > $SNAP/bin/mages << 'EOF'
+      #!/bin/sh
+      exec "$SNAP/bin/mages.AppImage" "$@"
+      EOF
+      chmod +x $SNAP/bin/mages $SNAP/bin/mages.AppImage
+      snapcraftctl set-version "VERSION"
+    build-packages:
+      - ca-certificates
