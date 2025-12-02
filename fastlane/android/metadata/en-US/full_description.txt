@@ -12,3 +12,5 @@ Current capabilities:
 
 This app is not intended as a feature-complete client with breezily fast updates (nor is trying to cover all features of matrix). 
 Currently use a lot of alpha/beta deps which may take time to become stable.
+
+Do donate if you like (not going to put it in app, wouldn't be here too but need some justification for me or my SOs)
