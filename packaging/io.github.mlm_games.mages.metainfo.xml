@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>io.github.mlm_games.mages</id>
+  <name>Mages</name>
+  <summary>Matrix client</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <developer_name>MLM-stuff</developer_name>
+  <url type="homepage">https://github.com/mlm-games/mages</url>
+  <url type="bugtracker">https://github.com/mlm-games/mages/issues</url>
+  <url type="help">https://github.com/mlm-games/mages</url>
+  <url type="donation">https://github.com/mlm-games/mages</url>
+
+  <launchable type="desktop-id">io.github.mlm_games.mages.desktop</launchable>
+
+  <description>
+    <p>
+      Mages is an Matrix client with a tray notifier.
+    </p>
+    <p>
+      The Matrix protocol logic is implemented in a Rust library using
+      matrix-sdk and exposed to the Kotlin UI layer via UniFFI.
+    </p>
+  </description>
+
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+  </categories>
+
+  <keywords>
+    <keyword>matrix</keyword>
+    <keyword>chat</keyword>
+    <keyword>messaging</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">moderate</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="0.9.5" date="2025-12-01">
+      <description>
+        <p>Initial public builds for Android and Linux desktop.</p>
+      </description>
+    </release>
+  </releases>
+
+</component>
