@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import android.view.WindowManager
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.remember
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -30,7 +31,7 @@ import org.mlm.mages.push.PushManager
 import org.mlm.mages.push.PusherReconciler
 import org.unifiedpush.android.connector.UnifiedPush
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     private val deepLinkRoomIds = MutableSharedFlow<String>(extraBufferCapacity = 1)
     private val deepLinks = deepLinkRoomIds.asSharedFlow()
 

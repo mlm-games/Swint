@@ -31,7 +31,7 @@ object AndroidNotificationHelper {
         val notifId = (roomId + eventId).hashCode()
         val pi = PendingIntent.getActivity(ctx, notifId, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val nobj = NotificationCompat.Builder(ctx, "messages")
-            .setSmallIcon(R.drawable.ic_notif_status_bar)
+            .setSmallIcon(R.drawable.icon_tray)
             .setContentTitle(n.title)
             .setContentText(n.body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
