@@ -117,10 +117,15 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
 
       - name: Install Rust + cargo-ndk + Android targets
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android, i686-linux-android
-      - run: cargo install cargo-ndk@${{ env.CARGO_NDK_VERSION }} --locked
+        run: |
+          rustup show   # rust comes preinstalled
+          rustup target add \
+            aarch64-linux-android \
+            armv7-linux-androideabi \
+            x86_64-linux-android \
+            i686-linux-android
+
+          cargo install cargo-ndk@${{ env.CARGO_NDK_VERSION }} --locked
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
