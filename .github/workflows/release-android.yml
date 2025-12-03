@@ -90,7 +90,9 @@ jobs:
   build:
     needs: prepare-version
     runs-on: ubuntu-latest
-    permissions: { contents: write }
+    permissions:
+      contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v5
         with: 
@@ -194,6 +196,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'release-desktop.yml',
+              ref: 'main',
               inputs: {
                 version_tag: '${{ needs.prepare-version.outputs.version_name }}',
                 mark_prerelease: '${{ inputs.mark_prerelease }}'
