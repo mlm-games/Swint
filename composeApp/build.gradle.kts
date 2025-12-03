@@ -303,7 +303,7 @@ compose.desktop {
             modules("java.instrument", "jdk.security.auth", "jdk.unsupported")
 
             linux {
-                iconFile.set(project.file("../fastlane/android/metadata/en-US/images/icon.png"))
+                iconFile.set(project.file("../fastlane/metadata/android/en-US/images/icon.png"))
                 packageName = "mages"
                 debMaintainer = "gfxoxinzh@mozmail.com"
                 menuGroup = "Network;InstantMessaging"
