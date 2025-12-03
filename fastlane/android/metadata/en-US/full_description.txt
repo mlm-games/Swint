@@ -10,7 +10,4 @@ Current capabilities:
 - spaces view
 - basic presence and privacy settings
 
-This app is not intended as a feature-complete client with breezily fast updates (nor is trying to cover all features of matrix). 
-Currently use a lot of alpha/beta deps which may take time to become stable.
-
 Do donate if you'd like to (not going to have it in app, wouldn't be here too but need a justification for me or my SOs)
