@@ -43,7 +43,6 @@ connector = { module = "org.unifiedpush.android:connector", version.ref = "conne
 connector-ui = { module = "org.unifiedpush.android:connector-ui", version.ref = "up-ui" }
 dbus-java-transport-native-unixsocket = { module = "com.github.hypfvieh:dbus-java-transport-native-unixsocket", version.ref = "dbusJavaTransportNativeUnixsocket" }
 dbus-java-core = { module = "com.github.hypfvieh:dbus-java-core", version.ref = "dbusJavaCore" }
-embedded-fcm-distributor = { module = "org.unifiedpush.android:embedded-fcm-distributor", version.ref = "up-fcm" }
 koin-compose-navigation3 = { module = "io.insert-koin:koin-compose-navigation3", version.ref = "koinComposeNavigation3" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }

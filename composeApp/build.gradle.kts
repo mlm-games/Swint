@@ -29,7 +29,6 @@ kotlin {
             implementation(libs.okio)
             implementation(libs.connector)
             implementation(libs.connector.ui)
-            implementation(libs.embedded.fcm.distributor)
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.work.runtime.ktx)
             implementation(libs.androidx.browser)
