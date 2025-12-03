@@ -60,6 +60,7 @@ class RoomViewModel(
     private var dmPeer: String? = null
     private var uploadJob: Job? = null
     private var typingJob: Job? = null
+    private var hasTimelineSnapshot = false
 
     init {
         initialize()
@@ -67,7 +68,6 @@ class RoomViewModel(
 
     private fun initialize() {
         updateState { copy(myUserId = service.port.whoami()) }
-        loadInitial()
         observeTimeline()
         observeTyping()
         observeOwnReceipt()
@@ -221,15 +221,6 @@ class RoomViewModel(
 
                 withTimeoutOrNull(1500) {
                     state.first { it.events.size > s.events.size || it.hitStart }
-                } ?: run {
-                    // fallback snapshot if no diff came through
-                    val snap = service.loadRecent(s.roomId, limit = (s.events.size + 50).coerceAtLeast(50))
-                    updateState {
-                        copy(
-                            allEvents = snap,
-                            events = snap.withoutThreadReplies(),
-                        )
-                    }
                 }
             } finally {
                 updateState { copy(isPaginatingBack = false) }
@@ -665,22 +656,6 @@ class RoomViewModel(
         return events.filter { it.threadRootEventId == null }
     }
 
-    private fun loadInitial() {
-        launch {
-            val recent = runSafe { service.loadRecent(currentState.roomId, 40) } ?: emptyList()
-            val filtered = filterOutThreadReplies(recent)
-            updateState { copy(events = filtered.sortedBy { it.timestamp }) }
-            prefetchThumbnailsForEvents(filtered.takeLast(8))
-
-            if (filtered.size < 40) {
-                launch {
-                    val hitStart = service.paginateBack(currentState.roomId, 50)
-                    updateState { copy(hitStart = this.hitStart || hitStart) }
-                }
-            }
-        }
-    }
-
     private fun observeTimeline() {
         Notifier.setCurrentRoom(currentState.roomId)
 
@@ -710,6 +685,8 @@ class RoomViewModel(
     private fun processDiff(diff: TimelineDiff<MessageEvent>) {
         when (diff) {
             is TimelineDiff.Reset -> {
+                hasTimelineSnapshot = true
+
                 val all = diff.items
                 updateState {
                     copy(

@@ -20,7 +20,7 @@ use matrix_sdk::{
 use matrix_sdk_base::notification_settings::RoomNotificationMode as RsMode;
 use matrix_sdk_ui::{
     eyeball_im::Vector,
-    timeline::{AttachmentConfig, AttachmentSource},
+    timeline::{AttachmentConfig, AttachmentSource, TimelineEventItemId},
 };
 use mime::Mime;
 use once_cell::sync::Lazy;
@@ -860,21 +860,25 @@ impl Client {
 
         {
             let client = this.inner.clone();
-            let svc_slot = this.sync_service.clone();
             let h = RT.spawn(async move {
-                // Wait until we have a session
-                loop {
-                    if client.user_id().is_some() {
-                        break;
+                if let Some(mut stream) = client.encryption().room_keys_received_stream().await {
+                    while let Some(batch) = stream.next().await {
+                        let Ok(infos) = batch else { continue };
+                        use std::collections::HashMap;
+                        let mut by_room: HashMap<OwnedRoomId, Vec<String>> = HashMap::new();
+                        for info in infos {
+                            by_room
+                                .entry(info.room_id.clone())
+                                .or_default()
+                                .push(info.session_id.clone());
+                        }
+                        for (rid, sessions) in by_room {
+                            if let Some(tl) = get_timeline_for(&client, &rid).await {
+                                tl.retry_decryption(sessions).await;
+                            }
+                        }
                     }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                let service = SyncService::builder(client.clone())
-                    .build()
-                    .await
-                    .expect("SyncService");
-                let mut g = svc_slot.lock().unwrap();
-                g.replace(Arc::new(service));
             });
             this.guards.lock().unwrap().push(h);
         }
@@ -1082,10 +1086,8 @@ impl Client {
             let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
                 return vec![];
             };
-            let Some(room) = self.inner.get_room(&room_id) else {
-                return vec![];
-            };
-            let Ok(timeline) = room.timeline().await else {
+
+            let Some(timeline) = get_timeline_for(&self.inner, &room_id).await else {
                 return vec![];
             };
 
@@ -1117,13 +1119,10 @@ impl Client {
         let obs: Arc<dyn TimelineObserver> = Arc::from(observer);
 
         sub_manager!(self, timeline_subs, async move {
-            let Some(room) = client.get_room(&room_id) else {
+            let Some(tl) = get_timeline_for(&client, &room_id).await else {
                 return;
             };
-            let Ok(tl) = room.timeline().await else {
-                return;
-            };
-            let tl = Arc::new(tl);
+
             let (items, mut stream) = tl.subscribe().await;
 
             // Initial snapshot
@@ -1386,6 +1385,8 @@ impl Client {
         for (_, h) in self.live_location_subs.lock().unwrap().drain() {
             h.abort();
         }
+
+        TIMELINES.lock().unwrap().clear();
     }
 
     pub fn logout(&self) -> bool {
@@ -1397,7 +1398,7 @@ impl Client {
     }
 
     pub fn mark_read(&self, room_id: String) -> bool {
-        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+        with_timeline_async!(self, room_id, |tl: Arc<Timeline>, _rid| async move {
             tl.mark_as_read(ReceiptType::ReadPrivate).await.is_ok()
         })
     }
@@ -1605,7 +1606,7 @@ impl Client {
     }
 
     pub fn react(&self, room_id: String, event_id: String, emoji: String) -> bool {
-        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+        with_timeline_async!(self, room_id, |tl: Arc<Timeline>, _rid| async move {
             let Ok(eid) = EventId::parse(&event_id) else {
                 return false;
             };
@@ -1618,7 +1619,7 @@ impl Client {
     }
 
     pub fn reply(&self, room_id: String, in_reply_to: String, body: String) -> bool {
-        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+        with_timeline_async!(self, room_id, |tl: Arc<Timeline>, _rid| async move {
             use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation as MsgNoRel;
 
             let Ok(reply_to) = EventId::parse(&in_reply_to) else {
@@ -1630,7 +1631,7 @@ impl Client {
     }
 
     pub fn edit(&self, room_id: String, target_event_id: String, new_body: String) -> bool {
-        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+        with_timeline_async!(self, room_id, |tl: Arc<Timeline>, _rid| async move {
             use matrix_sdk::room::edit::EditedContent;
             use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation as MsgNoRel;
 
@@ -1648,13 +1649,13 @@ impl Client {
     }
 
     pub fn paginate_backwards(&self, room_id: String, count: u16) -> bool {
-        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+        with_timeline_async!(self, room_id, |tl: Arc<Timeline>, _rid| async move {
             tl.paginate_backwards(count).await.unwrap_or(false)
         })
     }
 
     pub fn paginate_forwards(&self, room_id: String, count: u16) -> bool {
-        with_timeline_async!(self, room_id, |tl: Timeline, _rid| async move {
+        with_timeline_async!(self, room_id, |tl: Arc<Timeline>, _rid| async move {
             tl.paginate_forwards(count).await.unwrap_or(false)
         })
     }
@@ -2733,18 +2734,14 @@ impl Client {
                     ts_ms: None,
                 };
             };
-            let Some(room) = self.inner.get_room(&rid) else {
+
+            let Some(tl) = get_timeline_for(&self.inner, &rid).await else {
                 return OwnReceipt {
                     event_id: None,
                     ts_ms: None,
                 };
             };
-            let Ok(tl) = room.timeline().await else {
-                return OwnReceipt {
-                    event_id: None,
-                    ts_ms: None,
-                };
-            };
+
             let Some(me) = self.inner.user_id() else {
                 return OwnReceipt {
                     event_id: None,
@@ -4784,9 +4781,23 @@ fn build_unstable_poll_content(
     ))
 }
 
-async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Timeline> {
+static TIMELINES: Lazy<Mutex<HashMap<OwnedRoomId, Arc<Timeline>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+async fn get_timeline_for(client: &SdkClient, room_id: &OwnedRoomId) -> Option<Arc<Timeline>> {
+    // reuse
+    if let Some(tl) = TIMELINES.lock().unwrap().get(room_id).cloned() {
+        return Some(tl);
+    }
+
+    // Slow path – ask the SDK for a Timeline for this room and cache it.
     let room = client.get_room(room_id)?;
-    room.timeline().await.ok()
+    let tl = Arc::new(room.timeline().await.ok()?);
+    TIMELINES
+        .lock()
+        .unwrap()
+        .insert(room_id.clone(), tl.clone());
+    Some(tl)
 }
 
 fn map_timeline_event(
@@ -5012,7 +5023,11 @@ async fn map_event_id_via_timeline(
     };
     let _ = tl.fetch_details_for_event(eid.as_ref()).await;
     let item = tl.item_by_event_id(eid).await?;
-    map_timeline_event(&item, rid.as_str(), Some(eid.as_str())) // TODO: fix item_id usage
+    let item_id = match item.identifier() {
+        TimelineEventItemId::EventId(id) => id.to_string(),
+        TimelineEventItemId::TransactionId(id) => id.to_string(),
+    };
+    map_timeline_event(&item, rid.as_str(), Some(&item_id))
 }
 
 fn render_timeline_text(ev: &EventTimelineItem) -> String {
