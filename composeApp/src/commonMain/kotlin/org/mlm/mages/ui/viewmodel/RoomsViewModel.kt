@@ -39,7 +39,7 @@ class RoomsViewModel(
         observeRoomList()
     }
 
-    //  Public Actions 
+    //  Public Actions
 
     fun setSearchQuery(query: String) {
         updateState { copy(roomSearchQuery = query) }
@@ -138,7 +138,7 @@ class RoomsViewModel(
         return body
     }
 
-    //  Private Methods 
+    //  Private Methods
 
     private fun observeRoomList() {
         roomListToken?.let { service.port.unobserveRoomList(it) }

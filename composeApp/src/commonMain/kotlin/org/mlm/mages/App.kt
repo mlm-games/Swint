@@ -62,10 +62,10 @@ private fun AppContent(
         BindLifecycle(service)
         BindNotifications(service, dataStore)
 
-        LaunchedEffect(service) {
-            service.startSupervisedSync(object : MatrixPort.SyncObserver {
-                override fun onState(status: MatrixPort.SyncStatus) { /* no-op */ }
-            })
+        LaunchedEffect(Unit) {
+            if (service.isLoggedIn()) {
+                service.startSupervisedSync()
+            }
         }
 
         val openUrl = rememberOpenBrowser()

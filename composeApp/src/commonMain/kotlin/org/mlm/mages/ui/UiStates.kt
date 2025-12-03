@@ -53,6 +53,7 @@ data class RoomUiState(
     val editing: MessageEvent? = null,
     val typingNames: List<String> = emptyList(),
     val isPaginatingBack: Boolean = false,
+    val hasTimelineSnapshot: Boolean = false,
     val hitStart: Boolean = false,
     val isOffline: Boolean = false,
     val currentAttachment: AttachmentData? = null,

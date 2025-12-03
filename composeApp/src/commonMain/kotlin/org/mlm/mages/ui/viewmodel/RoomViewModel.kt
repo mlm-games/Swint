@@ -24,7 +24,6 @@ class RoomViewModel(
         roomName = savedStateHandle.get<String>("roomName") ?: ""
     )
 ) {
-    // Constructor for Koin with parameters
     constructor(
         service: MatrixService,
         dataStore: DataStore<Preferences>,
@@ -692,7 +691,8 @@ class RoomViewModel(
                     copy(
                         allEvents = all,
                         events = all.withoutThreadReplies().dedupByItemId(),
-                    )
+                        hasTimelineSnapshot = true,
+                        )
                 }
                 postProcessNewEvents(diff.items)
             }
@@ -701,7 +701,8 @@ class RoomViewModel(
                 updateState {
                     copy(
                         allEvents = emptyList(),
-                        events = emptyList()
+                        events = emptyList(),
+                        hasTimelineSnapshot = false,
                     )
                 }
             }
@@ -712,6 +713,7 @@ class RoomViewModel(
                     copy(
                         allEvents = newAll,
                         events = newAll.withoutThreadReplies().dedupByItemId(),
+                        hasTimelineSnapshot = hasTimelineSnapshot,
                     )
                 }
                 postProcessNewEvents(diff.items)
@@ -726,6 +728,7 @@ class RoomViewModel(
                     copy(
                         allEvents = newAll,
                         events = newAll.withoutThreadReplies().dedupByItemId(),
+                        hasTimelineSnapshot = hasTimelineSnapshot,
                     )
                 }
                 postProcessNewEvents(listOf(diff.item))
@@ -740,6 +743,7 @@ class RoomViewModel(
                     copy(
                         allEvents = newAll,
                         events = newAll.withoutThreadReplies().dedupByItemId(),
+                        hasTimelineSnapshot = hasTimelineSnapshot,
                     )
                 }
                 postProcessNewEvents(listOf(diff.item))
@@ -754,6 +758,7 @@ class RoomViewModel(
                     copy(
                         allEvents = newAll,
                         events = newAll.withoutThreadReplies().dedupByItemId(),
+                        hasTimelineSnapshot = hasTimelineSnapshot,
                     )
                 }
             }
@@ -765,6 +770,7 @@ class RoomViewModel(
                     copy(
                         allEvents = newAll,
                         events = newAll.withoutThreadReplies().dedupByItemId(),
+                        hasTimelineSnapshot = hasTimelineSnapshot,
                     )
                 }
             }
@@ -776,6 +782,7 @@ class RoomViewModel(
                     copy(
                         allEvents = newAll,
                         events = newAll.withoutThreadReplies().dedupByItemId(),
+                        hasTimelineSnapshot = hasTimelineSnapshot,
                     )
                 }
             }
@@ -787,6 +794,7 @@ class RoomViewModel(
                     copy(
                         allEvents = newAll,
                         events = newAll.withoutThreadReplies().dedupByItemId(),
+                        hasTimelineSnapshot = hasTimelineSnapshot,
                     )
                 }
             }

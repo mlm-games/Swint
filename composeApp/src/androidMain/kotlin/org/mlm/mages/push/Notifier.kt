@@ -9,6 +9,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
 import org.mlm.mages.MainActivity
+import org.mlm.mages.R
 
 object AndroidNotificationHelper {
     data class NotificationText(val title: String, val body: String) // mirror FFI return
@@ -30,7 +31,7 @@ object AndroidNotificationHelper {
         val notifId = (roomId + eventId).hashCode()
         val pi = PendingIntent.getActivity(ctx, notifId, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val nobj = NotificationCompat.Builder(ctx, "messages")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notif_status_bar)
             .setContentTitle(n.title)
             .setContentText(n.body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))

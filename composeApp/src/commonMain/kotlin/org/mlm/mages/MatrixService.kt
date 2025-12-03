@@ -1,6 +1,9 @@
 package org.mlm.mages
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.mlm.mages.matrix.DeviceSummary
 import org.mlm.mages.matrix.MatrixPort
 import org.mlm.mages.matrix.SendUpdate
@@ -11,6 +14,11 @@ import org.mlm.mages.matrix.VerificationObserver
 import kotlin.time.ExperimentalTime
 
 class MatrixService(val port: MatrixPort) {
+
+    private val _syncStatus = MutableStateFlow<MatrixPort.SyncStatus?>(null)
+    val syncStatus: StateFlow<MatrixPort.SyncStatus?> = _syncStatus.asStateFlow()
+
+
     suspend fun init(hs: String) = port.init(hs.trim())
     suspend fun login(user: String, password: String, deviceDisplayName: String?) =
          port.login(user.trim(), password, deviceDisplayName)
@@ -20,7 +28,15 @@ class MatrixService(val port: MatrixPort) {
     fun observeSends(): Flow<SendUpdate> = port.observeSends()
     suspend fun thumbnailToCache(info: AttachmentInfo, w: Int, h: Int, crop: Boolean) = port.thumbnailToCache(info, w, h, crop)
 
-    fun startSupervisedSync(obs: MatrixPort.SyncObserver) = runCatching { port.startSupervisedSync(obs) }
+    fun startSupervisedSync(externalObserver: MatrixPort.SyncObserver? = null) {
+        val wrappedObserver = object : MatrixPort.SyncObserver {
+            override fun onState(status: MatrixPort.SyncStatus) {
+                _syncStatus.value = status
+                externalObserver?.onState(status)
+            }
+        }
+        runCatching { port.startSupervisedSync(wrappedObserver) }
+    }
 
 
     // Connection monitoring

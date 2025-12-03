@@ -217,7 +217,15 @@ fun RoomScreen(
 
             // Message list
             Box(modifier = Modifier.weight(1f)) {
-                if (events.isEmpty()) {
+                if (!state.hasTimelineSnapshot) {
+                    // Timeline still loading
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else if (events.isEmpty()) {
                     EmptyState(
                         icon = Icons.Default.ChatBubbleOutline,
                         title = "No messages yet",
@@ -566,9 +574,8 @@ private fun MessageItem(
     onOpenThread: () -> Unit
 ) {
 
-    val eventDate = remember(event.timestamp) { formatDate(event.timestamp) }
-    val prevDate = remember(event.timestamp) { events.getOrNull(index - 1)?.let { formatDate(it.timestamp) } }
-    val displayTime = remember(event.timestamp) { formatTime(event.timestamp) }
+    val eventDate = formatDate(event.timestamp)
+    val prevDate = events.getOrNull(index - 1)?.let { formatDate(it.timestamp) }
 
     // Date header
     if (prevDate != eventDate) {
@@ -637,8 +644,18 @@ private fun MessageItem(
         if (state.isDm) {
             val lastOutgoing = events.getOrNull(lastOutgoingIndex)
             val statusText = when {
-                lastOutgoing?.eventId.isNullOrBlank() -> "Sending…"
-                state.lastOutgoingRead -> "Seen ${formatTime(lastOutgoing!!.timestamp)}"
+                lastOutgoing == null -> ""
+                lastOutgoing.sendState == SendState.Sending ||
+                        lastOutgoing.sendState == SendState.Retrying ||
+                        (lastOutgoing.sendState == null && lastOutgoing.eventId.isBlank()) ->
+                    "Sending…"
+
+                lastOutgoing.sendState == SendState.Failed ->
+                    "Failed to send"
+
+                state.lastOutgoingRead ->
+                    "Seen ${formatTime(lastOutgoing.timestamp)}"
+
                 else -> "Delivered"
             }
             MessageStatusLine(text = statusText, isMine = true)
