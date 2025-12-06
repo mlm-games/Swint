@@ -613,8 +613,8 @@ private fun MessageItem(
     val prevEvent = events.getOrNull(index - 1)
     val shouldGroup = prevEvent != null &&
             prevEvent.sender == event.sender &&
-            prevDate == eventDate &&
-            (event.timestamp - prevEvent.timestamp) < 300_000
+            prevDate == eventDate
+//            && (event.timestamp - prevEvent.timestamp) < 300_000
 
     val isMine = event.sender == state.myUserId
 
