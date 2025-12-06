@@ -9,7 +9,7 @@ The goal was to have a cross‑platform desktop/mobile client, (initially there 
 
 ## Status 
 
-This is experimental‑stage software. If you use it, assume things may break and encryption bugs are still possible.
+This is experimental‑stage software. If you use it, assume things may break. (haven't noticed any encryption related issues, due to it being fully handled by the battle tested sdk, though can't be sure abt it)
 
 ## Features (as of the last README update)
 
