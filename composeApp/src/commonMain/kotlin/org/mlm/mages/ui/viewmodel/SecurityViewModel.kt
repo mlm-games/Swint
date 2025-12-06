@@ -1,6 +1,7 @@
 package org.mlm.mages.ui.viewmodel
 
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.receiveAsFlow
 import org.mlm.mages.MatrixService
 import org.mlm.mages.matrix.*
@@ -86,18 +87,7 @@ class SecurityViewModel(
             updateState { copy(sasFlowId = flowId, sasPhase = phase, sasError = null) }
 
             if (phase == SasPhase.Done || phase == SasPhase.Cancelled) {
-                updateState {
-                    val remaining = pendingVerifications.filterNot { it.flowId == flowId }
-                    copy(
-                        pendingVerifications = remaining,
-                        sasFlowId = remaining.firstOrNull()?.flowId,
-                        sasPhase = if (remaining.isNotEmpty()) SasPhase.Requested else null,
-                        sasOtherUser = remaining.firstOrNull()?.fromUser,
-                        sasOtherDevice = remaining.firstOrNull()?.fromDevice,
-                        sasEmojis = if (remaining.isNotEmpty()) sasEmojis else emptyList(),
-                        sasError = null
-                    )
-                }
+                clearVerificationFlow(flowId)
                 refreshDevices()
             }
         }
@@ -119,21 +109,29 @@ class SecurityViewModel(
     }
 
     fun startSelfVerify(deviceId: String) {
+        val myUserId = service.port.whoami() ?: return
+
+        updateState { copy(sasOtherUser = myUserId, sasIncoming = false) }
+
         launch {
             val flowId = service.startSelfSas(deviceId, commonObserver())
             if (flowId.isBlank()) {
                 updateState { copy(sasError = "Failed to start verification") }
             } else {
-                updateState { copy(sasFlowId = flowId, sasIncoming = false) }
+                updateState { copy(sasFlowId = flowId) }
             }
         }
     }
 
     fun startUserVerify(userId: String) {
+        updateState { copy(sasOtherUser = userId, sasIncoming = false) }
+
         launch {
             val flowId = service.startUserSas(userId, commonObserver())
             if (flowId.isBlank()) {
                 updateState { copy(sasError = "Failed to start verification") }
+            } else {
+                updateState { copy(sasFlowId = flowId) }
             }
         }
     }
@@ -160,10 +158,21 @@ class SecurityViewModel(
 
     fun cancelSas() {
         val flowId = currentState.sasFlowId ?: return
+        val phase = currentState.sasPhase
+        val targetUser = currentState.sasOtherUser
+
         launch {
-            val ok = service.cancelVerification(flowId)
+            val ok = if (phase == SasPhase.Requested) {
+                service.cancelVerificationRequest(flowId, targetUser)
+            } else {
+                service.cancelVerification(flowId)
+            }
+
             if (!ok) {
                 updateState { copy(sasError = "Cancel failed") }
+            }
+            else {
+                clearVerificationFlow(flowId)
             }
         }
     }
@@ -279,6 +288,23 @@ class SecurityViewModel(
             }
         }
     }
+
+    private fun clearVerificationFlow(flowId: String) {
+        updateState {
+            val remaining = pendingVerifications.filterNot { it.flowId == flowId }
+            copy(
+                pendingVerifications = remaining,
+                sasFlowId = remaining.firstOrNull()?.flowId,
+                sasPhase = if (remaining.isNotEmpty()) SasPhase.Requested else null,
+                sasOtherUser = remaining.firstOrNull()?.fromUser,
+                sasOtherDevice = remaining.firstOrNull()?.fromDevice,
+                sasEmojis = emptyList(),
+                sasError = null,
+                sasIncoming = remaining.isNotEmpty()
+            )
+        }
+    }
+
 
     override fun onCleared() {
         super.onCleared()
