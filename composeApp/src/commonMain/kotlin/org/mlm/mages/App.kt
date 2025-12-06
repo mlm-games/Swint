@@ -62,7 +62,7 @@ private fun AppContent(
         BindLifecycle(service)
         BindNotifications(service, dataStore)
 
-        LaunchedEffect(Unit) {
+        LaunchedEffect(sessionEpoch) {
             if (service.isLoggedIn()) {
                 service.startSupervisedSync()
             }

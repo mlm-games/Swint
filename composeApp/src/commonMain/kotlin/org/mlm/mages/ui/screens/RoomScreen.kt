@@ -584,12 +584,28 @@ private fun MessageItem(
 
     // Unread divider
     val lastReadTs = state.lastReadTs
-    if (lastReadTs != null) {
-        val prevTs = events.getOrNull(index - 1)?.timestamp
-        val showUnread = (event.timestamp > lastReadTs) && (prevTs == null || prevTs <= lastReadTs)
-        if (showUnread) UnreadDivider()
-    } else if (index == 0) {
-        UnreadDivider()
+    val myId = state.myUserId
+    val isFromMe = myId != null && event.sender == myId
+
+    if (!isFromMe) {
+        if (lastReadTs != null) {
+            val prev = events.getOrNull(index - 1)
+            val prevIsFromMe = prev != null && myId != null && prev.sender == myId
+            val prevTs = prev?.timestamp
+
+            val justCrossed = event.timestamp > lastReadTs &&
+                    (prev == null || prevIsFromMe || (prevTs != null && prevTs <= lastReadTs))
+
+            if (justCrossed) {
+                UnreadDivider()
+            }
+        } else {
+            val prev = events.getOrNull(index - 1)
+            val prevIsFromOther = prev != null && (myId == null || prev.sender != myId)
+            if (!prevIsFromOther) {
+                UnreadDivider()
+            }
+        }
     }
 
     // Message bubble

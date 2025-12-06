@@ -187,9 +187,9 @@ private fun ShareReceiverScreen(
                     ForwardableRoom(
                         roomId = room.id,
                         name = room.name,
-                        avatarUrl = "", // TODO
-                        isDm = false,
-                        lastActivity = 0L
+                        avatarUrl = room.avatarUrl,
+                        isDm = room.isDm,
+                        lastActivity = 0L  // TODO
                     )
                 }.sortedByDescending { it.lastActivity }
             } catch (e: Exception) {

@@ -69,7 +69,7 @@ fun MessageActionSheet(
                 ActionItem(Icons.Default.Forum, "Reply in thread") { onReplyInThread(); onDismiss() }
             }
             ActionItem(Icons.Default.Bookmark, "Mark as read here") { onMarkReadHere(); onDismiss() }
-            if (isMine && event.sendState != SendState.Failed) {
+            if (isMine && event.sendState != SendState.Failed && event.eventId.isNotBlank()) {
                 ActionItem(Icons.Default.Edit, "Edit") { onEdit(); onDismiss() }
             }
             if (isMine) {

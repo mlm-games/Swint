@@ -159,11 +159,27 @@ class RoomViewModel(
     fun confirmEdit() {
         val s = currentState
         val target = s.editing ?: return
+        val newBody = s.input.trim()
+        if (newBody.isBlank()) return
 
         launch {
-            val ok = service.edit(s.roomId, target.eventId, s.input.trim())
+            val ok = service.edit(s.roomId, target.eventId, newBody)
             if (ok) {
-                updateState { copy(editing = null, input = "") }
+                updateState {
+                    val idx = allEvents.indexOfFirst { it.eventId == target.eventId }
+                    if (idx == -1) {
+                        copy(editing = null, input = "")
+                    } else {
+                        val updated = allEvents[idx].copy(body = newBody)
+                        val newAll = allEvents.toMutableList().also { it[idx] = updated }
+                        copy(
+                            allEvents = newAll,
+                            events = newAll.withoutThreadReplies().dedupByItemId(),
+                            editing = null,
+                            input = ""
+                        )
+                    }
+                }
             } else {
                 _events.send(Event.ShowError("Edit failed"))
             }
@@ -629,9 +645,9 @@ class RoomViewModel(
                 ForwardableRoom(
                     roomId = room.id,
                     name = room.name,
-                    avatarUrl = "", //TODO 3 addns
-                    isDm = true,
-                    lastActivity = 0L
+                    avatarUrl = room.avatarUrl,
+                    isDm = room.isDm,
+                    lastActivity = 0L //TODO
                 )
             }?.sortedByDescending { it.lastActivity } ?: emptyList()
 
